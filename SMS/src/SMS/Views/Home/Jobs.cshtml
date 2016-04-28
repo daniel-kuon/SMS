@@ -1,0 +1,29 @@
+﻿@{
+    <h1>Aufgaben</h1>
+    <div data-bind="template: {name: 'taskTemplate', foreach:JobLists}"></div>
+
+}
+@section scripts
+{
+    <script type="text/html" id="taskTemplate">
+        <panel data-bind="css: Done?'panel-success':''">
+            <heading data-bind="text: Title"></heading>
+            <panel-body>
+                <div style="margin-bottom: 20px;" data-bind="html: Content"></div>
+                <form>
+                    <form-group class="col-md-6">
+                        <static-control label="Zugewiesen:" data-bind="text: AssignedTo.FullName"></static-control>
+                    </form-group>
+                    <form-group class="col-md-6">
+                        <static-control label="Bis zum:" data-bind="text: DueTo"></static-control>
+                    </form-group>
+                </form>
+            </panel-body>
+            <footer data-bind="if: IsList, visible:IsList">
+                <button>Neue Unteraufgabe</button>
+                <div data-bind="template:{name: 'taskTemplate', foreach:Jobs}"></div>
+            </footer>
+        </panel>
+    </script>
+    <script src="~/js/viewmodels/home/jobs.js"></script>
+}

@@ -1,0 +1,387 @@
+﻿@{
+    ViewData["Title"] = "Home Page";
+}
+
+<div id="map"></div>
+<div class="sidebar left" id="leftSidebar"></div>
+<div class="sidebar right" id="rightSidebar">
+    <div id="harbourInfo" class=" mapOverlayBox" data-bind="with: SelectedHarbour">
+        <close-icon class="hidden-xs" data-bind="click:function (){ $root.SelectedHarbour(undefined);}"></close-icon>
+        <close-icon class="visible-xs" style="font-size: 25pt;" data-bind="click:function (){ $root.SelectedHarbour(undefined);}"></close-icon>
+        <h2>
+            <span data-bind="text: Name"></span>
+            <div class="rating">
+                <span class="star" data-bind="css:{active:Rating()>0}"></span>
+                <span class="star" data-bind="css:{active:Rating()>1}"></span>
+                <span class="star" data-bind="css:{active:Rating()>2}"></span>
+                <span class="star" data-bind="css:{active:Rating()>3}"></span>
+                <span class="star" data-bind="css:{active:Rating()>4}"></span>
+            </div>
+        </h2>
+        <div class="images">
+            <!-- ko foreach:Album().Images-->
+            <img data-bind="attr:{src: Path, title: Comment}, click: $root.InitGallery" />
+            <!-- /ko -->
+            <div b-modal-target="dropzoneModal" class="pseudoImg">
+                <div>
+                    Neues Bild<br><span class="glyphicon glyphicon-plus" aria-hidden="true"></span>
+                </div>
+            </div>
+        </div>
+        <div data-bind="html:Content"></div>
+        <h4>Entfernungen zu anderen Häfen</h4>
+        <table id="harbourDistances" b-striped b-hover>
+            <thead>
+            <th>Hafen</th>
+            <th style="width: 100px;">Entfernung</th>
+            <th style="width: 100px;"></th>
+            </thead>
+            <tbody data-bind="foreach: $root.Harbours">
+                <tr data-bind="if: Precessor, event: {mouseover: $root.ShowRoute, mouseout:$root.HideRoute, click: $root.FixRoute}">
+                    <td data-bind="text: Name"></td>
+                    <td>
+                        <span data-bind="text: Distance"></span> km
+                    </td>
+                    <td>
+                        <button b-size="BootstrapTagHelpers.Size.ExtraSmall" data-bind="click: function (){mapViewModel.SelectedHarbour(this);}">Auswählen</button>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        <footer>
+            <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click:$root.StartRoute, visible: !$root.routePolyline()">Neuer Törn</button>
+            <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click:$root.AddToRoute, visible: $root.routePolyline, disable:$root.IsLastTakInRoute">Zu Törn hinzufügen</button>
+        </footer>
+    </div>
+</div>
+
+<div class="sidebar bottom" id="bottomSidebar">
+
+
+    <div id="routePlanner" data-bind="if: SelectedTrip">
+        <!-- ko with:SelectedTrip -->
+        @*<form class="row">
+                <form-group class="col-sm-6">
+                    <input b-label="Startdatum" data-bind="textInput:Start" />
+                </form-group>
+                <form-group class="col-sm-6">
+                    <input b-label="Startdatum" data-bind="textInput:Start" />
+                </form-group>
+            </form>*@
+        <!-- ko foreach: Tacks -->
+        <panel>
+            <heading data-bind="text: Start().Name"></heading>
+            <panel-body class="form">
+                <form-group control-size="BootstrapTagHelpers.Size.ExtraSmall" size="BootstrapTagHelpers.SimpleSize.Small">
+                    <input data-bind="datepicker: StartDate" b-label="Abfahrt"></input>
+                </form-group>
+                <form-group control-size="BootstrapTagHelpers.Size.ExtraSmall" size="BootstrapTagHelpers.SimpleSize.Small">
+                    <input data-bind="datepicker: EndDate, attr:{placeholder:ComputePlaceholder}" b-label="Ankunft"></input>
+                </form-group>
+                <form-group data-bind="template:{name:'multiplePersonSelector', data:{Label:'Crew', Persons: $data.Crew}}">
+
+                </form-group>
+            </panel-body>
+            <footer>
+                <button style="float: left;" data-bind="enable: $index, click: $root.PullTack" title="Vorziehen"><glyphicon icon="BootstrapTagHelpers.Glyphicons.ArrowLeft"></glyphicon></button>
+                <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Danger" title="Löschen" data-bind="click: $root.RemoveTack, enable: CanRemoveTack"><glyphicon icon="BootstrapTagHelpers.Glyphicons.Trash"></glyphicon></button>
+                <button style="float: right;" data-bind="enable:End, click: $root.PushTack" title="Weiter nach hinten"><glyphicon icon="BootstrapTagHelpers.Glyphicons.ArrowRight"></glyphicon></button>
+            </footer>
+        </panel>
+        <div data-bind="if: End" class="distanceDiv">
+            <span><span data-bind="text:Distance"></span> km</span>
+        </div>
+        <!-- /ko -->
+        <!-- /ko -->
+    </div>
+</div>
+<button-group id="mapModeControls">
+    <button data-bind="css:{'btn-primary': IsInViewMode}, click:function () {MapMode(/*MapMode.View*/ 1);}">Normal</button>
+    <button disabled="disabled" data-bind="css:{'btn-primary': false, click:function () {MapMode(/*MapMode.TripPlaning*/2);}}">Routenplanung</button>
+    <dropdown disabled data-bind="css:{'btn-primary': false, click:function () {MapMode(/*MapMode.TripPlaning*/2);}}">
+        <a>Neue Fahrt</a>
+        <a>Fahrtenübersicht</a>
+    </dropdown>
+    <button data-bind="css:{'btn-primary': IsInAdminMode}, click:function () {MapMode(/*MapMode.Admin*/ 0);}">Admin</button>
+</button-group>
+<div id="loadingOverlay">
+    <panel class="col-xs-10 col-sm-6">
+        <panel-body>
+            <h3>Lade Seite</h3>
+        </panel-body>
+    </panel>
+</div>
+
+<script type="text/html" id="singlePersonSelector">
+    <label data-bind="visible: Label, text: Label"></label>
+    <select data-bind="options: $root.Persons, optionsText:'FullName', value:Person, optionsCaption:'Person wählen...'"></select>
+</script>
+
+<script type="text/html" id="multiplePersonSelector">
+    <label data-bind="visible: Label, text: Label"></label>
+    <select multiple data-bind="options: $root.Persons, optionsText:'FullName', selectedOptions:Persons, optionsCaption:'Person wählen...', multiselect:{}"></select>
+</script>
+
+<modal header="Aufgaben" id="jobOverviewModal" size="BootstrapTagHelpers.SimpleSize.Large">
+    <!-- ko template: {foreach: TopJobs, name: 'jobTemplate'} -->
+    <!-- /ko -->
+    <footer>
+        <button data-bind="click:function (){$root.EditingJob(new ClientModel.Job());}">Neue Aufgabe</button>
+    </footer>
+</modal>
+
+<script type="text/html" id="jobTemplate">
+    <panel data-bind="css: Done?'panel-success':''">
+        <heading data-bind="text: Title"></heading>
+        <panel-body>
+            <div style="margin-bottom: 20px;" data-bind="html: Content"></div>
+            <form>
+                <form-group class="col-md-6">
+                   <static-control label="Zugewiesen:" data-bind="text: AssignedTo.FullName"></static-control>
+                </form-group>
+                <form-group class="col-md-6">
+                    <static-control label="Bis zum:" data-bind="text: DueTo"></static-control>
+                </form-group>
+            </form>
+        </panel-body>
+        <footer>
+            <button style="float: right;" data-bind="click:function (){$root.EditingJob(new ClientModel.Job());$root.EditingJob().SuperJobId(this.Id());}">Neue Unteraufgabe</button>
+            <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Danger" data-bind="click:function (){$root.DeletingJob(this)}">Löschen</button>
+            <button data-bind="click:function (){$root.EditingJob(this)}">Bearbeiten</button>
+        </footer>
+    </panel>
+    <div style="padding-left:50px;" data-bind="template:{name: 'jobTemplate', foreach:SubJobs}"></div>
+</script>
+
+<modal static-backdrop no-keyboard id="deletingJobModal" data-bind="with:DeletingJob" size="BootstrapTagHelpers.SimpleSize.Large">
+    <header>
+        <span data-bind="text: Title"></span>
+    </header>
+    Soll die Aufgabe '<span data-bind="text: Title"></span>' wirklich gelöscht werden?
+    <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Danger" data-bind="click: $root.DeleteJob">Löschen</button>
+        <button data-bind="click: function ()  {$root.DeletingJob(undefined);}">Abbrechen</button>
+    </footer>
+</modal>
+
+<modal static-backdrop no-keyboard id="editingJobModal" data-bind="with:EditingJob" size="BootstrapTagHelpers.SimpleSize.Large">
+    <header>
+        Aufgabe: <span data-bind="text: Title"></span>
+    </header>
+    <form>
+        <form-group>
+            <input type="text" data-bind="textInput:Title" b-label="Titel" />
+        </form-group>
+        <form-group>
+            <input type="text" data-bind="datepicker:DueTo" b-label="Fällig bis" />
+        </form-group>
+        <form-group>
+            <textarea type="text" data-bind="textInput:Content" b-label="Inhalt"></textarea>
+        </form-group>
+        <form-group data-bind="template:{name:'singlePersonSelector', data:{Label:'Zuständig', Person: $data.AssignedTo}}">
+
+        </form-group>
+        <form-group>
+            <input type="checkbox" data-bind="checked:Done" b-label="Erledigt" />
+        </form-group>
+    </form>
+    <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Success" data-bind="click: $root.SaveJob">Speichern</button>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Warning" data-bind="click: function ()  {$root.EditingJob(undefined);}">Abbrechen</button>
+    </footer>
+</modal>
+
+
+<modal header="Bild hinzufügen" id="dropzoneModal" size="BootstrapTagHelpers.SimpleSize.Large" backdrop-static no-keyboard fade size="BootstrapTagHelpers.SimpleSize.Large">
+    <form data-bind="if: SelectedHarbour" id="dropzone" class="dropzone" action="/api/Images/upload" method="post">
+        <input name="album_id" type="hidden" data-bind="value: SelectedHarbour().AlbumId" />
+        <div class="dz-message" data-dz-message>
+            <h2>Dateien hier ablegen oder klicken</h2>
+            <span style="color: #999;">Sobald du einen Hafen ausgewählt hast und Bilder auf die Webseite ziehst, erscheint dieses Fenster automatisch</span>
+        </div>
+    </form>
+</modal>
+
+<modal static-backdrop no-keyboard id="deletingHarbourModal" data-bind="with:DeletingHarbour">
+    <header>
+        <span data-bind="text: Name"></span>
+    </header>
+    Soll der Hafen '<span data-bind="text: Name"></span>' wirklich gelöscht werden?
+    <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Danger" data-bind="click: $root.DeleteHarbour">Löschen</button>
+        <button data-bind="click: function ()  {$root.DeletingHarbour(undefined);}">Abbrechen</button>
+    </footer>
+</modal>
+
+<modal static-backdrop no-keyboard id="editingHarbourModal" data-bind="with:EditingHarbour" size="BootstrapTagHelpers.SimpleSize.Large">
+    <header>
+        <span data-bind="text: Name"></span>
+    </header>
+    <form b-horizontal>
+        <form-group>
+            <input type="text" data-bind="textInput:Name" b-label="Name" />
+        </form-group>
+        <form-group>
+            <input type="text" data-bind="textInput:Longitude" b-label="Längengrad" />
+        </form-group>
+        <form-group>
+            <input type="text" data-bind="textInput:Latitude" b-label="Breitengrad" />
+        </form-group>
+        <form-group>
+            <input type="text" data-bind="textInput:Website" b-label="Webseite" />
+        </form-group>
+        <form-group>
+            <input type="text" data-bind="textInput:WaypointNumber" b-label="Wegpunkt-Nr." />
+        </form-group>
+        <form-group>
+            <static-control label="Bewertung">
+                <div class="rating">
+                    <span class="star" data-bind="css:{active:Rating()>0}, click:function() {this.Rating(1)}"></span>
+                    <span class="star" data-bind="css:{active:Rating()>1}, click:function() {this.Rating(2)}"></span>
+                    <span class="star" data-bind="css:{active:Rating()>2}, click:function() {this.Rating(3)}"></span>
+                    <span class="star" data-bind="css:{active:Rating()>3}, click:function() {this.Rating(4)}"></span>
+                    <span class="star" data-bind="css:{active:Rating()>4}, click:function() {this.Rating(5)}"></span>
+                </div>
+            </static-control>
+        </form-group>
+    </form>
+    <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Success" data-bind="click: $root.SaveHarbour">Speichern</button>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Warning" data-bind="click: function ()  {$root.EditingHarbour(undefined);}">Abbrechen</button>
+    </footer>
+</modal>
+
+<modal static-backdrop no-keyboard id="editingWaypointModal" data-bind="with:EditingWaypoint" size="BootstrapTagHelpers.SimpleSize.Large">
+    <header>
+        <span data-bind="text: Name"></span>
+    </header>
+    <form b-horizontal>
+        <form-group>
+            <input type="text" data-bind="textInput:Name" b-label="Name" />
+        </form-group>
+        <form-group>
+            <input type="text" data-bind="textInput:Longitude" b-label="Längengrad" />
+        </form-group>
+        <form-group>
+            <input type="text" data-bind="textInput:Latitude" b-label="Breitengrad" />
+        </form-group>
+        <form-group>
+            <input type="text" data-bind="textInput:WaypointNumber" b-label="Wegpunkt-Nr." />
+        </form-group>
+    </form>
+    <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Success" data-bind="click: $root.SaveWaypoint">Speichern</button>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Warning" data-bind="click: function ()  {$root.EditingWaypoint(undefined);}">Abbrechen</button>
+    </footer>
+</modal>
+
+<modal static-backdrop no-keyboard id="deletingWaypointModal" data-bind="with:DeletingWaypoint">
+    <header>
+        <span data-bind="text: Name"></span>
+    </header>
+    Soll der Wegpunkt '<span data-bind="text: Name"></span>' wirklich gelöscht werden?
+    <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Danger" data-bind="click: $root.DeleteWaypoint">Löschen</button>
+        <button data-bind="click: function ()  {$root.DeletingWaypoint(undefined);}">Abbrechen</button>
+    </footer>
+</modal>
+
+<div class="pswp" tabindex="-1" role="dialog" aria-hidden="true">
+
+    <div class="pswp__bg"></div>
+
+    <div class="pswp__scroll-wrap">
+
+        <div class="pswp__container">
+            <div class="pswp__item"></div>
+            <div class="pswp__item"></div>
+            <div class="pswp__item"></div>
+        </div>
+
+        <div class="pswp__ui pswp__ui--hidden">
+
+            <div class="pswp__top-bar">
+
+                <div class="pswp__counter"></div>
+
+                <button b-disable-bootstrap class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+
+                <button b-disable-bootstrap class="pswp__button pswp__button--share" title="Share"></button>
+
+                <button b-disable-bootstrap class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+
+                <button b-disable-bootstrap class="pswp__button pswp__button--zoom" title="Zoom in/out"></button>
+
+                <div class="pswp__preloader">
+                    <div class="pswp__preloader__icn">
+                        <div class="pswp__preloader__cut">
+                            <div class="pswp__preloader__donut"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap">
+                <div class="pswp__share-tooltip"></div>
+            </div>
+
+            <button b-disable-bootstrap class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+            </button>
+
+            <button b-disable-bootstrap class="pswp__button pswp__button--arrow--right" title="Next (arrow right)">
+            </button>
+
+            <div class="pswp__caption">
+                <div class="pswp__caption__center"></div>
+            </div>
+
+        </div>
+
+    </div>
+
+
+</div>
+@section scripts
+{
+    <script type="text/html" id="tackTemplate">
+        <panel>
+            <heading>
+                <span data-bind="text:Start"></span>
+                <span data-bind="if: End">
+                    bis
+                    <span data-bind="text: End">
+                    </span>
+                </span>
+            </heading>
+            <panel-body>
+
+            </panel-body>
+        </panel>
+    </script>
+    <script src="~/js/viewmodels/home/map.js"></script>
+    <script src="~/lib/bootstrap-star-rating/js/star-rating.js"></script>
+    <script src="~/lib/bootstrap-star-rating/js/star-rating_locale_de.js"></script>
+}
+
+@section head
+{
+
+    <style type="text/css">
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .navbar > .container {
+            width: 100%;
+        }
+
+        .body-content {
+            bottom: 0;
+            padding: 0 !important;
+            position: absolute;
+            top: 51px;
+            width: 100% !important;
+        }
+    </style>
+}

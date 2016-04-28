@@ -1,0 +1,95 @@
+@import "mixins";
+@import "../lib/bootstrap/less/variables";
+
+
+@sidebar-width-lg: 25%;
+@sidebar-width-md: 40%;
+@sidebar-width-sm: 50%;
+@sidebar-width-xs: 100%;
+
+/*@sidebar-height-lg: 30%;
+@sidebar-height-md: 30%;
+@sidebar-height-sm: 40%;
+@sidebar-height-xs: 50%;*/
+
+@sidebar-height-lg: 320px;
+@sidebar-height-md: @sidebar-height-lg;
+@sidebar-height-sm: @sidebar-height-lg;
+@sidebar-height-xs: @sidebar-height-lg;
+
+
+.sidebar {
+    padding: 10px;
+
+    @media (max-width:@screen-xs-max) {
+        position: relative;
+        height: 0;
+        overflow: hidden;
+
+        &.active {
+            height: auto;
+        }
+    }
+
+    @media (min-width:@screen-sm-min) {
+        position: absolute;
+        top: 0;
+
+        &.active {
+            -moz-box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.4);
+            -webkit-box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.4);
+            box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.4);
+        }
+
+        &.hasBottomSidebar.right, &.hasBottomSidebar.left {
+            //.media-bottom(@sidebar-height-lg,@sidebar-height-md,@sidebar-height-sm,auto);
+            bottom:@sidebar-height-lg;
+        }
+
+        &.right {
+            .media-right(-@sidebar-width-lg,-@sidebar-width-md,-@sidebar-width-sm,0px);
+            .media-width(@sidebar-width-lg,@sidebar-width-md,@sidebar-width-sm,@sidebar-width-xs);
+            //.media-bottom(100%,100%,100%,0);
+            bottom: 0;
+            overflow: auto;
+            overflow-x: hidden;
+            overflow-y: auto;
+
+            &.active {
+                right: 0;
+                //.media-height(100%,100%,100%,auto);
+            }
+        }
+
+        &.left {
+            .media-left(-@sidebar-width-lg,-@sidebar-width-md,-@sidebar-width-sm,0px);
+            .media-width(@sidebar-width-lg,@sidebar-width-md,@sidebar-width-sm,@sidebar-width-xs);
+            //.media-height(100%,100%,100%,0);
+            overflow: auto;
+            bottom: 0;
+            overflow-x: hidden;
+            overflow-y: auto;
+
+            &.active {
+                left: 0;
+                //.media-height(100%,100%,100%,auto);
+            }
+        }
+
+        &.bottom {
+            top:auto;
+            overflow: auto;
+            overflow-x: auto;
+            overflow-y: hidden;
+            bottom: -@sidebar-height-lg;
+            width: 100%;
+            height: @sidebar-height-lg;
+
+            &.active {
+                //.media-top(100%-@sidebar-height-lg,100%-@sidebar-height-md,100%-@sidebar-height-sm,100%-@sidebar-height-xs);
+                //.media-min-height(@sidebar-height-lg,@sidebar-height-md,@sidebar-height-sm,@sidebar-height-xs);
+                bottom: 0;
+            }
+        }
+    }
+}

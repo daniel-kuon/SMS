@@ -1,0 +1,51 @@
+﻿@{
+    <h1>Personen</h1>
+    <table b-striped b-hover>
+        <thead>
+        <th>Vorname</th>
+        <th>Nachname</th>
+        <th style="text-align: right;"><button b-modal-target="personDetails">Hinzufügen</button></th>
+        </thead>
+        <tbody data-bind="foreach: People">
+        <tr>
+            <td data-bind="text: FirstName"></td>
+            <td data-bind="text: LastName"></td>
+            <td style="text-align: right;">
+                <button-group class="btn-group-sm">
+                    <button class="btn-danger" b-modal-target="deletePerson" data-bind="click: $root.SelectPerson">Entfernen</button>
+                    <button b-modal-target="personDetails" data-bind="click: $root.SelectPerson">Bearbeiten</button>
+                </button-group>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+    <div class="Modals">
+        <modal id="personDetails" static-backdrop data-bind="with: CurrentPerson">
+            <form>
+                <form-group>
+                    <input autofocus type="text" b-label="Vorname" data-bind="textInput: FirstName"/>
+                </form-group>
+                <form-group>
+                    <input b-label="Nachname" data-bind="textInput: LastName"/>
+                </form-group>
+            </form>
+            <footer>
+                <button b-dismiss-modal data-bind="click: $root.CancelEditPerson">Abbrechen</button>
+                <button data-bind="visible: Id, click: $root.SavePerson" class="btn-success">Speichern</button>
+                <button data-bind="visible: !Id(), click: $root.SavePerson" class="btn-success">Hinzufügen</button>
+            </footer>
+        </modal>
+        <modal id="deletePerson" data-bind="with: CurrentPerson">
+            <header>'<span data-bind="text: FullName"></span>' entfernen</header>
+            Soll die Person wirklich gelöscht werden?
+            <footer>
+                <button class="btn-danger" data-bind="click: $root.DeletePerson">Löschen</button>
+                <button b-dismiss-modal autofocus>Abbrechen</button>
+            </footer>
+        </modal>
+    </div>
+}
+@section scripts
+{
+    <script src="~/js/viewmodels/admin/persons.js"></script>
+}

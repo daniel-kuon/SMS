@@ -1,0 +1,79 @@
+@import "../lib/bootstrap/less/variables";
+
+.media(@large, @medium, @small, @extraSmall) {
+    @large();
+
+    @media (max-width: @screen-md-max) {
+        @medium();
+    }
+
+    @media (max-width: @screen-sm-max) {
+        @small();
+    }
+
+    @media (max-width: @screen-xs-max) {
+        @extraSmall();
+    }
+}
+
+.media-width(@large, @medium, @small, @extraSmall) {
+    .media( {width: @large;}, {width: @medium;}, {width: @small;}, {width: @extraSmall;});
+}
+.media-height(@large, @medium, @small, @extraSmall) {
+    .media( {height: @large;}, {height: @medium;}, {height: @small;}, {height: @extraSmall;});
+}
+.media-left(@large, @medium, @small, @extraSmall) {
+    .media( {left: @large;}, {left: @medium;}, {left: @small;}, {left: @extraSmall;});
+}
+.media-right(@large, @medium, @small, @extraSmall) {
+    .media( {right: @large;}, {right: @medium;}, {right: @small;}, {right: @extraSmall;});
+}
+.media-bottom(@large, @medium, @small, @extraSmall) {
+    .media( {bottom: @large;}, {bottom: @medium;}, {bottom: @small;}, {bottom: @extraSmall;});
+}
+.media-top(@large, @medium, @small, @extraSmall) {
+    .media( {top: @large;}, {top: @medium;}, {top: @small;}, {top: @extraSmall;});
+}
+.media-margin(@large, @medium, @small, @extraSmall) {
+    .media( {margin: @large;}, {margin: @medium;}, {margin: @small;}, {margin: @extraSmall;});
+}
+.media-margin-left(@large, @medium, @small, @extraSmall) {
+    .media( {margin-left: @large;}, {margin-left: @medium;}, {margin-left: @small;}, {margin-left: @extraSmall;});
+}
+.media-margin-right(@large, @medium, @small, @extraSmall) {
+    .media( {margin-right: @large;}, {margin-right: @medium;}, {margin-right: @small;}, {margin-right: @extraSmall;});
+}
+.media-margin-top(@large, @medium, @small, @extraSmall) {
+    .media( {margin-top: @large;}, {margin-top: @medium;}, {margin-top: @small;}, {margin-top: @extraSmall;});
+}
+.media-margin-bottom(@large, @medium, @small, @extraSmall) {
+    .media( {margin-bottom: @large;}, {margin-bottom: @medium;}, {margin-bottom: @small;}, {margin-bottom: @extraSmall;});
+}
+
+.media-padding(@large, @medium, @small, @extraSmall) {
+    .media( {padding: @large;}, {padding: @medium;}, {padding: @small;}, {padding: @extraSmall;});
+}
+.media-padding-left(@large, @medium, @small, @extraSmall) {
+    .media( {padding-left: @large;}, {padding-left: @medium;}, {padding-left: @small;}, {padding-left: @extraSmall;});
+}
+.media-padding-right(@large, @medium, @small, @extraSmall) {
+    .media( {padding-right: @large;}, {padding-right: @medium;}, {padding-right: @small;}, {padding-right: @extraSmall;});
+}
+.media-padding-top(@large, @medium, @small, @extraSmall) {
+    .media( {padding-top: @large;}, {padding-top: @medium;}, {padding-top: @small;}, {padding-top: @extraSmall;});
+}
+.media-padding-bottom(@large, @medium, @small, @extraSmall) {
+    .media( {padding-bottom: @large;}, {padding-bottom: @medium;}, {padding-bottom: @small;}, {padding-bottom: @extraSmall;});
+}
+.media-min-height(@large, @medium, @small, @extraSmall) {
+    .media( {min-height: @large;}, {min-height: @medium;}, {min-height: @small;}, {min-height: @extraSmall;});
+}
+.media-max-height(@large, @medium, @small, @extraSmall) {
+    .media( {max-height: @large;}, {max-height: @medium;}, {max-height: @small;}, {max-height: @extraSmall;});
+}
+.media-min-width(@large, @medium, @small, @extraSmall) {
+    .media( {min-width: @large;}, {min-width: @medium;}, {min-width: @small;}, {min-width: @extraSmall;});
+}
+.media-max-width(@large, @medium, @small, @extraSmall) {
+    .media( {max-width: @large;}, {max-width: @medium;}, {max-width: @small;}, {max-width: @extraSmall;});
+}

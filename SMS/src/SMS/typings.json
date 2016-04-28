@@ -1,0 +1,18 @@
+{
+  "name": "sms",
+  "version": "0.0.1",
+  "ambientDependencies": {
+    "bootstrap": "github:DefinitelyTyped/DefinitelyTyped/bootstrap/bootstrap.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
+    "dropzone": "github:DefinitelyTyped/DefinitelyTyped/dropzone/dropzone.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
+    "jquery": "github:DefinitelyTyped/DefinitelyTyped/jquery/jquery.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
+    "jqueryui": "registry:dt/jqueryui#1.9.0+20160317120654",
+    "knockout": "github:DefinitelyTyped/DefinitelyTyped/knockout/knockout.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
+    "knockout.validation": "github:DefinitelyTyped/DefinitelyTyped/knockout.validation/knockout.validation.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
+    "leaflet": "github:DefinitelyTyped/DefinitelyTyped/leaflet/leaflet.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
+    "leaflet-label": "github:DefinitelyTyped/DefinitelyTyped/leaflet-label/leaflet-label.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
+    "leaflet-markercluster": "registry:dt/leaflet-markercluster#0.4.0+20160317120654",
+    "mapbox": "github:DefinitelyTyped/DefinitelyTyped/mapbox/mapbox.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
+    "moment": "registry:dt/moment#2.8.0+20160316155526",
+    "photoswipe": "github:DefinitelyTyped/DefinitelyTyped/photoswipe/photoswipe.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9"
+  }
+}

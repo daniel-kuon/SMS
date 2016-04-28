@@ -1,0 +1,34 @@
+{
+  "name": "moment-datepicker",
+  "version": "1.2.0",
+  "main": [
+    "./moment-datepicker/moment-datepicker.js",
+    "./moment-datepicker/datepicker.css"
+  ],
+  "ignore": [
+    ".gitignore",
+    "Content",
+    "index.html",
+    "MomentDatepicker.csproj",
+    "MomentDatepicker.sln",
+    "nuget",
+    "packages",
+    "packages.config",
+    "Scripts",
+    "web.config"
+  ],
+  "dependencies": {
+    "jquery": ">= 2.0.3",
+    "moment": ">= 2.10.6"
+  },
+  "homepage": "https://github.com/MakingSense/moment-datepicker",
+  "_release": "1.2.0",
+  "_resolution": {
+    "type": "version",
+    "tag": "v1.2.0",
+    "commit": "1dba09981900666f7f54a53300a9493e25b3376b"
+  },
+  "_source": "https://github.com/MakingSense/moment-datepicker.git",
+  "_target": "1.2.0",
+  "_originalSource": "moment-datepicker"
+}

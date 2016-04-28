@@ -1,0 +1,121 @@
+﻿@using System.Threading.Tasks
+@using Microsoft.ApplicationInsights.Extensibility
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>@ViewData["Title"] - SMS</title>
+
+    <environment names="Development">
+        <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.css" />
+        <link rel="stylesheet" href="~/css/site.css" />
+        <link href="~/lib/leaflet/dist/leaflet.css" rel="stylesheet" />
+        <link href="~/lib/mapbox.js/mapbox.css" rel="stylesheet" />
+        <link href="~/lib/photoswipe/dist/photoswipe.css" rel="stylesheet" />
+        <link href="~/lib/photoswipe/dist/default-skin/default-skin.css" rel="stylesheet" />
+        <link href="~/lib/leaflet.label/dist/leaflet.label.css" rel="stylesheet" />
+        <link href="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu.css" rel="stylesheet" />
+        <link href="~/lib/moment-datepicker/moment-datepicker/datepicker2.css" rel="stylesheet" />
+        <link href="~/lib/bootstrap-multiselect/dist/css/bootstrap-multiselect.css" rel="stylesheet" />
+    </environment>
+    <link href="~/lib/dropzone/dist/dropzone.css" rel="stylesheet" />
+    @*<link href="~/lib/dropzone/dist/basic.css" rel="stylesheet" />*@
+    <style type="text/css">
+        .waypoint:hover, .waypoint.hover {
+            /*-ms-opacity: 1 !important;*/
+            /*opacity: 1 !important;*/
+            width: 16px !important;
+            height: 16px !important;
+            margin-top: -8px !important;
+            margin-left: -8px !important;
+        }
+
+        .waypoint.expose {
+            -ms-opacity: 1 !important;
+            opacity: 1 !important;
+            width: 24px !important;
+            height: 24px !important;
+            margin-top: -12px !important;
+            margin-left: -12px !important;
+        }
+    </style>
+    <environment names="Staging,Production">
+        <link rel="stylesheet" href="https://ajax.aspnetcdn.com/ajax/bootstrap/3.3.5/css/bootstrap.min.css"
+              asp-fallback-href="~/lib/bootstrap/dist/css/bootstrap.min.css"
+              asp-fallback-test-class="sr-only" asp-fallback-test-property="position" asp-fallback-test-value="absolute" />
+        <link rel="stylesheet" href="~/css/site.min.css" asp-append-version="true" />
+    </environment>
+    @Html.ApplicationInsightsJavaScript(TelemetryConfiguration)
+    @RenderSection("head", required: false)
+</head>
+<body>
+    <navbar fixed position="BootstrapTagHelpers.Navigation.NavbarPosition.FixedTop">
+        <brand>
+            Allet Jute
+        </brand>
+        <navbar-nav>
+            <nav-item href="/">Start</nav-item>
+            <nav-item href="/Home/Jobs">Aufgaben</nav-item>
+        </navbar-nav>
+        <navbar-nav b-navbar-right>
+            <dropdown text="Admin">
+                <a href="/admin/map">Karte</a>
+                <a href="/admin/people">Personen</a>
+                <a b-modal-target="jobOverviewModal">Aufgaben</a>
+            </dropdown>
+        </navbar-nav>
+        @await Html.PartialAsync("_LoginPartial")
+    </navbar>
+    <div class="container body-content">
+        @RenderBody()
+        <hr />
+        <footer>
+            <p>&copy; 2016 - SMS</p>
+        </footer>
+    </div>
+
+    <environment names="Development">
+        <script src="~/lib/jquery/dist/jquery.js"></script>
+        <script src="~/lib/jquery-ui/ui/effect.js"></script>
+        <script src="~/lib/bootstrap/dist/js/bootstrap.js"></script>
+        <script src="~/js/sidebars.js"></script>
+        @*<script src="~/js/site.js" asp-append-version="true"></script>*@
+        @*<script src="~/lib/leaflet/dist/leaflet-src.js"></script>*@
+        <script src="~/lib/mapbox.js/mapbox.js"></script>
+        <script src="~/lib/leaflet.label/dist/leaflet.label-src.js"></script>
+        <script src="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu-src.js"></script>
+        <script src="~/lib/knockout/dist/knockout.debug.js"></script>
+        <script src="~/lib/moment/moment.js"></script>
+        <script src="~/lib/knockout-moment/knockout.moment.js"></script>
+        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker.js"></script>
+        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker-ko.js"></script>
+        <script src="~/lib/parsleyjs/dist/parsley.js"></script>
+        <script src="~/lib/parsleyjs/dist/i18n/de.js"></script>
+        <script src="~/lib/tinymce/tinymce.js"></script>
+        <script src="~/js/servermodel.js"></script>
+        <script src="~/js/serverapi.js"></script>
+        <script src="~/js/clientmodel.js"></script>
+        <script src="~/lib/moment/locale/de.js"></script>
+        <script src="~/lib/dropzone/dist/dropzone.js"></script>
+        <script src="~/lib/photoswipe/dist/photoswipe.js"></script>
+        <script src="~/lib/photoswipe/dist/photoswipe-ui-default.js"></script>
+        <script src="~/lib/bootstrap-multiselect/dist/js/bootstrap-multiselect.js"></script>
+    </environment>
+    <environment names="Staging,Production">
+        <script src="https://ajax.aspnetcdn.com/ajax/jquery/jquery-2.1.4.min.js"
+                asp-fallback-src="~/lib/jquery/dist/jquery.min.js"
+                asp-fallback-test="window.jQuery">
+        </script>
+        <script src="https://ajax.aspnetcdn.com/ajax/bootstrap/3.3.5/bootstrap.min.js"
+                asp-fallback-src="~/lib/bootstrap/dist/js/bootstrap.min.js"
+                asp-fallback-test="window.jQuery && window.jQuery.fn && window.jQuery.fn.modal">
+        </script>
+        @*<script src="~/js/site.min.js" asp-append-version="true"></script>*@
+    </environment>
+
+
+
+    @RenderSection("scripts", required: false)
+</body>
+</html>
