@@ -14,14 +14,14 @@ namespace SMS.Models
 
 
         public double Rating { get; set; }
-        public override Album Album { get; set; }=new Album();
+        public override Album Album { get; set; } = new Album();
         public LocationType Type { get; set; }
 
         public override bool RemoveFromContext(SmsDbContext context)
         {
             if (!base.RemoveFromContext(context))
                 return false;
-            (Address ?? new Address() {Id = AddressId}).RemoveFromContext(context);
+            (Address ?? new Address() { Id = AddressId }).RemoveFromContext(context);
             return true;
         }
 
@@ -29,8 +29,7 @@ namespace SMS.Models
         {
             if (!base.AddOrUpdate(context))
                 return false;
-            if (Id == null)
-                Address.AddOrUpdate(context);
+            Address.AddOrUpdate(context);
             return true;
         }
     }

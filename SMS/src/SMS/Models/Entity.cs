@@ -24,22 +24,20 @@ namespace SMS.Models
 
         public virtual bool RemoveFromContext(SmsDbContext context)
         {
-            if (Id==null || context.Entry(this).State == EntityState.Deleted)
+            if (Id == null || context.Entry(this).State == EntityState.Deleted)
                 return false;
             context.Remove(this);
             Comments.ForEach(c => c.RemoveFromContext(context));
-            (Album??new Album() {Id = AlbumId})?.RemoveFromContext(context);
+            (Album ?? new Album() { Id = AlbumId })?.RemoveFromContext(context);
             return true;
         }
 
         public virtual bool AddOrUpdate(SmsDbContext context)
         {
-            if (Id == 0)
+            if (Id == null)
             {
                 if (context.Entry(this).State == EntityState.Added)
                     return false;
-                Album?.AddOrUpdate(context);
-                Comments.ForEach(c => c.AddOrUpdate(context));
                 context.Add(this);
             }
             else
@@ -48,6 +46,8 @@ namespace SMS.Models
                     return false;
                 context.Update(this);
             }
+            Album?.AddOrUpdate(context);
+            Comments.ForEach(c => c.AddOrUpdate(context));
             return true;
         }
 

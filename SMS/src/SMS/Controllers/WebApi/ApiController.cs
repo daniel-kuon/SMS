@@ -56,8 +56,8 @@ namespace SMS.Controllers.WebApi
                 return HttpBadRequest();
             }
 
-            Context.Update(entity);
 
+            entity.AddOrUpdate(Context);
             try
             {
                 await Context.SaveChangesAsync();
@@ -73,8 +73,8 @@ namespace SMS.Controllers.WebApi
                     throw;
                 }
             }
-
-            return new HttpStatusCodeResult(StatusCodes.Status204NoContent);
+            return Ok(entity);
+            //return new HttpStatusCodeResult(StatusCodes.Status204NoContent);
         }
 
 
@@ -87,7 +87,7 @@ namespace SMS.Controllers.WebApi
                 return HttpBadRequest(ModelState);
             }
 
-            Context.Add(entity);
+            entity.AddOrUpdate(Context);
             try
             {
                 await Context.SaveChangesAsync();
@@ -120,7 +120,7 @@ namespace SMS.Controllers.WebApi
                 return HttpNotFound();
             }
 
-            Context.Remove(entity);
+            entity.RemoveFromContext(Context);
             await Context.SaveChangesAsync();
 
             return Ok(entity);

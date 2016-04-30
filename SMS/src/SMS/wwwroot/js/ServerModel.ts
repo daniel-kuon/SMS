@@ -88,6 +88,11 @@
         Images: Array<Image>;
     }
 
+    export class AlbumImage {
+        ImageId: number;
+        AlbumId:number;
+    }
+
     export class WaypointTack {
         WaypointId: number;
         Index: number;

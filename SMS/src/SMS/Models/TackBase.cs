@@ -35,7 +35,7 @@ namespace SMS.Models
 
         private void FixPersons()
         {
-            Crew.AddRange(Persons.Select(p => new Crew() { Person = p, PersonId = p.Id, Tack = this, TackId = Id }));
+            Crew.AddRange(Persons.Select(p => new Crew() { PersonId = p.Id, Tack = this, TackId = Id }));
         }
 
         public override bool RemoveFromContext(SmsDbContext context)
@@ -50,11 +50,8 @@ namespace SMS.Models
 
             if (!base.AddOrUpdate(context))
                 return false;
-            if (Id == null)
-            {
-                FixPersons();
-                Crew.ForEach(c => AddOrUpdate(context));
-            }
+            FixPersons();
+            Crew.ForEach(c => AddOrUpdate(context));
             return true;
         }
     }

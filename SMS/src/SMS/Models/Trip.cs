@@ -17,7 +17,7 @@ namespace SMS.Models
         {
             if (!base.RemoveFromContext(context))
                 return false;
-            context.Set<Tack>().Where(t=>t.TripId==Id).ToList().ForEach(t=>t.RemoveFromContext(context));
+            context.Set<Tack>().Where(t => t.TripId == Id).ToList().ForEach(t => t.RemoveFromContext(context));
             return true;
         }
 
@@ -25,8 +25,7 @@ namespace SMS.Models
         {
             if (!base.AddOrUpdate(context))
                 return false;
-            if (Id==null)
-                Tacks.ForEach(t=>t.AddOrUpdate(context));
+            Tacks.ForEach(t => t.AddOrUpdate(context));
             return true;
         }
     }

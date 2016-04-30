@@ -1,4 +1,6 @@
-﻿module ServerApi {
+﻿import WaypointConnection = ServerModel.WaypointConnection;
+
+module ServerApi {
     import Entity = ServerModel.Entity;
     import Harbour = ServerModel.Harbour;
     import Waypoint = ServerModel.Waypoint;
@@ -16,6 +18,7 @@
     import Supermarket = ServerModel.Supermarket;
     import Comment = ServerModel.Comment;
     import CommentList = ServerModel.CommentList;
+    import AlbumImage= ServerModel.AlbumImage;
 
     export enum HttpMethod {
         POST,
@@ -74,6 +77,45 @@
             }).always(() => {
                 Api.conntectionCount(Api.conntectionCount() - 1);
             });
+        }
+    }
+
+    export class AlbumImageApi {
+
+        constructor(public baseUrl: string) {
+
+        }
+
+        BuildRequestBody(url: string, method: HttpMethod, data?: any): JQueryAjaxSettings {
+            return {
+                contentType: "application/json; charset=utf-8",
+                dataType: "json",
+                method: HttpMethod[method],
+                url: this.baseUrl + "/" + url,
+                data: JSON.stringify(data)
+            };
+        }
+
+        Get(): JQueryPromise<AlbumImage[]>{
+                return this.CreateRequest(this.BuildRequestBody("", HttpMethod.GET));
+        }
+
+        protected CreateRequest(body: JQueryAjaxSettings): JQueryPromise<AlbumImage[]> {
+            Api.conntectionCount(Api.conntectionCount() + 1);
+            return $.ajax(body).fail(d => {
+                alert(d);
+                console.log(d);
+            }).always(() => {
+                Api.conntectionCount(Api.conntectionCount() - 1);
+            });
+        }
+
+        private static default: AlbumImageApi;
+
+        static GetDefault(): AlbumImageApi {
+            if (this.default === undefined)
+                this.default = new AlbumImageApi("/api/AlbumImages");
+            return this.default;
         }
     }
 

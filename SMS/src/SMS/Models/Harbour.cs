@@ -20,7 +20,7 @@ namespace SMS.Models
         {
             if (!base.RemoveFromContext(context))
                 return false;
-            context.Set<Location>().Where(l=>l.HarbourId==Id).ToList().ForEach(l => l.RemoveFromContext(context));
+            context.Set<Location>().Where(l => l.HarbourId == Id).ToList().ForEach(l => l.RemoveFromContext(context));
             return true;
         }
 
@@ -28,8 +28,7 @@ namespace SMS.Models
         {
             if (!base.AddOrUpdate(context))
                 return false;
-            if (Id == null)
-                Locations.ForEach(l => l.AddOrUpdate(context));
+            Locations.ForEach(l => l.AddOrUpdate(context));
             return true;
         }
     }

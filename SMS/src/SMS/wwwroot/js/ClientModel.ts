@@ -22,18 +22,28 @@ module ClientModel {
     import SComment = ServerModel.Comment;
     import SCommentList = ServerModel.CommentList;
 
-    export abstract class Entity<T extends ServerModel.Entity> {
+    export interface IEntity {
+        Id: KnockoutObservable<number>;
+        ClientId: number;
+    }
+
+    export abstract class Entity<T extends ServerModel.Entity> implements IEntity {
+        constructor() {
+            Entity.EntityDB[this.ClientId.toString()] = this;
+        }
 
         Id = ko.observable<number>();
         AlbumId = ko.observable<number>();
         CommentListId = ko.observable<number>();
-        Album = ko.observable<Album>();
+        Album = CreateObservable<Album>({ AddTransferMode: TransferMode.Include, UpdateTransferMode: TransferMode.Include });
         CommentList = ko.observable<CommentList>();
 
 
-        private static ClientIdCounter = 0;
 
-        private clientId =++Entity.ClientIdCounter;
+        private static ClientIdCounter = 0;
+        private static EntityDB = {};
+
+        ClientId = ++Entity.ClientIdCounter;
 
         protected ServerApi: ServerApi.Api<T>;
 
@@ -49,33 +59,41 @@ module ClientModel {
                         this.LoadFromServerEntity(data);
                     });
             return this.ServerApi.Update(this.ConvertToServerEntity())
-                .done(() => {
+                .done((data) => {
                     this.savedState = undefined;
+                    this.LoadFromServerEntity(data);
                 });;
         }
 
         LoadFromServerEntity(serverEntity: T): this {
             for (let prop of this.GetObservableNames()) {
                 const sVal = serverEntity[prop];
-                if (sVal !== undefined && sVal !== null && !(sVal instanceof Array)) {
-                    const cVal = this[prop]();
-                    if (cVal instanceof Entity)
-                        cVal.LoadFromServerEntity(sVal);
-                    else
-                        this[prop](sVal);
+                if (sVal !== undefined && sVal !== null) {
+                    if (sVal instanceof Array) {
+                        for (let obj of sVal) {
+                            var entity = Entity.EntityDB[obj.ClientId.toString()];
+                            if (entity !== undefined)
+                                entity.LoadFromServerEntity(obj);
+                        }
+                    } else {
+                        const cVal = this[prop]();
+                        if (cVal instanceof Entity)
+                            cVal.LoadFromServerEntity(sVal);
+                        else
+                            this[prop](sVal);
+                    }
                 }
             }
             return this;
         }
 
         ConvertToServerEntity(idOnly: boolean = false): T {
-            const serverEntity = {ClientId:this.clientId};
+            const serverEntity = { ClientId: this.ClientId };
             const entity = this;
-
             for (let propName of this.GetObservableNames()) {
                 const prop = entity[propName];
                 const val = prop();
-                if (val !== undefined && !(val instanceof Array)) {
+                if (val !== undefined) {
                     if (val instanceof Array) {
                         const arr = new Array<T>();
                         for (let elem of val) {
@@ -158,6 +176,10 @@ module ClientModel {
         ServerApi = ServerApi.AlbumApi.GetDefault();
     }
 
+    export class AlbumImage {
+        
+    }
+
     export class CommentList extends Entity<SCommentList> {
         CreateServerEntity(): SCommentList {
             return new SCommentList();
@@ -176,7 +198,7 @@ module ClientModel {
         LastName = ko.observable<string>();
         FirstName = ko.observable<string>();
         FullName = ko.computed(() => this.FirstName() + " " + this.LastName());
-        
+
     }
 
     export class Job extends Entity<SJob> {
@@ -344,7 +366,7 @@ module ClientModel {
         private polylines = new Array<L.Polyline>();
 
 
-        SetLatLng(latLng: L.LatLng, updatePolylines=true): void {
+        SetLatLng(latLng: L.LatLng, updatePolylines = true): void {
             this.LatLng.lat = latLng.lat;
             this.LatLng.lng = latLng.lng;
             this.Latitude(latLng.lat);
@@ -462,11 +484,9 @@ module ClientModel {
 
     export class Image extends Entity<SImage> {
 
-        ParentAlbumId = ko.observable<number>();
         Path = ko.observable<string>();
         Height = ko.observable<number>();
         Width = ko.observable<number>();
-        Width2 = ko.observable<number>();
 
         CreateServerEntity(): ServerModel.Image {
             return new ServerModel.Image();
@@ -511,7 +531,7 @@ module ClientModel {
             deferEvaluation: true
         });
 
-        ComputePlaceholder=ko.computed(():string=> {
+        ComputePlaceholder = ko.computed((): string => {
             if (this.StartDate() !== undefined)
                 return moment(this.StartDate()).format("L");
             return "";

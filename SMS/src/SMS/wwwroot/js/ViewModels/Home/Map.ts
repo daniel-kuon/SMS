@@ -561,6 +561,13 @@ class MapViewModel {
                 this.AlbumsLoaded = true;
                 this.InitializeModel();
             });
+        ServerApi.AlbumImageApi.GetDefault().Get().done(d => {
+            for (let ai of d) {
+                this.AlbumImages.push(ai);
+            }
+            this.AlbumImagesLoaded = true;
+            this.InitializeModel();
+        })
         //ServerApi.WaypointTackApi.GetDefault().Get().done(d => {
         //    for (let sEntity of d) { this.WaypointTacks.push(new ClientModel.WaypointTack().LoadFromServerEntity(sEntity)); }
         //    this.WaypointTacksLoaded = true;
@@ -602,7 +609,8 @@ class MapViewModel {
             this.AlbumsLoaded &&
             //this.WaypointTacksLoaded &&
             this.TacksLoaded &&
-            this.LocationsLoaded) {
+            this.LocationsLoaded &&
+            this.AlbumImagesLoaded) {
             for (let entity of this.Jobs()) {
                 if (entity.AssignedToId() !== undefined)
                     entity.AssignedTo(this.GetPersonById(entity.AssignedToId()));
@@ -620,8 +628,8 @@ class MapViewModel {
                 entity.Address(this.GetAddressById(entity.AddressId()));
                 this.GetHarbourById(entity.HarbourId()).Locations.push(entity);
             }
-            for (let entity of this.Images()) {
-                this.GetAlbumById(entity.ParentAlbumId()).Images.push(entity);
+            for (let entity of this.AlbumImages()) {
+                this.GetAlbumById(entity.AlbumId).Images.push(this.GetImageById(entity.ImageId));
             }
             for (let connection of mapViewModel.WaypointConnections()) {
                 const polyline = mapViewModel.AddPolyline([
@@ -756,6 +764,7 @@ class MapViewModel {
     WaypointTacksLoaded = false;
     TacksLoaded = false;
     LocationsLoaded = false;
+    AlbumImagesLoaded = false;
 
     Waypoints = ko.observableArray<ClientModel.Waypoint>();
     WaypointConnections = ko.observableArray<ServerModel.WaypointConnection>();
@@ -770,6 +779,7 @@ class MapViewModel {
     Supermarkets = ko.observableArray<ClientModel.Supermarket>();
     Restaurants = ko.observableArray<ClientModel.Restaurant>();
     Albums = ko.observableArray<ClientModel.Album>();
+    AlbumImages = ko.observableArray<ServerModel.AlbumImage>();
 
 
     SelectedWaypoint = ko.observable<ClientModel.Waypoint>();

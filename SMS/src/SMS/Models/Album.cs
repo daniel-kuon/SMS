@@ -24,7 +24,7 @@ namespace SMS.Models
         {
             foreach (var image in Images)
             {
-                AlbumImages.Add(new AlbumImage() { Album = this, Image = image, ImageId = image.Id, AlbumId = Id});
+                AlbumImages.Add(new AlbumImage() { Album = this, Image = image, ImageId = image.Id, AlbumId = Id });
             }
         }
 
@@ -33,7 +33,7 @@ namespace SMS.Models
             if (!base.RemoveFromContext(context))
                 return false;
             FixImages();
-            context.Set<AlbumImage>().Where(aI=>aI.AlbumId==Id).ToList().ForEach(aI => aI.RemoveFromContext(context));
+            context.Set<AlbumImage>().Where(aI => aI.AlbumId == Id).ToList().ForEach(aI => aI.RemoveFromContext(context));
             return true;
         }
 
@@ -41,11 +41,8 @@ namespace SMS.Models
         {
             if (!base.AddOrUpdate(context))
                 return false;
-            if (Id == null)
-            {
-                FixImages();
-                AlbumImages.ForEach(aI => aI.AddOrUpdate(context));
-            }
+            FixImages();
+            AlbumImages.ForEach(aI => aI.AddOrUpdate(context));
             return true;
         }
     }
