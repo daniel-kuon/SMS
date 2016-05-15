@@ -1,395 +1,197 @@
-﻿import WaypointConnection = ServerModel.WaypointConnection;
+﻿import Entity = ServerModel.Entity;
+import WaypointConnection = ServerModel.WaypointConnection;
+import WaypointTack = ServerModel.WaypointTack;
+import AlbumImage = ServerModel.AlbumImage;
 
-module ServerApi {
-    import Entity = ServerModel.Entity;
-    import Harbour = ServerModel.Harbour;
-    import Waypoint = ServerModel.Waypoint;
-    import Person = ServerModel.Person;
-    import Job = ServerModel.Job;
-    import Trip = ServerModel.Trip;
-    import WaypointConnection = ServerModel.WaypointConnection;
-    import Tack = ServerModel.Tack;
-    import Address = ServerModel.Address;
-    import Image = ServerModel.Image;
-    import Album = ServerModel.Album;
-    import WaypointTack = ServerModel.WaypointTack;
-    import Location = ServerModel.Location;
-    import Restaurant = ServerModel.Restaurant;
-    import Supermarket = ServerModel.Supermarket;
-    import Comment = ServerModel.Comment;
-    import CommentList = ServerModel.CommentList;
-    import AlbumImage= ServerModel.AlbumImage;
+enum HttpMethod {
+    POST,
+    GET,
+    PUT,
+    DELETE
+}
 
-    export enum HttpMethod {
-        POST,
-        GET,
-        PUT,
-        DELETE
+class AlbumImageApi {
+
+    constructor(public baseUrl: string) {
+
     }
 
-    export abstract class Api<T extends Entity> {
-        static conntectionCount = ko.observable(0);
+    Get(): JQueryPromise<AlbumImage[]> {
+        return ServerApi.CreateRequest(ServerApi.BuildRequestBody(this.baseUrl, HttpMethod.GET));
+    }
 
-        static connectionOpen=ko.computed(() => {
-            return Api.conntectionCount() > 0;
+}
+
+class CrewApi {
+
+    constructor(public baseUrl: string) {
+
+    }
+
+    Get(): JQueryPromise<ServerModel.Crew[]> {
+        return ServerApi.CreateRequest(ServerApi.BuildRequestBody(this.baseUrl, HttpMethod.GET));
+    }
+
+}
+
+abstract class ConnectionApi<T> {
+
+    Get(): JQueryPromise<T[]> {
+        return ServerApi.CreateRequest<T[]>(ServerApi.BuildRequestBody("", HttpMethod.GET));
+    }
+
+    Connect(id1: number, id2: number): JQueryPromise<T> {
+        return ServerApi.CreateRequest<T>(ServerApi.BuildRequestBody(id1 + "/" + id2, HttpMethod.POST));
+    }
+
+    Disconnect(id1: number, id2: number): JQueryPromise<T> {
+        return ServerApi.CreateRequest<T>(ServerApi.BuildRequestBody(id1 + "/" + id2, HttpMethod.DELETE));
+    }
+
+    constructor(public baseUrl: string) {
+
+    }
+
+}
+
+class WaypointConnectionApi {
+
+    Get(): JQueryPromise<WaypointConnection[]> {
+        return ServerApi.CreateRequest<WaypointConnection[]>(ServerApi.BuildRequestBody(this.baseUrl, HttpMethod.GET));
+    }
+
+    Connect(id1: number, id2: number): JQueryPromise<WaypointConnection> {
+        return ServerApi.CreateRequest<WaypointConnection>(ServerApi.BuildRequestBody(this.baseUrl + "/" + id1 + "/" + id2, HttpMethod.POST));
+    }
+    Disconnect(id: number): JQueryPromise<WaypointConnection>;
+    Disconnect(id1: number, id2: number): JQueryPromise<WaypointConnection>;
+    Disconnect(id1: number, id2?: number): JQueryPromise<WaypointConnection> {
+        if (id2 !== undefined)
+            return ServerApi.CreateRequest<WaypointConnection>(ServerApi.BuildRequestBody(this.baseUrl + "/" + id1 + "/" + id2, HttpMethod.DELETE));
+        return ServerApi.CreateRequest<WaypointConnection>(ServerApi.BuildRequestBody(this.baseUrl + "/" + id1.toString(), HttpMethod.DELETE));
+    }
+
+    constructor(public baseUrl: string) {
+
+    }
+}
+
+class ServerApi {
+    private static conntectionCount = ko.observable(0);
+
+    private static connectionOpen = ko.computed(() => {
+        return ServerApi.conntectionCount() > 0;
+    });
+
+    constructor(public baseUrl: string) {
+
+    }
+
+    static BuildRequestBody(url: string, method: HttpMethod, data?: any): JQueryAjaxSettings {
+        return {
+            contentType: "application/json; charset=utf-8",
+            dataType: "json",
+            method: HttpMethod[method],
+            url: url,
+            data: JSON.stringify(data)
+        };
+    }
+
+    Get(): JQueryPromise<Entity[]>;
+    Get(id: number): JQueryPromise<Entity>;
+    Get(id?: number): any {
+        if (id === undefined)
+            return ServerApi.CreateRequest<Entity[]>((ServerApi.BuildRequestBody(this.baseUrl, HttpMethod.GET)));
+        else
+            return ServerApi.CreateRequest<Entity>((ServerApi.BuildRequestBody(this.baseUrl + "/" + id.toString(), HttpMethod.GET)));
+    }
+
+    Delete(id: number): JQueryPromise<Entity> {
+        return ServerApi.CreateRequest<Entity>((ServerApi.BuildRequestBody(this.baseUrl + "/" + id.toString(), HttpMethod.DELETE)));
+    }
+
+    Create(entity: Entity): JQueryPromise<Entity> {
+        return ServerApi.CreateRequest<Entity>((ServerApi.BuildRequestBody(this.baseUrl, HttpMethod.POST, entity)));
+    }
+
+    Update(entity: Entity): JQueryPromise<Entity> {
+        return ServerApi.CreateRequest<Entity>(ServerApi.BuildRequestBody(this.baseUrl + "/" + entity.Id.toString(), HttpMethod.PUT, entity));
+    }
+
+    static CreateRequest<T>(body: JQueryAjaxSettings): JQueryPromise<T> {
+        ServerApi.conntectionCount(ServerApi.conntectionCount() + 1);
+        return $.ajax(body).fail(d => {
+            //alert(d);
+            alert("Es gab ein Fehler beim Verarbeiten der Daten auf dem Server. Bitte überprüfe deine Eingaben und versuche er erneut.");
+            console.log(d);
+        }).always(() => {
+            ServerApi.conntectionCount(ServerApi.conntectionCount() - 1);
         });
-
-        constructor(public baseUrl: string) {
-
-        }
-
-        BuildRequestBody(url: string, method: HttpMethod, data?: any): JQueryAjaxSettings {
-            return {
-                contentType: "application/json; charset=utf-8",
-                dataType: "json",
-                method: HttpMethod[method],
-                url: this.baseUrl + "/" + url,
-                data: JSON.stringify(data)
-            };
-        }
-
-        Get(): JQueryPromise<T[]>;
-        Get(id: number): JQueryPromise<T>;
-        Get(id?: number): any {
-            if (id === undefined)
-                return this.CreateRequest<T[]>((this.BuildRequestBody("", HttpMethod.GET)));
-            else
-                return this.CreateRequest<T>((this.BuildRequestBody(id.toString(), HttpMethod.GET)));
-        }
-
-        Delete(id: number): JQueryPromise<T> {
-            return this.CreateRequest<T>((this.BuildRequestBody(id.toString(), HttpMethod.DELETE)));
-        }
-
-        Create(entity: T): JQueryPromise<T> {
-            return this.CreateRequest<T>((this.BuildRequestBody("", HttpMethod.POST, entity)));
-        }
-
-        Update(entity: T): JQueryPromise<T> {
-            return this.CreateRequest<T>(this.BuildRequestBody(entity.Id.toString(), HttpMethod.PUT, entity));
-        }
-
-        protected CreateRequest<T>(body: JQueryAjaxSettings): JQueryPromise<T> {
-            Api.conntectionCount(Api.conntectionCount() + 1);
-            return $.ajax(body).fail(d => {
-                alert(d);
-                console.log(d);
-            }).always(() => {
-                Api.conntectionCount(Api.conntectionCount() - 1);
-            });
-        }
     }
 
-    export class AlbumImageApi {
 
-        constructor(public baseUrl: string) {
+    static Persons = new ServerApi("/api/People");
 
-        }
+    static Jobs = new ServerApi("/api/Jobs");
 
-        BuildRequestBody(url: string, method: HttpMethod, data?: any): JQueryAjaxSettings {
-            return {
-                contentType: "application/json; charset=utf-8",
-                dataType: "json",
-                method: HttpMethod[method],
-                url: this.baseUrl + "/" + url,
-                data: JSON.stringify(data)
-            };
-        }
+    static Trips = new ServerApi("/api/Trips");
 
-        Get(): JQueryPromise<AlbumImage[]>{
-                return this.CreateRequest(this.BuildRequestBody("", HttpMethod.GET));
-        }
+    static Tacks = new ServerApi("/api/Tacks");
 
-        protected CreateRequest(body: JQueryAjaxSettings): JQueryPromise<AlbumImage[]> {
-            Api.conntectionCount(Api.conntectionCount() + 1);
-            return $.ajax(body).fail(d => {
-                alert(d);
-                console.log(d);
-            }).always(() => {
-                Api.conntectionCount(Api.conntectionCount() - 1);
-            });
-        }
+    static Addresses = new ServerApi("/api/Addresses");
 
-        private static default: AlbumImageApi;
+    static Images = new ServerApi("/api/Images");
 
-        static GetDefault(): AlbumImageApi {
-            if (this.default === undefined)
-                this.default = new AlbumImageApi("/api/AlbumImages");
-            return this.default;
-        }
+    static Locations = new ServerApi("api/Locations");
+
+    //static Supermarkets = new EntityApi("/api/Supermarkets");
+    //static Restaurants = new EntityApi("/api/Restaurants");
+
+    static Harbours = new ServerApi("/api/Harbours");
+
+    static Albums = new ServerApi("/api/Albums");
+
+    static Comments = new ServerApi("/api/Comments");
+
+    static Waypoints = new ServerApi("/api/Waypoints");
+
+    static AlbumImages = new AlbumImageApi("/api/AlbumImages");
+
+    static Crews = new AlbumImageApi("/api/Crews");
+
+    static LogBookEntries = new ServerApi("/api/LogBookEntries");
+
+    static WaypointConnections = new WaypointConnectionApi("/api/WaypointConnections");
+
+    static GetApi(type: ClientModel.Entity): ServerApi {
+        if (type instanceof ClientModel.Person)
+            return ServerApi.Persons;
+        if (type instanceof ClientModel.Job)
+            return ServerApi.Jobs;
+        if (type instanceof ClientModel.Trip)
+            return ServerApi.Trips;
+        if (type instanceof ClientModel.Tack)
+            return ServerApi.Tacks;
+        if (type instanceof ClientModel.Address)
+            return ServerApi.Addresses;
+        if (type instanceof ClientModel.Image)
+            return ServerApi.Images;
+        if (type instanceof ClientModel.Location)
+            return ServerApi.Locations;
+        //if (type instanceof ClientModel.Supermarket)
+        //return ServerApi.Supermarkets;
+        //if (type instanceof ClientModel.Restaurant)
+        //return ServerApi.Restaurants;
+        if (type instanceof ClientModel.Harbour)
+            return ServerApi.Harbours;
+        if (type instanceof ClientModel.Album)
+            return ServerApi.Albums;
+        if (type instanceof ClientModel.Comment)
+            return ServerApi.Comments;
+        if (type instanceof ClientModel.Waypoint)
+            return ServerApi.Waypoints;
+        if (type instanceof ClientModel.LogBookEntry)
+            return ServerApi.LogBookEntries;
+        throw ("No suitable Api found");
     }
-
-    export abstract class ConnectionApi<T> {
-
-        Get(): JQueryPromise<T[]> {
-            return this.CreateRequest<T[]>(this.BuildRequestBody("", HttpMethod.GET));
-        }
-
-        Connect(id1: number, id2: number): JQueryPromise<T> {
-            return this.CreateRequest<T>(this.BuildRequestBody(id1 + "/" + id2, HttpMethod.POST));
-        }
-
-        Disconnect(id1: number, id2: number): JQueryPromise<T> {
-            return this.CreateRequest<T>(this.BuildRequestBody(id1 + "/" + id2, HttpMethod.DELETE));
-        }
-
-
-        protected CreateRequest<T>(body: JQueryAjaxSettings): JQueryPromise<T> {
-             Api.conntectionCount(Api.conntectionCount() + 1);
-            return $.ajax(body).fail(d => {
-                alert(d);
-                console.log(d);
-            }).always(() => {
-                Api.conntectionCount(Api.conntectionCount() - 1);
-            });
-        }
-
-
-        constructor(public baseUrl: string) {
-
-        }
-
-        BuildRequestBody(url: string, method: HttpMethod, data?: any): JQueryAjaxSettings {
-            return {
-                contentType: "application/json; charset=utf-8",
-                dataType: "json",
-                method: HttpMethod[method],
-                url: this.baseUrl + "/" + url,
-                data: JSON.stringify(data)
-            };
-        }
-
-    }
-
-    export class HarbourApi extends Api<Harbour> {
-
-        private static default: HarbourApi;
-
-        static GetDefault(): HarbourApi {
-            if (this.default === undefined)
-                this.default = new HarbourApi("/api/Harbours");
-            return this.default;
-        }
-
-    }
-
-    export class AlbumApi extends Api<Album> {
-
-        private static default: AlbumApi;
-
-        static GetDefault(): AlbumApi {
-            if (this.default === undefined)
-                this.default = new AlbumApi("/api/Albums");
-            return this.default;
-        }
-
-    }
-
-    export class CommentApi extends Api<Comment> {
-
-        private static default: CommentApi;
-
-        static GetDefault(): CommentApi {
-            if (this.default === undefined)
-                this.default = new CommentApi("/api/Comments");
-            return this.default;
-        }
-
-    }
-
-    export class CommentListApi extends Api<CommentList> {
-
-        private static default: CommentListApi;
-
-        static GetDefault(): CommentListApi {
-            if (this.default === undefined)
-                this.default = new CommentListApi("/api/CommentLists");
-            return this.default;
-        }
-
-    }
-
-    export class WaypointApi extends Api<Waypoint> {
-
-        private static default: WaypointApi;
-
-        static GetDefault(): WaypointApi {
-            if (this.default === undefined)
-                this.default = new WaypointApi("/api/Waypoints");
-            return this.default;
-        }
-    }
-
-    export class WaypointConnectionApi {
-
-        private static default: WaypointConnectionApi;
-
-        static GetDefault(): WaypointConnectionApi {
-            if (this.default === undefined)
-                this.default = new WaypointConnectionApi("/api/WaypointConnections");
-            return this.default;
-        }
-
-        Get(): JQueryPromise<WaypointConnection[]> {
-            return this.CreateRequest<WaypointConnection[]>(this.BuildRequestBody("", HttpMethod.GET));
-        }
-
-        Connect(id1: number, id2: number): JQueryPromise<WaypointConnection> {
-            return this.CreateRequest<WaypointConnection>(this.BuildRequestBody(id1 + "/" + id2, HttpMethod.POST));
-        }
-        Disconnect(id: number): JQueryPromise<WaypointConnection>;
-        Disconnect(id1: number, id2: number): JQueryPromise<WaypointConnection>;
-        Disconnect(id1: number, id2?: number): JQueryPromise<WaypointConnection> {
-            if (id2 !== undefined)
-                return this.CreateRequest<WaypointConnection>(this.BuildRequestBody(id1 + "/" + id2, HttpMethod.DELETE));
-            return this.CreateRequest<WaypointConnection>(this.BuildRequestBody(id1.toString(), HttpMethod.DELETE));
-        }
-
-        protected CreateRequest<T>(body: JQueryAjaxSettings): JQueryPromise<T> {
-            Api.conntectionCount(Api.conntectionCount() + 1);
-            return $.ajax(body).fail(d => {
-                alert(d);
-                console.log(d);
-            }).always(() => {
-                Api.conntectionCount(Api.conntectionCount() - 1);
-            });
-        }
-
-
-        constructor(public baseUrl: string) {
-
-        }
-
-        BuildRequestBody(url: string, method: HttpMethod, data?: any): JQueryAjaxSettings {
-            return {
-                contentType: "application/json; charset=utf-8",
-                dataType: "json",
-                method: HttpMethod[method],
-                url: this.baseUrl + "/" + url,
-                data: JSON.stringify(data)
-            };
-        }
-
-    }
-
-    export class PersonApi extends Api<Person> {
-
-        private static default: PersonApi;
-
-        static GetDefault(): PersonApi {
-            if (this.default === undefined)
-                this.default = new PersonApi("/api/People");
-            return this.default;
-        }
-
-    }
-
-    export class JobApi extends Api<Job> {
-
-        private static default: JobApi;
-
-        static GetDefault(): JobApi {
-            if (this.default === undefined)
-                this.default = new JobApi("/api/Jobs");
-            return this.default;
-        }
-
-    }
-
-    export class TripApi extends Api<Trip> {
-
-        private static default: TripApi;
-
-        static GetDefault(): TripApi {
-            if (this.default === undefined)
-                this.default = new TripApi("/api/Trips");
-            return this.default;
-        }
-
-    }
-
-    export class TackApi extends Api<Tack> {
-
-        private static default: TackApi;
-
-        static GetDefault(): TackApi {
-            if (this.default === undefined)
-                this.default = new TackApi("/api/Tacks");
-            return this.default;
-        }
-
-    }
-
-    export class AddressApi extends Api<Address> {
-
-        private static default: AddressApi;
-
-        static GetDefault(): AddressApi {
-            if (this.default === undefined)
-                this.default = new AddressApi("/api/Addresses");
-            return this.default;
-        }
-
-    }
-
-    export class ImageApi extends Api<Image> {
-
-        private static default: ImageApi;
-
-        static GetDefault(): ImageApi {
-            if (this.default === undefined)
-                this.default = new ImageApi("/api/Images");
-            return this.default;
-        }
-
-    }
-
-    export class LocationApi extends Api<Location> {
-
-        private static default: LocationApi;
-
-        static GetDefault(): LocationApi {
-            if (this.default === undefined)
-                this.default = new LocationApi("/api/Locations");
-            return this.default;
-        }
-
-    }
-
-    export class SupermarketApi extends Api<Supermarket> {
-
-        private static default: SupermarketApi;
-
-        static GetDefault(): SupermarketApi {
-            if (this.default === undefined)
-                this.default = new SupermarketApi("/api/Supermarkets");
-            return this.default;
-        }
-
-    }
-
-    export class RestaurantApi extends Api<Restaurant> {
-
-        private static default: RestaurantApi;
-
-        static GetDefault(): RestaurantApi {
-            if (this.default === undefined)
-                this.default = new RestaurantApi("/api/Restaurants");
-            return this.default;
-        }
-
-    }
-
-    //export class WaypointTackApi extends Api<WaypointTack> {
-
-    //    private static default: WaypointTackApi;
-
-    //    static GetDefault(): WaypointTackApi {
-    //        if (this.default === undefined)
-    //            this.default = new WaypointTackApi("/api/WaypointTacks");
-    //        return this.default;
-    //    }
-
-    //}
-
 }

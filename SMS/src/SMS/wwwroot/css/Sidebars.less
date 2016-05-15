@@ -20,6 +20,7 @@
 
 .sidebar {
     padding: 10px;
+    display:none;
 
     @media (max-width:@screen-xs-max) {
         position: relative;
@@ -28,6 +29,7 @@
 
         &.active {
             height: auto;
+            display:block;
         }
     }
 
@@ -39,6 +41,7 @@
             -moz-box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.4);
             -webkit-box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.4);
             box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.4);
+            display:block;
         }
 
         &.hasBottomSidebar.right, &.hasBottomSidebar.left {

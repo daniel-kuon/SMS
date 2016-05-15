@@ -6,54 +6,171 @@
 <div class="sidebar left" id="leftSidebar"></div>
 <div class="sidebar right" id="rightSidebar">
     <div id="harbourInfo" class=" mapOverlayBox" data-bind="with: SelectedHarbour">
-        <close-icon class="hidden-xs" data-bind="click:function (){ $root.SelectedHarbour(undefined);}"></close-icon>
-        <close-icon class="visible-xs" style="font-size: 25pt;" data-bind="click:function (){ $root.SelectedHarbour(undefined);}"></close-icon>
-        <h2>
-            <span data-bind="text: Name"></span>
-            <div class="rating">
-                <span class="star" data-bind="css:{active:Rating()>0}"></span>
-                <span class="star" data-bind="css:{active:Rating()>1}"></span>
-                <span class="star" data-bind="css:{active:Rating()>2}"></span>
-                <span class="star" data-bind="css:{active:Rating()>3}"></span>
-                <span class="star" data-bind="css:{active:Rating()>4}"></span>
-            </div>
-        </h2>
-        <div class="images">
-            <!-- ko foreach:Album().Images-->
-            <img data-bind="attr:{src: Path, title: Comment}, click: $root.InitGallery" />
-            <!-- /ko -->
-            <div b-modal-target="dropzoneModal" class="pseudoImg">
-                <div>
-                    Neues Bild<br><span class="glyphicon glyphicon-plus" aria-hidden="true"></span>
+        <div class="heading">
+            <close-icon class="hidden-xs" data-bind="click:function (){ $root.SelectedHarbour(undefined);}"></close-icon>
+            <close-icon class="visible-xs" style="font-size: 25pt;" data-bind="click:function (){ $root.SelectedHarbour(undefined);}"></close-icon>
+            <h2>
+                <span data-bind="text: Name"></span>
+                <div class="rating">
+                    <span class="star" data-bind="css:{active:Rating()>0}"></span>
+                    <span class="star" data-bind="css:{active:Rating()>1}"></span>
+                    <span class="star" data-bind="css:{active:Rating()>2}"></span>
+                    <span class="star" data-bind="css:{active:Rating()>3}"></span>
+                    <span class="star" data-bind="css:{active:Rating()>4}"></span>
+                </div>
+            </h2>
+        </div>
+        <div class="content">
+            <div class="images">
+                <!-- ko foreach:Album().Images-->
+                <img data-bind="attr:{src: Path, title: Comment}, click: $root.InitGallery" />
+                <!-- /ko -->
+                <div b-modal-target="dropzoneModal" class="pseudoImg">
+                    <div>
+                        Neues Bild<br><span class="glyphicon glyphicon-plus" aria-hidden="true"></span>
+                    </div>
                 </div>
             </div>
+            <div data-bind="html:Content"></div>
+            <h4>Entfernungen zu anderen Häfen</h4>
+            <table id="harbourDistances" b-striped b-hover>
+                <thead>
+                <th>Hafen</th>
+                <th style="width: 100px;">Entfernung</th>
+                <th style="width: 100px;"></th>
+                </thead>
+                <tbody data-bind="foreach: $root.Harbours">
+                    <tr data-bind="if: Precessor, event: {mouseover: $root.ShowRoute, mouseout:$root.HideRoute, click: $root.FixRoute}">
+                        <td data-bind="text: Name"></td>
+                        <td>
+                            <span data-bind="text: Distance"></span> sm
+                        </td>
+                        <td>
+                            <button b-size="BootstrapTagHelpers.Size.ExtraSmall" data-bind="click: function (){mapViewModel.SelectedHarbour(this);}">Auswählen</button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
-        <div data-bind="html:Content"></div>
-        <h4>Entfernungen zu anderen Häfen</h4>
-        <table id="harbourDistances" b-striped b-hover>
-            <thead>
-            <th>Hafen</th>
-            <th style="width: 100px;">Entfernung</th>
-            <th style="width: 100px;"></th>
-            </thead>
-            <tbody data-bind="foreach: $root.Harbours">
-                <tr data-bind="if: Precessor, event: {mouseover: $root.ShowRoute, mouseout:$root.HideRoute, click: $root.FixRoute}">
-                    <td data-bind="text: Name"></td>
-                    <td>
-                        <span data-bind="text: Distance"></span> km
-                    </td>
-                    <td>
-                        <button b-size="BootstrapTagHelpers.Size.ExtraSmall" data-bind="click: function (){mapViewModel.SelectedHarbour(this);}">Auswählen</button>
-                    </td>
-                </tr>
-            </tbody>
-        </table>
         <footer>
             <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click:$root.StartRoute, visible: !$root.routePolyline()">Neuer Törn</button>
             <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click:$root.AddToRoute, visible: $root.routePolyline, disable:$root.IsLastTakInRoute">Zu Törn hinzufügen</button>
         </footer>
     </div>
 </div>
+
+<modal id="logBookOverviewModal" header="Logbuch" size="BootstrapTagHelpers.SimpleSize.Large">
+    <table>
+        <thead>
+        <th>Start</th>
+        <th>Ziel</th>
+        <th>Zeit</th>
+        <th>Motorstunden</th>
+        <th>Distanz</th>
+        <th>Crew</th>
+        <th>Besonder Vorkommnisse</th>
+        <th style="width: 140px;"></th>
+        </thead>
+        <tbody data-bind="">
+            <!-- ko foreach: LogBookEntries-->
+            <tr>
+                <td data-bind="text: Start().Name"></td>
+                <td data-bind="text: End().Name"></td>
+                <td data-bind="text: SaillingTime"></td>
+                <td data-bind="text: renderTime((MotorHoursEnd() -MotorHoursStart())*3600000)"></td>
+                <td data-bind="text: (LogEnd() - LogStart()).toString() + ' sm' "></td>
+                <td data-bind="text: CrewList"></td>
+                <td data-bind="html: SpecialOccurences"></td>
+                <td>
+                    <button-group size="BootstrapTagHelpers.Size.ExtraSmall">
+                        <button data-bind="click: function () {$root.DetailedLogBookEntry($data);}">Details</button>
+                        <button data-bind="click: function () {$root.EditingLogBookEntry($data);}">Bearbeiten</button>
+                    </button-group>
+                </td>
+            </tr>
+            <!-- /ko -->
+        </tbody>
+    </table>
+    <footer>
+        <button data-bind="click:function (){$root.EditingLogBookEntry(new ClientModel.LogBookEntry());}">Neuer Eintrag</button>
+    </footer>
+</modal>
+
+<modal static-backdrop no-keyboard id="editingLogBookEntryModal" data-bind="with:EditingLogBookEntry" size="BootstrapTagHelpers.SimpleSize.Large">
+    <form>
+
+        <form-group class="col-md-6" data-bind="template:{name:'harbourSelector', data:{Label:'Start', Harbour: $data.Start}}">
+        </form-group>
+        <form-group class="col-md-6" data-bind="template:{name:'harbourSelector', data:{Label:'Ziel', Harbour: $data.End}}">
+        </form-group>
+        <form-group class="col-md-6">
+            <input type="datetime" data-bind="daterange:StartDate" b-label="Abgelegt" />
+        </form-group>
+        <form-group class="col-md-6">
+            <input type="datetime" data-bind="daterange:EndDate" b-label="Festgemacht" />
+        </form-group>
+        <form-group class="col-md-6">
+            <input type="number" step="0.01" data-bind="textInput:MotorHoursStart" b-label="Motorstunden (Start)" />
+        </form-group>
+        <form-group class="col-md-6">
+            <input type="number" step="0.01" data-bind="textInput:MotorHoursEnd" b-label="Motorstunden (Ziel)" />
+        </form-group>
+        <form-group class="col-md-6">
+            <input type="number" step="0.01" data-bind="textInput:LogStart" b-label="Logge (Start)" />
+        </form-group>
+        <form-group class="col-md-6">
+            <input type="number" step="0.01" data-bind="textInput:LogEnd" b-label="Logge (Ziel)" />
+        </form-group>
+        <form-group data-bind="template:{name:'multiplePersonSelector', data:{Label:'Crew', Persons: $data.Persons}}">
+        </form-group>
+        <form-group>
+            <textarea data-bind="tinymce: SpecialOccurences" b-label="Besondere Vorkommnisse"></textarea>
+        </form-group>
+    </form>
+    <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Success" data-bind="click: $root.SaveLogBookEntry">Speichern</button>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Warning" data-bind="click: function ()  {$root.EditingLogBookEntry(undefined);}">Abbrechen</button>
+    </footer>
+</modal>
+
+<modal id="detailedLogBookEntryModal" data-bind="with:DetailedLogBookEntry" size="BootstrapTagHelpers.SimpleSize.Large">
+    <header></header>
+    <form>
+
+        <form-group class="col-md-6">
+            <static-control data-bind="text:Start().Name" label="Start"></static-control>
+        </form-group>
+        <form-group class="col-md-6">
+            <static-control data-bind="text:End().Name" label="Ziel"></static-control>
+        </form-group>
+        <form-group class="col-md-6">
+            <static-control data-bind="text:moment(StartDate()).format('LLL')" label="Abgelegt"></static-control>
+        </form-group>
+        <form-group class="col-md-6">
+            <static-control data-bind="text:moment(EndDate()).format('LLL')" label="Festgemacht"></static-control>
+        </form-group>
+        <form-group class="col-md-6">
+            <static-control data-bind="text:MotorHoursStart" label="Motorstunden (Start)"></static-control>
+        </form-group>
+        <form-group class="col-md-6">
+            <static-control data-bind="text:MotorHoursEnd" label="Motorstunden (Ziel)"></static-control>
+        </form-group>
+        <form-group class="col-md-6">
+            <static-control data-bind="text:LogStart" label="Logge (Start)"></static-control>
+        </form-group>
+        <form-group class="col-md-6">
+            <static-control data-bind="text:LogEnd" label="Logge (Ziel)"></static-control>
+        </form-group>
+        <form-group>
+            <static-control data-bind="text:CrewList" label="Crew"></static-control>
+        </form-group>
+        <form-group>
+            <static-control data-bind="html: SpecialOccurences" label="Besondere Vorkommnisse"></static-control>
+        </form-group>
+    </form>
+</modal>
+
+
 
 <div class="sidebar bottom" id="bottomSidebar">
 
@@ -89,21 +206,21 @@
             </footer>
         </panel>
         <div data-bind="if: End" class="distanceDiv">
-            <span><span data-bind="text:Distance"></span> km</span>
+            <span><span data-bind="text:Distance"></span> sm</span>
         </div>
         <!-- /ko -->
         <!-- /ko -->
     </div>
 </div>
-<button-group id="mapModeControls">
-    <button data-bind="css:{'btn-primary': IsInViewMode}, click:function () {MapMode(/*MapMode.View*/ 1);}">Normal</button>
-    <button disabled="disabled" data-bind="css:{'btn-primary': false, click:function () {MapMode(/*MapMode.TripPlaning*/2);}}">Routenplanung</button>
-    <dropdown disabled data-bind="css:{'btn-primary': false, click:function () {MapMode(/*MapMode.TripPlaning*/2);}}">
-        <a>Neue Fahrt</a>
-        <a>Fahrtenübersicht</a>
-    </dropdown>
-    <button data-bind="css:{'btn-primary': IsInAdminMode}, click:function () {MapMode(/*MapMode.Admin*/ 0);}">Admin</button>
-</button-group>
+@*<button-group id="mapModeControls">
+        <button data-bind="css:{'btn-primary': IsInViewMode}, click:function () {MapMode(/*MapMode.View*/ 1);}">Normal</button>
+        <button disabled="disabled" data-bind="css:{'btn-primary': false, click:function () {MapMode(/*MapMode.TripPlaning*/2);}}">Routenplanung</button>
+        <dropdown disabled data-bind="css:{'btn-primary': false, click:function () {MapMode(/*MapMode.TripPlaning*/2);}}">
+            <a>Neue Fahrt</a>
+            <a>Fahrtenübersicht</a>
+        </dropdown>
+        <button data-bind="css:{'btn-primary': IsInAdminMode}, click:function () {MapMode(/*MapMode.Admin*/ 0);}">Admin</button>
+    </button-group>*@
 <div id="loadingOverlay">
     <panel class="col-xs-10 col-sm-6">
         <panel-body>
@@ -117,9 +234,17 @@
     <select data-bind="options: $root.Persons, optionsText:'FullName', value:Person, optionsCaption:'Person wählen...'"></select>
 </script>
 
+<script type="text/html" id="harbourSelector">
+    <label data-bind="visible: Label, text: Label"></label>
+    <select data-bind="options: $root.Harbours, optionsText:'Name', value:Harbour, optionsCaption:'Hafen wählen...'"></select>
+</script>
+
 <script type="text/html" id="multiplePersonSelector">
     <label data-bind="visible: Label, text: Label"></label>
-    <select multiple data-bind="options: $root.Persons, optionsText:'FullName', selectedOptions:Persons, optionsCaption:'Person wählen...', multiselect:{}"></select>
+    <div class="multiselectContainer">
+        <select multiple style="width:100%" data-bind="options: $root.Persons, optionsText:'FullName', selectedOptions:Persons, xoptionsCaption:'Person wählen...', optionsAfterRender: $root.SetOptionKey,multiselect:{ optionsKey: 'data-id', observableKey: 'Id' }"></select>
+
+    </div>
 </script>
 
 <modal header="Aufgaben" id="jobOverviewModal" size="BootstrapTagHelpers.SimpleSize.Large">
@@ -137,7 +262,7 @@
             <div style="margin-bottom: 20px;" data-bind="html: Content"></div>
             <form>
                 <form-group class="col-md-6">
-                   <static-control label="Zugewiesen:" data-bind="text: AssignedTo.FullName"></static-control>
+                    <static-control label="Zugewiesen:" data-bind="text: AssignedTo.FullName"></static-control>
                 </form-group>
                 <form-group class="col-md-6">
                     <static-control label="Bis zum:" data-bind="text: DueTo"></static-control>
@@ -176,7 +301,7 @@
             <input type="text" data-bind="datepicker:DueTo" b-label="Fällig bis" />
         </form-group>
         <form-group>
-            <textarea type="text" data-bind="textInput:Content" b-label="Inhalt"></textarea>
+            <textarea type="text" data-bind="tinymce:Content" b-label="Inhalt"></textarea>
         </form-group>
         <form-group data-bind="template:{name:'singlePersonSelector', data:{Label:'Zuständig', Person: $data.AssignedTo}}">
 
@@ -190,7 +315,6 @@
         <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Warning" data-bind="click: function ()  {$root.EditingJob(undefined);}">Abbrechen</button>
     </footer>
 </modal>
-
 
 <modal header="Bild hinzufügen" id="dropzoneModal" size="BootstrapTagHelpers.SimpleSize.Large" backdrop-static no-keyboard fade size="BootstrapTagHelpers.SimpleSize.Large">
     <form data-bind="if: SelectedHarbour" id="dropzone" class="dropzone" action="/api/Images/upload" method="post">
@@ -286,6 +410,54 @@
     </footer>
 </modal>
 
+<modal id="personsOverviewModal" header="Personen">
+    <table b-striped b-hover>
+        <thead>
+        <th>Vorname</th>
+        <th>Nachname</th>
+        </thead>
+        <tbody data-bind="foreach: Persons">
+        <tr>
+            <td data-bind="text: FirstName"></td>
+            <td data-bind="text: LastName"></td>
+            <td style="text-align: right;">
+                <button-group class="btn-group-sm">
+                    <button class="btn-danger" data-bind="click: function () {$root.DeletingPerson($data);}">Entfernen</button>
+                    <button data-bind="click: function () {$root.EditingPerson($data);}">Bearbeiten</button>
+                </button-group>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+    <footer>
+        <button data-bind="click: function () {$root.EditingPerson(new ClientModel.Person());}">Hinzufügen</button>
+    </footer>
+</modal>
+
+<modal id="editingPersonModal" static-backdrop data-bind="with: EditingPerson">
+    <form>
+        <form-group>
+            <input autofocus type="text" b-label="Vorname" data-bind="textInput: FirstName"/>
+        </form-group>
+        <form-group>
+            <input b-label="Nachname" data-bind="textInput: LastName"/>
+        </form-group>
+    </form>
+    <footer>
+        <button data-bind="click: function () {$root.EditingPerson(undefined);}">Abbrechen</button>
+        <button data-bind="click: $root.SavePerson" class="btn-success">Speichern</button>
+    </footer>
+</modal>
+
+<modal id="deletingPersonModal" data-bind="with: DeletingPerson">
+    <header>'<span data-bind="text: FullName"></span>' entfernen</header>
+    Soll die Person wirklich gelöscht werden?
+    <footer>
+        <button class="btn-danger" data-bind="click: $root.DeletePerson">Löschen</button>
+        <button data-bind="click: function(){$root.deletingPerson(undefined);}">Abbrechen</button>
+    </footer>
+</modal>
+
 <div class="pswp" tabindex="-1" role="dialog" aria-hidden="true">
 
     <div class="pswp__bg"></div>
@@ -341,6 +513,7 @@
 
 
 </div>
+
 @section scripts
 {
     <script type="text/html" id="tackTemplate">
@@ -358,7 +531,6 @@
             </panel-body>
         </panel>
     </script>
-    <script src="~/js/viewmodels/home/map.js"></script>
     <script src="~/lib/bootstrap-star-rating/js/star-rating.js"></script>
     <script src="~/lib/bootstrap-star-rating/js/star-rating_locale_de.js"></script>
 }
@@ -369,7 +541,7 @@
     <style type="text/css">
         html, body {
             height: 100%;
-            overflow: hidden;
+            /*overflow: hidden;*/
         }
 
         .navbar > .container {

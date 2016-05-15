@@ -10,7 +10,7 @@
     "mapbox.js": "^2.3.0",
     "knockout": "3.4.0",
     "parsleyjs": "^2.3.7",
-    "tinymce": "~4.3.8",
+    "tinymce": "tinymce-dist#^4.3.11",
     "moment": "2.10.6",
     "knockout-moment": "~1.0.1",
     "Knockout-Validation": "~1.0.2",
@@ -21,7 +21,9 @@
     "Leaflet.contextmenu": "latest",
     "moment-datepicker": "1.2.0",
     "jquery-ui": "jquery.ui#^1.11.4",
-    "bootstrap-multiselect": "^0.9.13"
+    "bootstrap-multiselect": "^0.9.13",
+    "knockout-pickadate-tinymce": "knockout-tinymce-binding#^0.1.5",
+    "bootstrap-daterangepicker": "^2.1.19"
   },
   "resolutions": {
     "moment": "2.10.6",

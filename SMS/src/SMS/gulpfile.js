@@ -17,9 +17,11 @@ var paths = {
 };
 paths.less = paths.webroot + "css/**/*.less";
 paths.js = paths.webroot + "js/**/*.js";
+paths.libJs = paths.webroot + "lib/**/*.js";
 paths.ts = paths.webroot + "js/**/*.ts";
 paths.minJs = paths.webroot + "js/**/*.min.js";
 paths.css = paths.webroot + "css/**/*.css";
+paths.libCss = paths.webroot + "lib/**/*.css";
 paths.minCss = paths.webroot + "css/**/*.min.css";
 paths.concatJsDest = paths.webroot + "js/site.js";
 paths.concatCssDest = paths.webroot + "css/site.css";

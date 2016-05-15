@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace SMS.Models
 {
@@ -7,7 +8,8 @@ namespace SMS.Models
         public string Title { get; set; }
         public string Content { get; set; }
         public double Rating { get; set; }
-        public int ParentId { get; set; }
+        [Required]
+        public int? ParentId { get; set; }
         
     }
 }

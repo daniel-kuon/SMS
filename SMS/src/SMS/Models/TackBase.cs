@@ -33,9 +33,11 @@ namespace SMS.Models
         public int? StartId { get; set; }
         public override Album Album { get; set; } = new Album();
 
-        private void FixPersons()
+        private void FixPersons(SmsDbContext context)
         {
-            Crew.AddRange(Persons.Select(p => new Crew() { PersonId = p.Id, Tack = this, TackId = Id }));
+            Crew = context.Set<Crew>().Where(c => c.TackId == Id).ToList();
+            Crew.AddRange(Persons.Where(p=> Crew.All(c => c.PersonId != p.Id)).Select(p => new Crew() { PersonId = p.Id, Tack = this, TackId = Id }));
+            Crew.Where(c=>Persons.All(p=>c.PersonId!=p.Id)).ToList().ForEach(c=>context.Remove(c));
         }
 
         public override bool RemoveFromContext(SmsDbContext context)
@@ -50,7 +52,7 @@ namespace SMS.Models
 
             if (!base.AddOrUpdate(context))
                 return false;
-            FixPersons();
+            FixPersons(context);
             Crew.ForEach(c => AddOrUpdate(context));
             return true;
         }

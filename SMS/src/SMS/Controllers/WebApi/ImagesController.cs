@@ -48,7 +48,7 @@ namespace SMS.Controllers.WebApi
                 };
                 albumImage.AddOrUpdate(Context);
                 Context.SaveChanges();
-                return Ok(albumImage.Image);
+                return Ok(albumImage);
             }
             catch (Exception ex)
             {

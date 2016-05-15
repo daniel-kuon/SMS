@@ -38,7 +38,6 @@ function CreateObservableArray<T extends ClientModel.IEntity>(val?: T[]|IKoOptio
 }
 
 interface KnockoutObservable<T> extends IKoOptions {
-
 }
 
 enum TransferMode {
@@ -51,4 +50,5 @@ interface IKoOptions {
     ForeignKeyFor?: KnockoutObservable<ClientModel.IEntity>;
     AddTransferMode?: TransferMode;
     UpdateTransferMode?: TransferMode;
+    Block?: boolean;
 }

@@ -1,57 +1,37 @@
-﻿
-
-module ClientModel {
-
-
+﻿module ClientModel {
 
     import SEntity = ServerModel.Entity
-    import SWaypoint = ServerModel.Waypoint
     import SWaypointConnection = ServerModel.WaypointConnection
-    import SHarbour = ServerModel.Harbour
-    import SPerson = ServerModel.Person
-    import SJob = ServerModel.Job
-    import STrip = ServerModel.Trip
-    import SAddress = ServerModel.Address
-    import SImage = ServerModel.Image
-    import SAlbum = ServerModel.Album
-    import SWaypointTack = ServerModel.WaypointTack
-    import STack = ServerModel.Tack
-    import SLocation = ServerModel.Location
-    import SRestaurant = ServerModel.Restaurant
-    import SSupermarket = ServerModel.Supermarket
-    import SComment = ServerModel.Comment;
-    import SCommentList = ServerModel.CommentList;
 
     export interface IEntity {
         Id: KnockoutObservable<number>;
         ClientId: number;
     }
 
-    export abstract class Entity<T extends ServerModel.Entity> implements IEntity {
+    export abstract class Entity implements IEntity {
         constructor() {
-            Entity.EntityDB[this.ClientId.toString()] = this;
+            Entity.entityDb[this.ClientId.toString()] = this;
         }
 
-        Id = ko.observable<number>();
         AlbumId = ko.observable<number>();
         CommentListId = ko.observable<number>();
         Album = CreateObservable<Album>({ AddTransferMode: TransferMode.Include, UpdateTransferMode: TransferMode.Include });
-        CommentList = ko.observable<CommentList>();
+        InsertDate = ko.observable<number>(<any>Date);
+        UpdateDate = ko.observable<number>(<any>Date);
 
 
+        private static clientIdCounter = 0;
+        private static entityDb = {};
 
-        private static ClientIdCounter = 0;
-        private static EntityDB = {};
+        ClientId = ++Entity.clientIdCounter;
 
-        ClientId = ++Entity.ClientIdCounter;
+        protected ServerApi = ServerApi.GetApi(this);
 
-        protected ServerApi: ServerApi.Api<T>;
-
-        DeleteOnServer(): JQueryPromise<T> {
+        DeleteOnServer(): JQueryPromise<SEntity> {
             return this.ServerApi.Delete(this.Id());
         };
 
-        SaveToServer(): JQueryPromise<T> {
+        SaveToServer(): JQueryPromise<SEntity> {
             if (this.Id() === undefined)
                 return this.ServerApi.Create(this.ConvertToServerEntity())
                     .done(data => {
@@ -65,13 +45,13 @@ module ClientModel {
                 });;
         }
 
-        LoadFromServerEntity(serverEntity: T): this {
+        LoadFromServerEntity(serverEntity: SEntity): this {
             for (let prop of this.GetObservableNames()) {
                 const sVal = serverEntity[prop];
                 if (sVal !== undefined && sVal !== null) {
                     if (sVal instanceof Array) {
                         for (let obj of sVal) {
-                            var entity = Entity.EntityDB[obj.ClientId.toString()];
+                            var entity = Entity.entityDb[obj.ClientId.toString()];
                             if (entity !== undefined)
                                 entity.LoadFromServerEntity(obj);
                         }
@@ -79,6 +59,10 @@ module ClientModel {
                         const cVal = this[prop]();
                         if (cVal instanceof Entity)
                             cVal.LoadFromServerEntity(sVal);
+                        //else if (cVal === Date)
+                        //    this[prop](new Date(sVal));
+                        //else if (cVal instanceof Date)
+                        //    (<Date>cVal).setTime(new Date(sVal).getTime());
                         else
                             this[prop](sVal);
                     }
@@ -87,20 +71,23 @@ module ClientModel {
             return this;
         }
 
-        ConvertToServerEntity(idOnly: boolean = false): T {
+        ConvertToServerEntity(idOnly: boolean = false): SEntity {
             const serverEntity = { ClientId: this.ClientId };
             const entity = this;
             for (let propName of this.GetObservableNames()) {
                 const prop = entity[propName];
                 const val = prop();
-                if (val !== undefined) {
+                if (val !== undefined && val !== Date) {
                     if (val instanceof Array) {
-                        const arr = new Array<T>();
+                        const arr = new Array();
                         for (let elem of val) {
                             arr.push(elem.ConvertToServerEntity());
                         }
                         serverEntity[propName] = arr;
                     }
+                    //else if (val instanceof Date) {
+                    //    serverEntity[propName] = (<Date>val).toJSON();
+                    //}
                     else
                         serverEntity[propName] = val instanceof Entity ? val.ConvertToServerEntity() : val;
                 }
@@ -111,8 +98,6 @@ module ClientModel {
         CopyTo(entity: this) {
             entity.Id(this.Id());
         }
-
-        abstract CreateServerEntity(): T;
 
         private savedState: any;
 
@@ -163,46 +148,23 @@ module ClientModel {
                     }
             }
         }
+
+        Id: KnockoutObservable<number> = ko.observable<number>();
     }
 
-    export class Album extends Entity<SAlbum> {
-        CreateServerEntity(): SAlbum {
-            return new SAlbum();
-        }
-
+    export class Album extends Entity {
         Images = ko.observableArray<Image>();
-
-
-        ServerApi = ServerApi.AlbumApi.GetDefault();
     }
 
-    export class AlbumImage {
-        
-    }
-
-    export class CommentList extends Entity<SCommentList> {
-        CreateServerEntity(): SCommentList {
-            return new SCommentList();
-        }
-
-        ServerApi = ServerApi.CommentListApi.GetDefault();
-    }
-
-    export class Person extends Entity<SPerson> {
-
-        CreateServerEntity(): SPerson {
-            return new SPerson();
-        }
-
-        ServerApi = ServerApi.PersonApi.GetDefault();
+    export class Person extends Entity {
         LastName = ko.observable<string>();
         FirstName = ko.observable<string>();
         FullName = ko.computed(() => this.FirstName() + " " + this.LastName());
 
     }
 
-    export class Job extends Entity<SJob> {
-        DueTo = ko.observable<Date>();
+    export class Job extends Entity {
+        DueTo = ko.observable<Date>(<any>Date);
         AssignedTo = ko.observable<Person>();
         AssignedToId = ko.observable<number>();
         Title = ko.observable<String>();
@@ -213,21 +175,27 @@ module ClientModel {
         Trip = ko.observable<Trip>();
         TripId = ko.observable<number>();
         SubJobs = ko.observableArray<Job>();
-
-
-        CreateServerEntity(): ServerModel.Job {
-            return new ServerModel.Job();
-        }
-
-        ServerApi = ServerApi.JobApi.GetDefault();
     }
 
-    export class Waypoint extends Entity<SWaypoint> {
-        constructor(latLng: L.LatLng, markerType: MarkerType, protected Map: L.mapbox.Map) {
+    export class Waypoint extends Entity {
+        constructor(latLng: L.LatLng, markerType: MarkerType, map: L.mapbox.Map);
+        constructor(markerType: MarkerType, map: L.mapbox.Map);
+        constructor(latLng: L.LatLng | MarkerType, markerType: MarkerType | L.mapbox.Map, protected Map?: L.mapbox.Map) {
             super();
-            this.Latitude(latLng.lat);
-            this.Longitude(latLng.lng);
-            this.LatLng = new L.LatLng(latLng.lat, latLng.lng);
+            if (Map === undefined) {
+                if (typeof markerType == "number") {
+                    Map = <L.mapbox.Map><any>latLng;
+                    latLng = <MarkerType>markerType;
+                    markerType = Map;
+                }
+                this.Map = <L.mapbox.Map>(markerType);
+                this.LatLng = new L.LatLng(0, 0);
+                markerType = <MarkerType>latLng;
+            } else {
+                this.Latitude((<L.LatLng>latLng).lat);
+                this.Longitude((<L.LatLng>latLng).lng);
+            }
+            this.LatLng = new L.LatLng(this.Latitude(), this.Longitude());
             this.Latitude.subscribe((value) => {
                 if (this.LatLng.lat !== value) {
                     this.LatLng.lat = value;
@@ -284,7 +252,8 @@ module ClientModel {
         }
 
         Redraw(updatePolylines = true): void {
-            this.marker.setLatLng(this.LatLng);
+            if (this.marker !== undefined)
+                this.marker.setLatLng(this.LatLng);
             if (updatePolylines)
                 for (let i = 0; i < this.polylines.length; i++)
                     redrawPolyline(this.polylines[i]);
@@ -311,7 +280,7 @@ module ClientModel {
             this.markerType = MarkerType.Waypoint;
             this.SaveToServer()
                 .done((w) => {
-                    const wCA = ServerApi.WaypointConnectionApi.GetDefault();
+                    const wCA = ServerApi.WaypointConnections;
                     wCA.Disconnect(w1.Id(), w2.Id());
                     wCA.Connect(w1.Id(), w.Id);
                     wCA.Connect(w2.Id(), w.Id);
@@ -382,32 +351,28 @@ module ClientModel {
             return this.markerType === MarkerType.Dummy;
         }
 
-        Latitude = ko.observable<number>();
-        Longitude = ko.observable<number>();
+        Latitude = ko.observable<number>(0);
+        Longitude = ko.observable<number>(0);
         Distance = ko.observable<number>();
         Precessor = ko.observable<Waypoint>();
         RouteDistance = ko.observable<number>();
         RoutePrecessor = ko.observable<Waypoint>();
         protected popup: L.Popup;
         LatLng: L.LatLng;
-        protected markerType: MarkerType;
+        protected markerType: MarkerType | L.mapbox.Map;
         marker: L.Marker;
 
         Name = ko.observable<string>();
         Description = ko.observable<string>();
-
-        CreateServerEntity(): ServerModel.Waypoint {
-            return new ServerModel.Waypoint();
-        }
-
-        ServerApi = ServerApi.WaypointApi.GetDefault();
     }
 
     export class Harbour extends Waypoint {
 
-        constructor(name: string, latLng: L.LatLng, map: L.mapbox.Map) {
-            super(latLng, MarkerType.Harbour, map);
-            this.Name(name);
+        constructor(map: L.mapbox.Map);
+        constructor(latLng: L.LatLng, map: L.mapbox.Map);
+        constructor(latLng: L.LatLng | L.mapbox.Map, map?: L.mapbox.Map) {
+            super(<L.LatLng>latLng, MarkerType.Harbour, map);
+            //if (map)
             //this.Distance.subscribe((d) => {
             //    const label = this.marker.getLabel();
             //    if (d > 0) {
@@ -437,17 +402,10 @@ module ClientModel {
         }
 
         Album = ko.observable(new Album());
-        CommentList = ko.observable(new CommentList());
 
         RemoveIfHasZeroOrOnePolylines(): boolean {
             return false;
         }
-
-        CreateServerEntity(): ServerModel.Harbour {
-            return new ServerModel.Harbour();
-        }
-
-        ServerApi = ServerApi.HarbourApi.GetDefault();
 
         Locations = ko.observableArray<Location>();
         Rating = ko.observable<number>();
@@ -455,62 +413,77 @@ module ClientModel {
         Website = ko.observable<string>();
     }
 
-    export class Trip extends Entity<STrip> {
-        Name = ko.observable<string>();
-        Start = ko.observable<Date>();
-        End = ko.observable<Date>();
-        Content = ko.observable<string>();
-        Tacks = ko.observableArray<Tack>();
-
-        ServerApi = ServerApi.TripApi.GetDefault();
-
-        CreateServerEntity(): ServerModel.Trip {
-            return new ServerModel.Trip();
-        }
-    }
-
-    export class Address extends Entity<SAddress> {
+    export class Address extends Entity {
         Street = ko.observable<string>();
         Zip = ko.observable<string>();
         Town = ko.observable<string>();
         Comment = ko.observable<string>();
-
-        CreateServerEntity(): SAddress {
-            return new SAddress;
-        }
-
-        ServerApi = ServerApi.AddressApi.GetDefault();
     }
 
-    export class Image extends Entity<SImage> {
+    export class Image extends Entity {
 
         Path = ko.observable<string>();
         Height = ko.observable<number>();
         Width = ko.observable<number>();
-
-        CreateServerEntity(): ServerModel.Image {
-            return new ServerModel.Image();
-        }
-
-        ServerApi = ServerApi.ImageApi.GetDefault();
     }
 
-    export class Tack extends Entity<STack> {
-        StartDate = ko.observable<Date>();
-        EndDate = ko.observable<Date>();
+    export abstract class TackBase extends Entity {
+        StartDate = ko.observable<string>();
+        EndDate = ko.observable<string>();
         Start = ko.observable<Harbour>();
+        StartId = ko.observable<number>();
+        EndId = ko.observable<number>();
         End = ko.observable<Harbour>();
-        Waypoints = ko.observableArray<ServerModel.WaypointTack>();
-        Crew = ko.observableArray<Person>();
-        Distance = ko.observable<number>();
+        Persons = ko.observableArray<Person>();
+        Distance = ko.observable<number>(0);
 
-        CreateServerEntity(): ServerModel.Tack {
-            return new ServerModel.Tack();
+        CrewList = ko.computed({
+            read: () => {
+                var persons = this.Persons();
+                var first = persons[0];
+                if (first === undefined)
+                    return "";
+                if (persons.length === 1)
+                    return first.FullName();
+                else {
+                    var list = first.FullName();
+                    for (let i = 1; i < persons.length; i++) {
+                        list += ", " + persons[i].FullName();
+                    }
+                    return list;
+                }
+            },
+            deferEvaluation: true
+            
+        });
+
+        SaillingTime = ko.computed(() => {
+            const startDate = this.StartDate();
+            const endDate = this.EndDate();
+            if (startDate === undefined || endDate === undefined || renderTime === undefined)
+                return "";
+            return renderTime(new Date(startDate), new Date(endDate));
+        });
+    }
+
+    export class Trip extends TackBase {
+        Name = ko.observable<string>();
+        Content = ko.observable<string>();
+        Tacks = ko.observableArray<Tack>();
+        IsDummy = ko.observable<boolean>();
+    }
+
+    export class LogBookEntry extends TackBase {
+        MotorHoursStart = ko.observable<number>();
+        MotorHoursEnd = ko.observable<number>();
+        LogStart = ko.observable<number>();
+        LogEnd = ko.observable<number>();
+        SpecialOccurences = ko.observable<string>();
+
         }
 
-        ServerApi = ServerApi.TackApi.GetDefault();
-
-
+    export class Tack extends TackBase {
+        Waypoints = ko.observableArray<ServerModel.WaypointTack>();
 
         CanRemoveTack = ko.computed({
             read: () => {
@@ -538,39 +511,28 @@ module ClientModel {
         });
 
     }
+    export class Comment extends Entity {
+        Title = ko.observable<string>();
+        Content = ko.observable<string>();
+        Rating = ko.observable<number>();
+        ParentId = ko.observable<number>();
 
-    export class Location extends Entity<SLocation> {
+    }
+
+    export class Location extends Entity {
         HarbourId = ko.observable<number>();
         Website = ko.observable<string>();
         Name = ko.observable<string>();
         Rating = ko.observable<number>();
         Address = ko.observable<Address>();
         AddressId = ko.observable<number>();
-
-        CreateServerEntity(): ServerModel.Location {
-            return new ServerModel.Location();
-        }
-
-        ServerApi = ServerApi.LocationApi.GetDefault();
     }
 
     export class Restaurant extends Location {
-
-        CreateServerEntity(): ServerModel.Restaurant {
-            return new ServerModel.Restaurant();
-        }
-
-        ServerApi = ServerApi.RestaurantApi.GetDefault();
     }
 
 
     export class Supermarket extends Location {
-
-        CreateServerEntity(): ServerModel.Supermarket {
-            return new ServerModel.Supermarket();
-        }
-
-        ServerApi = ServerApi.SupermarketApi.GetDefault();
     }
 
 
@@ -600,10 +562,6 @@ module ClientModel {
         LatLng: L.LatLng;
     }
 
-}
-
-interface KnockoutObservable<T> extends KnockoutSubscribable<T>, KnockoutObservableFunctions<T> {
-    Block: boolean;
 }
 
 enum MarkerType {

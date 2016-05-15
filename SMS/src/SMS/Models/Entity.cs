@@ -1,7 +1,9 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
+using System.Reflection.Emit;
 using Microsoft.Data.Entity;
 
 namespace SMS.Models
@@ -13,6 +15,11 @@ namespace SMS.Models
 
         [Key]
         public int? Id { get; set; }
+
+        public DateTime InsertDate { get; set; }
+
+        public DateTime UpdateDate { get; set; }
+                
 
         public virtual Album Album { get; set; }
         public int? AlbumId { get; set; }
@@ -39,11 +46,15 @@ namespace SMS.Models
                 if (context.Entry(this).State == EntityState.Added)
                     return false;
                 context.Add(this);
+                InsertDate = DateTime.Now;
             }
+            else if (Id < 0)
+                return false;
             else
             {
                 if (context.Entry(this).State == EntityState.Modified)
                     return false;
+                UpdateDate = DateTime.Now;
                 context.Update(this);
             }
             Album?.AddOrUpdate(context);

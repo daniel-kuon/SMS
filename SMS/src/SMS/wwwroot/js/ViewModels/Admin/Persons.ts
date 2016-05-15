@@ -1,16 +1,18 @@
 ﻿
-    var personDeails = $("#personDetails");
-    import Person=ClientModel.Person;
+var personDeails = $("#personDetails");
+import Person = ClientModel.Person;
 
 
-    var deletePerson = $("#deletePerson");
-    var adminPersonViewModel: AdminPersonViewModel.Model;
+var deletePerson = $("#deletePerson");
+var adminPersonViewModel: AdminPersonViewModel.Model;
 
 
 module AdminPersonViewModel {
+    import Person = ClientModel.Person;
+
     export class Model {
         constructor() {
-            
+
             this.NewPerson = ko.computed<boolean>(() => this.CurrentPerson().Id() === undefined);
             this.PersonApi.Get()
                 .done(data => {
@@ -20,8 +22,8 @@ module AdminPersonViewModel {
                 });
         }
         People = ko.observableArray<Person>();
-        CurrentPerson=ko.observable(new Person());
-        PersonApi=ServerApi.PersonApi.GetDefault();
+        CurrentPerson = ko.observable(new Person());
+        PersonApi = ServerApi.Persons;
 
         SavePerson() {
             adminPersonViewModel.CurrentPerson().SaveToServer().done(() => {
@@ -35,7 +37,7 @@ module AdminPersonViewModel {
         CancelEditPerson() {
             adminPersonViewModel.CurrentPerson().RevertState(true);
             adminPersonViewModel.CurrentPerson(new Person());
-                personDeails.modal("hide");
+            personDeails.modal("hide");
         }
 
         DeletePerson() {
@@ -63,5 +65,5 @@ module AdminPersonViewModel {
     }
 }
 
-    adminPersonViewModel = new AdminPersonViewModel.Model();
-    ko.applyBindings(adminPersonViewModel);
+adminPersonViewModel = new AdminPersonViewModel.Model();
+ko.applyBindings(adminPersonViewModel);

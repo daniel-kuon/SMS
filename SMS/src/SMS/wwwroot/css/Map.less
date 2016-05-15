@@ -10,14 +10,16 @@
 
 #map {
     position: absolute;
-    top:0;
-    bottom:0;
+    top: 0;
+    bottom: 0;
     right: 0;
     left: 0;
 
-    @media (max-width:@screen-xs-max) {
-        position: relative;
-        height:50%;
+    &.hasLeftSidebar, &.hasRightSidebar, &.hasBottomSidebar {
+        @media (max-width:@screen-xs-max) {
+            position: relative;
+            height: 50%;
+        }
     }
 
     &.hasLeftSidebar {
@@ -38,7 +40,16 @@
     }
 }
 
+.multiselectContainer{
 
+    > .btn-group {
+        width:100%;
+
+        > .btn {
+        width:100%;
+    }
+    }
+}
 
 .mapOverlayBoxXXX {
     -moz-box-shadow: 0 0 10px 5px #000000;
@@ -74,7 +85,7 @@ body {
         font-size: large;
         text-align: center;
         width: 100px;
-        margin-top:60px;
+        margin-top: 60px;
 
         & > span:before {
             content: '\279E';
@@ -90,7 +101,7 @@ body {
     .panel {
         width: 250px;
         float: left;
-        margin:0;
+        margin: 0;
 
         .panel-heading {
             font-weight: bold;
@@ -127,17 +138,36 @@ body {
         margin-right: -35px;
     }
 
-    > footer {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        padding: 10px;
-        background-color: #f0f0f0;
-        border-top: 1px solid #ccc;
+    > .heading {
+        /*position:absolute;*/
+    }
 
-        > button {
-            float: right;
+    @media (min-width: @screen-md-min) {
+        overflow: hidden;
+
+
+        > .content {
+            position: absolute;
+            top: 70px;
+            bottom: 55px;
+            left: 0;
+            right: 0;
+            overflow-x: hidden;
+            overflow-y: auto;
+        }
+
+        > footer {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-top: 1px solid #ccc;
+
+            > button {
+                float: right;
+            }
         }
     }
 
@@ -146,14 +176,14 @@ body {
         right: 0;
         margin: 0 -10px;
         left: 0;
-        height: 217px;
+        .media-height(217px, 217px, 117px, 217px);
         overflow-y: hidden;
         background-color: #fafafa;
         overflow-x: scroll;
         white-space: nowrap;
 
         img, .pseudoImg {
-            max-height: 190px;
+            .media-max-height(190px, 190px, 90px, 190px);
             margin: 5px 5px 5px 0px;
             display: inline-block;
             background-color: #fff;
@@ -171,35 +201,14 @@ body {
         .pseudoImg {
             cursor: pointer;
             vertical-align: middle;
-            height: 190px;
+            .media-height(190px, 190px, 90px, 190px);
 
             & > div {
                 vertical-align: text-bottom;
-                margin-top: 60px;
+                .media-margin-top(60px, 60px, 0, 60px);
                 font-size: 20pt;
                 color: #c0c0c0;
                 text-align: center;
-            }
-        }
-    }
-}
-
-@media (max-width: 760px) {
-    #harbourInfo {
-        .images {
-            height: 100px;
-
-            img, .pseudoImg {
-                height: 90px;
-            }
-
-            .pseudoImg {
-                cursor: pointer;
-                vertical-align: middle;
-
-                & > div {
-                    margin-top: 0px;
-                }
             }
         }
     }

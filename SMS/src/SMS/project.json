@@ -4,7 +4,6 @@
   "compilationOptions": {
     "emitEntryPoint": true
   },
-
   "dependencies": {
     "EntityFramework.Commands": "7.0.0-rc1-final",
     "EntityFramework.MicrosoftSqlServer": "7.0.0-rc1-final",
@@ -31,7 +30,7 @@
   },
 
   "commands": {
-    "web": "Microsoft.AspNet.Server.Kestrel",
+    "web": "Microsoft.AspNet.Server.Kestrel --server.urls http://*:80",
     "ef": "EntityFramework.Commands"
   },
 

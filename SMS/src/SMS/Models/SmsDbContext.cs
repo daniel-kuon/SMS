@@ -85,7 +85,8 @@ namespace SMS.Models
             AddEntity(address);
         }
 
-        public override EntityEntry<TEntity> Add<TEntity>(TEntity entity, GraphBehavior behavior = GraphBehavior.IncludeDependents)
+        public override EntityEntry<TEntity> Add<TEntity>(TEntity entity,
+            GraphBehavior behavior = GraphBehavior.IncludeDependents)
         {
             return base.Add(entity, behavior);
         }
@@ -103,7 +104,7 @@ namespace SMS.Models
             modelBuilder.Entity<Person>();
             modelBuilder.Entity<Album>()
                 .HasMany(a => a.AlbumImages)
-                .WithOne(aI=>aI.Album)
+                .WithOne(aI => aI.Album)
                 .HasForeignKey(i => i.AlbumId)
                 .OnDelete(DeleteBehavior.Cascade);
             modelBuilder.Entity<AlbumImage>()
@@ -138,7 +139,11 @@ namespace SMS.Models
                 .HasDiscriminator<string>("__Discriminator")
                 .HasValue<Waypoint>("Waypoint")
                 .HasValue<Harbour>("Harbour");
-            modelBuilder.Entity<TackBase>().HasDiscriminator().HasValue<Tack>("Tack").HasValue<Trip>("Trip");
+            modelBuilder.Entity<TackBase>()
+                .HasDiscriminator()
+                .HasValue<Tack>("Tack")
+                .HasValue<Trip>("Trip")
+                .HasValue<LogBookEntry>(nameof(LogBookEntry));
             modelBuilder.Entity<TackBase>()
                 .HasOne(t => t.End)
                 .WithMany()
@@ -149,7 +154,7 @@ namespace SMS.Models
                 .WithMany()
                 .HasForeignKey(t => t.StartId)
                 .OnDelete(DeleteBehavior.Restrict);
-            modelBuilder.Entity<TackBase>().HasMany(t => t.Crew).WithOne(c=>c.Tack).OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<TackBase>().HasMany(t => t.Crew).WithOne(c => c.Tack).OnDelete(DeleteBehavior.Cascade);
             modelBuilder.Entity<Trip>()
                 .HasMany(t => t.Tacks)
                 .WithOne()

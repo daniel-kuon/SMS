@@ -8,18 +8,20 @@
     <title>@ViewData["Title"] - SMS</title>
 
     <environment names="Development">
-        <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.css" />
-        <link rel="stylesheet" href="~/css/site.css" />
-        <link href="~/lib/leaflet/dist/leaflet.css" rel="stylesheet" />
-        <link href="~/lib/mapbox.js/mapbox.css" rel="stylesheet" />
-        <link href="~/lib/photoswipe/dist/photoswipe.css" rel="stylesheet" />
-        <link href="~/lib/photoswipe/dist/default-skin/default-skin.css" rel="stylesheet" />
-        <link href="~/lib/leaflet.label/dist/leaflet.label.css" rel="stylesheet" />
-        <link href="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu.css" rel="stylesheet" />
-        <link href="~/lib/moment-datepicker/moment-datepicker/datepicker2.css" rel="stylesheet" />
-        <link href="~/lib/bootstrap-multiselect/dist/css/bootstrap-multiselect.css" rel="stylesheet" />
-    </environment>
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.css" />
+    <link rel="stylesheet" href="~/css/site.css" />
+    <link href="~/lib/leaflet/dist/leaflet.css" rel="stylesheet" />
+    <link href="~/lib/mapbox.js/mapbox.css" rel="stylesheet" />
+    <link href="~/lib/photoswipe/dist/photoswipe.css" rel="stylesheet" />
+    <link href="~/lib/photoswipe/dist/default-skin/default-skin.css" rel="stylesheet" />
+    <link href="~/lib/leaflet.label/dist/leaflet.label.css" rel="stylesheet" />
+    <link href="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu.css" rel="stylesheet" />
+    <link href="~/lib/moment-datepicker/moment-datepicker/datepicker2.css" rel="stylesheet" />
+    <link href="~/lib/bootstrap-multiselect/dist/css/bootstrap-multiselect.css" rel="stylesheet" />
+    <link href="~/lib/tinymce/skins/lightgray/skin.min.css" rel="stylesheet" />
     <link href="~/lib/dropzone/dist/dropzone.css" rel="stylesheet" />
+    <link href="~/lib/bootstrap-daterangepicker/daterangepicker.css" rel="stylesheet" />
+    </environment>
     @*<link href="~/lib/dropzone/dist/basic.css" rel="stylesheet" />*@
     <style type="text/css">
         .waypoint:hover, .waypoint.hover {
@@ -29,6 +31,15 @@
             height: 16px !important;
             margin-top: -8px !important;
             margin-left: -8px !important;
+        }
+
+        .mobile .waypoint, .mobile .waypoint.hover {
+            /*-ms-opacity: 1 !important;*/
+            /*opacity: 1 !important;*/
+            width: 48px !important;
+            height: 48px !important;
+            margin-top: -24px !important;
+            margin-left: -24px !important;
         }
 
         .waypoint.expose {
@@ -41,10 +52,19 @@
         }
     </style>
     <environment names="Staging,Production">
-        <link rel="stylesheet" href="https://ajax.aspnetcdn.com/ajax/bootstrap/3.3.5/css/bootstrap.min.css"
-              asp-fallback-href="~/lib/bootstrap/dist/css/bootstrap.min.css"
-              asp-fallback-test-class="sr-only" asp-fallback-test-property="position" asp-fallback-test-value="absolute" />
-        <link rel="stylesheet" href="~/css/site.min.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="~/css/site.min.css" />
+    <link href="~/lib/leaflet/dist/leaflet.min.css" rel="stylesheet" />
+    <link href="~/lib/mapbox.js/mapbox.min.css" rel="stylesheet" />
+    <link href="~/lib/photoswipe/dist/photoswipe.min.css" rel="stylesheet" />
+    <link href="~/lib/photoswipe/dist/default-skin/default-skin.min.css" rel="stylesheet" />
+    <link href="~/lib/leaflet.label/dist/leaflet.label.min.css" rel="stylesheet" />
+    <link href="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu.min.css" rel="stylesheet" />
+    <link href="~/lib/moment-datepicker/moment-datepicker/datepicker2.min.css" rel="stylesheet" />
+    <link href="~/lib/bootstrap-multiselect/dist/css/bootstrap-multiselect.min.css" rel="stylesheet" />
+    <link href="~/lib/tinymce/skins/lightgray/skin.min.min.css" rel="stylesheet" />
+    <link href="~/lib/dropzone/dist/dropzone.min.css" rel="stylesheet" />
+    <link href="~/lib/bootstrap-daterangepicker/daterangepicker.min.css" rel="stylesheet" />
     </environment>
     @Html.ApplicationInsightsJavaScript(TelemetryConfiguration)
     @RenderSection("head", required: false)
@@ -55,17 +75,17 @@
             Allet Jute
         </brand>
         <navbar-nav>
-            <nav-item href="/">Start</nav-item>
-            <nav-item href="/Home/Jobs">Aufgaben</nav-item>
+            <nav-item href="#" b-modal-target="jobOverviewModal">Aufgaben</nav-item>
+            <nav-item href="#" b-modal-target="logBookOverviewModal">Logbuch</nav-item>
         </navbar-nav>
         <navbar-nav b-navbar-right>
             <dropdown text="Admin">
-                <a href="/admin/map">Karte</a>
-                <a href="/admin/people">Personen</a>
-                <a b-modal-target="jobOverviewModal">Aufgaben</a>
+                <a href="#" b-modal-target="personsOverviewModal">Personen</a>
+                <a href="#" data-bind="if:IsInAdminMode, click:function () {MapMode(/*MapMode.View*/ 1);}">Karte Normal</a>
+                <a href="#" data-bind="if:IsInViewMode, click:function () {MapMode(/*MapMode.Admin*/ 0);}">Karte Admin</a>
             </dropdown>
         </navbar-nav>
-        @await Html.PartialAsync("_LoginPartial")
+        @*@await Html.PartialAsync("_LoginPartial")*@
     </navbar>
     <div class="container body-content">
         @RenderBody()
@@ -74,7 +94,6 @@
             <p>&copy; 2016 - SMS</p>
         </footer>
     </div>
-
     <environment names="Development">
         <script src="~/lib/jquery/dist/jquery.js"></script>
         <script src="~/lib/jquery-ui/ui/effect.js"></script>
@@ -86,7 +105,9 @@
         <script src="~/lib/leaflet.label/dist/leaflet.label-src.js"></script>
         <script src="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu-src.js"></script>
         <script src="~/lib/knockout/dist/knockout.debug.js"></script>
-        <script src="~/lib/moment/moment.js"></script>
+        @*<script src="~/lib/moment/moment.js"></script>
+        <script src="~/lib/moment/locale/de.js"></script>*@
+        <script src="~/lib/moment/min/moment-with-locales.js"></script>
         <script src="~/lib/knockout-moment/knockout.moment.js"></script>
         <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker.js"></script>
         <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker-ko.js"></script>
@@ -102,17 +123,46 @@
         <script src="~/lib/photoswipe/dist/photoswipe.js"></script>
         <script src="~/lib/photoswipe/dist/photoswipe-ui-default.js"></script>
         <script src="~/lib/bootstrap-multiselect/dist/js/bootstrap-multiselect.js"></script>
+        <script src="~/lib/tinymce/tinymce.js"></script>
+        <script src="~/lib/tinymce/jquery.tinymce.js"></script>
+        <script src="~/lib/knockout-pickadate-tinymce/knockout-tinymce.js"></script>
+        <script src="~/lib/bootstrap-daterangepicker/daterangepicker.js"></script>
+        <script src="~/js/viewmodels/home/map.js"></script>
     </environment>
     <environment names="Staging,Production">
-        <script src="https://ajax.aspnetcdn.com/ajax/jquery/jquery-2.1.4.min.js"
-                asp-fallback-src="~/lib/jquery/dist/jquery.min.js"
-                asp-fallback-test="window.jQuery">
-        </script>
-        <script src="https://ajax.aspnetcdn.com/ajax/bootstrap/3.3.5/bootstrap.min.js"
-                asp-fallback-src="~/lib/bootstrap/dist/js/bootstrap.min.js"
-                asp-fallback-test="window.jQuery && window.jQuery.fn && window.jQuery.fn.modal">
-        </script>
+        <script src="~/lib/jquery/dist/jquery.min.js"></script>
+        <script src="~/lib/jquery-ui/ui/effect.js"></script>
+        <script src="~/lib/bootstrap/dist/js/bootstrap.min.js"></script>
+        <script src="~/js/sidebars.min.js"></script>
         @*<script src="~/js/site.min.js" asp-append-version="true"></script>*@
+        @*<script src="~/lib/leaflet/dist/leaflet-src.min.js"></script>*@
+        <script src="~/lib/mapbox.js/mapbox.min.js"></script>
+        <script src="~/lib/leaflet.label/dist/leaflet.label-src.js"></script>
+        <script src="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu-src.js"></script>
+        <script src="~/lib/knockout/dist/knockout.js"></script>
+        @*<script src="~/lib/moment/moment.min.js"></script>
+        <script src="~/lib/moment/locale/de.min.js"></script>*@
+        <script src="~/lib/moment/min/moment-with-locales.min.js"></script>
+        <script src="~/lib/knockout-moment/knockout.moment.js"></script>
+        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker.min.js"></script>
+        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker-ko.js"></script>
+        <script src="~/lib/parsleyjs/dist/parsley.min.js"></script>
+        <script src="~/lib/parsleyjs/dist/i18n/de.js"></script>
+        <script src="~/lib/tinymce/tinymce.min.js"></script>
+        <script src="~/js/knockouthelper.min.js"></script>
+        <script src="~/js/servermodel.min.js"></script>
+        <script src="~/js/serverapi.min.js"></script>
+        <script src="~/js/clientmodel.min.js"></script>
+        <script src="~/lib/moment/locale/de.js"></script>
+        <script src="~/lib/dropzone/dist/min/dropzone.min.js"></script>
+        <script src="~/lib/photoswipe/dist/photoswipe.min.js"></script>
+        <script src="~/lib/photoswipe/dist/photoswipe-ui-default.min.js"></script>
+        <script src="~/lib/bootstrap-multiselect/dist/js/bootstrap-multiselect.min.js"></script>
+        <script src="~/lib/tinymce/tinymce.min.js"></script>
+        <script src="~/lib/tinymce/jquery.tinymce.min.js"></script>
+        <script src="~/lib/knockout-pickadate-tinymce/knockout-tinymce.min.js"></script>
+        <script src="~/lib/bootstrap-daterangepicker/daterangepicker.js"></script>
+        <script src="~/js/viewmodels/home/map.min.js"></script>
     </environment>
 
 

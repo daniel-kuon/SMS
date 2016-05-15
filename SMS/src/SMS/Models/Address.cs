@@ -1,3 +1,5 @@
+using Microsoft.AspNet.Mvc.Abstractions;
+
 namespace SMS.Models
 {
     public class Address:Entity
