@@ -120,7 +120,7 @@ gulp.task("ts",
 
     });
 
-gulp.task("default", ["build"]);
+gulp.task("default", ["build", "watch"]);
 
 gulp.task("build", ["less", "ts", "clean", "combine", "min"]);
 gulp.task("build:js", ["ts", "clean:js", "combine:js", "min:js"]);

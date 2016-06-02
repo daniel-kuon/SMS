@@ -1,9 +1,10 @@
 ﻿module ServerModel {
-    export abstract class Entity {
+    export interface Entity {
 
         Id: number;
-        ClientId: number;
-        Type:string;
+        ClientId?: number;
+        Type?: string;
+        ProcessOnServer?:boolean;
 
     }
     

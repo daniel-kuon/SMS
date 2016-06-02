@@ -1,11 +1,5 @@
 var ServerModel;
 (function (ServerModel) {
-    var Entity = (function () {
-        function Entity() {
-        }
-        return Entity;
-    }());
-    ServerModel.Entity = Entity;
     var WaypointConnection = (function () {
         function WaypointConnection() {
         }

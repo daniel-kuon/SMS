@@ -1,0 +1,16 @@
+{
+  "name": "tinymce-i18n",
+  "description": "Languages for TinyMCE 4",
+  "homepage": "https://github.com/storyn26383/tinymce-i18n",
+  "version": "4.0.0",
+  "_release": "4.0.0",
+  "_resolution": {
+    "type": "version",
+    "tag": "v4.0.0",
+    "commit": "baccd207c799466acb43a662a6594e52dc59908a"
+  },
+  "_source": "https://github.com/storyn26383/tinymce-i18n.git",
+  "_target": "^4.0.0",
+  "_originalSource": "tinymce-i18n",
+  "_direct": true
+}

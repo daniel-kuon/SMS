@@ -14,13 +14,10 @@ namespace SMS.Models
         [Required]
         public DateTime EndDate { get; set; }
 
-        [Required]
         public double? Distance { get; set; }
 
-        [Required]
         public Harbour Start { get; set; }
 
-        [Required]
         public Harbour End { get; set; }
 
         [Required]
@@ -29,9 +26,10 @@ namespace SMS.Models
         [NotMapped]
         public List<Person> Persons { get; set; } = new List<Person>();
 
+        [Required]
         public int? EndId { get; set; }
+        [Required]
         public int? StartId { get; set; }
-        public override Album Album { get; set; } = new Album();
 
         private void FixPersons(SmsDbContext context)
         {

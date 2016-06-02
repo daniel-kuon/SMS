@@ -1,11 +1,13 @@
 ﻿using Microsoft.AspNet.Builder;
 using Microsoft.AspNet.Cors.Infrastructure;
 using Microsoft.AspNet.Hosting;
+using Microsoft.AspNet.Identity;
 using Microsoft.AspNet.Identity.EntityFramework;
 using Microsoft.Data.Entity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using SMS.Models;
 using SMS.Services;
 
@@ -13,6 +15,9 @@ namespace SMS
 {
     public class Startup
     {
+        public static bool IsDevelopment = false;
+
+
         public Startup(IHostingEnvironment env)
         {
             // Set up configuration sources.
@@ -49,7 +54,14 @@ namespace SMS
                 .AddDbContext<SmsDbContext>(options =>
                     options.UseSqlServer(Configuration["Data:DefaultConnection:ConnectionString"]));
 
-            services.AddIdentity<ApplicationUser, IdentityRole>()
+            services.AddIdentity<ApplicationUser, IdentityRole>((o) =>
+            {
+                o.Password.RequireDigit = false;
+                o.Password.RequireLowercase = false;
+                o.Password.RequireUppercase = false;
+                o.Password.RequireNonLetterOrDigit = false;
+                o.Password.RequiredLength = 4;
+            })
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddDefaultTokenProviders();
 
@@ -57,6 +69,7 @@ namespace SMS
                 .AddJsonOptions(options =>
                 {
                     options.SerializerSettings.ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore;
+                    options.SerializerSettings.DateTimeZoneHandling = DateTimeZoneHandling.Local;
                 });
 
 
@@ -68,6 +81,8 @@ namespace SMS
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
         public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
         {
+            IsDevelopment = env.IsDevelopment();
+
             loggerFactory.AddConsole(Configuration.GetSection("Logging"));
             loggerFactory.AddDebug();
 

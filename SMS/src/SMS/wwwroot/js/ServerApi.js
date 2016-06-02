@@ -1,4 +1,3 @@
-var Entity = ServerModel.Entity;
 var WaypointConnection = ServerModel.WaypointConnection;
 var WaypointTack = ServerModel.WaypointTack;
 var AlbumImage = ServerModel.AlbumImage;
@@ -126,6 +125,10 @@ var ServerApi = (function () {
             return ServerApi.Waypoints;
         if (type instanceof ClientModel.LogBookEntry)
             return ServerApi.LogBookEntries;
+        if (type instanceof ClientModel.Wifi)
+            return ServerApi.Wifis;
+        if (type instanceof ClientModel.ContentPage)
+            return ServerApi.ContentPages;
         throw ("No suitable Api found");
     };
     ServerApi.conntectionCount = ko.observable(0);
@@ -145,9 +148,11 @@ var ServerApi = (function () {
     ServerApi.Albums = new ServerApi("/api/Albums");
     ServerApi.Comments = new ServerApi("/api/Comments");
     ServerApi.Waypoints = new ServerApi("/api/Waypoints");
+    ServerApi.Wifis = new ServerApi("/api/Wifis");
     ServerApi.AlbumImages = new AlbumImageApi("/api/AlbumImages");
-    ServerApi.Crews = new AlbumImageApi("/api/Crews");
+    ServerApi.Crews = new CrewApi("/api/Crews");
     ServerApi.LogBookEntries = new ServerApi("/api/LogBookEntries");
+    ServerApi.ContentPages = new ServerApi("/api/ContentPages");
     ServerApi.WaypointConnections = new WaypointConnectionApi("/api/WaypointConnections");
     return ServerApi;
 }());

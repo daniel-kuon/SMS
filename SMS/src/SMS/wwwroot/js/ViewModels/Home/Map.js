@@ -6,6 +6,7 @@ var Waypoint = ClientModel.Waypoint;
 var Harbour = ClientModel.Harbour;
 var Job = ClientModel.Job;
 var WaypointDistance = ClientModel.WaypointDistance;
+var ctrlPressed = false;
 if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
     $("body").addClass("mobile");
 }
@@ -13,16 +14,18 @@ function renderTime(startDate, endDate) {
     if (startDate instanceof Date)
         return renderTime(endDate.getTime() - startDate.getTime());
     var duration = startDate;
-    var time = Math.ceil(duration / 60000);
+    var time = Math.floor(duration / 60000);
     var mins = (time % 60).toString();
     if (mins.length === 1)
         mins = "0" + mins;
-    time = Math.ceil(time / 60);
+    time = Math.floor(time / 60);
     return time.toString() + ":" + mins;
 }
 function getMiddle(pol) {
     var start = pol.getLatLngs()[0];
     var end = pol.getLatLngs()[1];
+    //if (end === undefined)
+    //    return start;
     return new L.LatLng(start.lat + ((end.lat - start.lat) / 2), start.lng + ((end.lng - start.lng) / 2));
 }
 function splitPolyline(polyline) {
@@ -108,31 +111,56 @@ var EditingHelper = (function () {
             _this.Deleting()
                 .DeleteOnServer()
                 .done(function () {
-                _this.Dataset.remove(_this.Deleting());
+                //this.Dataset.remove(this.Deleting());
                 _this.Deleting(undefined);
+                if (_this.Detail() !== undefined)
+                    _this.Detail(undefined);
+                if (_this.Editing() !== undefined)
+                    _this.Editing(undefined);
             });
         };
         this.Save = function () {
-            var isNew = _this.Editing().Id() === undefined;
-            _this.Editing()
-                .SaveToServer()
-                .done(function () {
-                if (isNew)
-                    _this.Dataset.push(_this.Editing());
-                _this.Deleting(undefined);
-            });
+            if (_this.Parsley !== undefined)
+                _this.Parsley.whenValidate()
+                    .done(function () {
+                    var isNew = _this.Editing().Id() === undefined;
+                    _this.Editing()
+                        .SaveToServer()
+                        .done(function () {
+                        //if (isNew)
+                        //    this.Dataset.push(this.Editing());
+                        _this.Editing(undefined);
+                    });
+                });
+            else {
+                var isNew = _this.Editing().Id() === undefined;
+                _this.Editing()
+                    .SaveToServer()
+                    .done(function () {
+                    //if (isNew)
+                    //    this.Dataset.push(this.Editing());
+                    _this.Editing(undefined);
+                });
+            }
         };
         this.EditingModal = $("#" + editingModalId);
         this.DeletingModal = $("#" + deletingModalId);
+        if ($("form:first").length === 1)
+            this.Parsley = $("form:first", this.EditingModal).parsley(window.ParsleyConfig);
         this.EditingModal.on("show.bs.modal", function () {
             _this.EditingModalOpen = true;
             if (_this.Editing() === undefined)
                 _this.Editing(_this.Factory());
+            mapViewModel.AlbumStack.unshift(_this.Editing().Album());
+        });
+        this.EditingModal.on("shown.bs.modal", function () {
+            window.setTimeout(function () { return $("input, select, textarea", _this.EditingModal).first().focus(); }, 200);
         });
         this.EditingModal.on("hidden.bs.modal", function () {
-            _this.EditingModalOpen = false;
             if (_this.Editing() !== undefined)
                 _this.Editing(undefined);
+            _this.EditingModalOpen = false;
+            mapViewModel.AlbumStack.shift();
         });
         this.Editing.subscribe(function (entity) {
             if (entity === undefined && _this.EditingModalOpen) {
@@ -144,16 +172,19 @@ var EditingHelper = (function () {
             }
         });
         this.Editing.subscribe(function () {
-            if (_this.Editing() !== undefined)
+            if (_this.Editing() !== undefined) {
                 _this.Editing().RevertState(true);
+            }
         }, this, "beforeChange");
         this.DeletingModal.on("show.bs.modal", function () {
             _this.DeletingModalOpen = true;
+            mapViewModel.AlbumStack.unshift(undefined);
         });
         this.DeletingModal.on("hidden.bs.modal", function () {
-            _this.DeletingModalOpen = false;
             if (_this.Deleting() !== undefined)
                 _this.Deleting(undefined);
+            mapViewModel.AlbumStack.shift();
+            _this.DeletingModalOpen = false;
         });
         this.Deleting.subscribe(function (entity) {
             if (entity === undefined && _this.DeletingModalOpen) {
@@ -168,10 +199,12 @@ var EditingHelper = (function () {
                 this.DetailSidebar = detailModalId;
                 this.Detail.subscribe(function (entity) {
                     if (entity === undefined && _this.DetailSidebar.IsActiv()) {
+                        mapViewModel.AlbumStack.shift();
                         _this.DetailSidebar.Hide();
                     }
-                    else if (!_this.DetailSidebar.IsActiv()) {
-                        _this.DetailSidebar.Hide();
+                    else if (entity !== undefined && !_this.DetailSidebar.IsActiv()) {
+                        _this.DetailSidebar.Show();
+                        mapViewModel.AlbumStack.unshift(entity.Album());
                     }
                 });
             }
@@ -181,33 +214,32 @@ var EditingHelper = (function () {
                     if (entity === undefined && _this.DetailModalOpen) {
                         _this.DetailModal.modal("hide");
                     }
-                    else if (!_this.DetailModalOpen) {
-                        entity.SaveState();
+                    else if (entity !== undefined && !_this.DetailModalOpen) {
                         _this.DetailModal.modal("show");
                     }
                 });
+                this.DetailModal.on("show.bs.modal", function () {
+                    _this.DetailModalOpen = true;
+                    mapViewModel.AlbumStack.unshift(_this.Detail().Album());
+                });
+                this.DetailModal.on("hide.bs.modal", function () {
+                    _this.DetailModalOpen = false;
+                    mapViewModel.AlbumStack.shift();
+                });
             }
         }
-        this.Deleting.subscribe(function (entity) {
-            if (entity === undefined && _this.DeletingModalOpen) {
-                _this.DeletingModal.modal("hide");
-            }
-            else if (!_this.DeletingModalOpen) {
-                entity.SaveState();
-                _this.DeletingModal.modal("show");
-            }
-        });
     }
     return EditingHelper;
 }());
 var MapViewModel = (function () {
     function MapViewModel(mapMode) {
         var _this = this;
+        this.IsLoggedIn = ko.observable(false);
         this.routePolyline = ko.observable();
         this.IsLastTakInRoute = ko.computed({
             read: function () {
-                var trip = mapViewModel.SelectedTrip();
-                var h = mapViewModel.SelectedHarbour();
+                var trip = mapViewModel.TripHelper.Editing();
+                var h = mapViewModel.HarbourHelper.Detail();
                 return trip !== undefined && h !== undefined && trip.Tacks()[trip.Tacks().length - 1].Start() === h;
             },
             deferEvaluation: true
@@ -215,7 +247,7 @@ var MapViewModel = (function () {
         this.GetRouteDistance = ko.computed({
             read: function () {
                 var distance = 0;
-                for (var _i = 0, _a = mapViewModel.SelectedTrip().Tacks(); _i < _a.length; _i++) {
+                for (var _i = 0, _a = mapViewModel.TripHelper.Editing().Tacks(); _i < _a.length; _i++) {
                     var tack = _a[_i];
                     if (!isNaN(tack.Distance()))
                         distance += tack.Distance();
@@ -256,6 +288,8 @@ var MapViewModel = (function () {
         this.AlbumImagesLoaded = false;
         this.LogBookEntriesLoaded = false;
         this.CrewsLoaded = false;
+        this.WifisLoaded = false;
+        this.ContentPagesLoaded = false;
         this.Waypoints = ko.observableArray();
         this.WaypointConnections = ko.observableArray();
         this.Harbours = ko.observableArray();
@@ -272,26 +306,34 @@ var MapViewModel = (function () {
         this.AlbumImages = ko.observableArray();
         this.LogBookEntries = ko.observableArray();
         this.Crews = ko.observableArray();
-        this.SelectedWaypoint = ko.observable();
-        this.SelectedHarbour = ko.observable();
-        this.SelectedPerson = ko.observable();
-        this.SelectedJob = ko.observable();
-        this.SelectedTrip = ko.observable();
-        this.SelectedAddress = ko.observable();
-        this.SelectedImage = ko.observable();
-        this.SelectedTack = ko.observable();
-        this.SelectedLocation = ko.observable();
-        this.SelectedSupermarket = ko.observable();
-        this.SelectedRestaurant = ko.observable();
-        this.SelectedLogBookEntry = ko.observable();
+        this.Wifis = ko.observableArray();
+        this.ContentPages = ko.observableArray();
+        this.WaypointHelper = new EditingHelper("editingWaypointModal", "deletingWaypointModal", function () { return _this.CreateWaypoint(MarkerType.Waypoint); }, this.Waypoints);
+        this.HarbourHelper = new EditingHelper("editingHarbourModal", "deletingHarbourModal", function () { return _this.CreateHarbour(); }, this.Harbours, rightSidebar);
+        this.PersonHelper = new EditingHelper("editingPersonModal", "deletingPersonModal", function () { return new ClientModel.Person(); }, this.Persons);
+        this.JobHelper = new EditingHelper("editingJobModal", "deletingJobModal", function () { return new ClientModel.Job(); }, this.Jobs);
+        this.TripHelper = new EditingHelper("editingTripModal", "deletingTripModal", function () { return new ClientModel.Trip(); }, this.Trips);
+        this.AddressHelper = new EditingHelper("editingAddressModal", "deletingAddressModal", function () { return new ClientModel.Address(); }, this.Addresses);
+        this.ImageHelper = new EditingHelper("editingImageModal", "deletingImageModal", function () { return new ClientModel.Image(); }, this.Images);
+        this.TackHelper = new EditingHelper("editingTackModal", "deletingTackModal", function () { return new ClientModel.Tack(); }, this.Tacks);
+        this.LocationHelper = new EditingHelper("editingLocationModal", "deletingLocationModal", function () { return new ClientModel.Location(); }, this.Locations);
+        this.SupermarketHelper = new EditingHelper("editingSupermarketModal", "deletingSupermarketModal", function () { return new ClientModel.Supermarket(); }, this.Supermarkets);
+        this.RestaurantHelper = new EditingHelper("editingRestaurantModal", "deletingRestaurantModal", function () { return new ClientModel.Restaurant(); }, this.Restaurants);
+        this.LogBookEntryHelper = new EditingHelper("editingLogBookEntryModal", "deletingLogBookEntryModal", function () { return new ClientModel.LogBookEntry(); }, this.LogBookEntries, "detailedLogBookEntryModal");
+        this.ContentPageHelper = new EditingHelper("editingContentPageModal", "deletingContentPageModal", function () { return new ClientModel.ContentPage(); }, this.ContentPages, "detailedContentPageModal");
+        this.WifiHelper = new EditingHelper("editingWifiModal", "deletingWifiModal", function () {
+            var w = new ClientModel.Wifi();
+            w.HarbourId(mapViewModel.HarbourHelper.Detail().Id());
+            return w;
+        }, this.Wifis, "detailWifiModal");
+        this.HarboursByName = ko.computed(function () { return _this.Harbours.sort(function (h1, h2) { return h1.Name() > h2.Name() ? 1 : -1; })(); });
+        this.HarboursByDistance = ko.computed(function () { return _this.Harbours.sort(function (h1, h2) { return h1.Distance() - h2.Distance(); })(); });
+        this.LogBookEntriesByStartDate = ko.computed(function () { return _this.LogBookEntries.sort(function (l1, l2) { return Date.parse(l1.StartDate()) - Date.parse(l2.StartDate()); })(); });
         this.RemoveHarbour = function () {
-            mapViewModel.SelectedWaypoint().RemoveFromMap();
-            mapViewModel.Waypoints.remove(_this.SelectedWaypoint());
+            mapViewModel.HarbourHelper.Detail().DeleteOnServer();
         };
         this.RemoveWaypoint = function () {
-            mapViewModel.SelectedHarbour().RemoveFromMap();
-            mapViewModel.Harbours.remove(_this.SelectedHarbour());
-            mapViewModel.Harbours.remove(_this.SelectedHarbour());
+            mapViewModel.WaypointHelper.Detail().DeleteOnServer();
         };
         this.MapMode = ko.observable();
         this.RemovePolyline = function (polyline) {
@@ -301,18 +343,63 @@ var MapViewModel = (function () {
         this.routeFixed = false;
         this.noRevertToPreviousBounds = false;
         this.Polylines = new Array();
-        this.DeletingPerson = ko.observable();
-        this.EditingPerson = ko.observable();
-        this.EditingHarbour = ko.observable();
-        this.DeletingHarbour = ko.observable();
-        this.EditingWaypoint = ko.observable();
-        this.DeletingWaypoint = ko.observable();
-        this.DeletingJob = ko.observable();
-        this.EditingJob = ko.observable();
-        this.EditingLogBookEntry = ko.observable();
-        this.DeletingLogBookEntry = ko.observable();
-        this.DetailedLogBookEntry = ko.observable();
         this.WaypointMarkers = new Array();
+        this.HarboursToSelect = ko.computed(function () {
+            return _this.HarboursByName().concat([{ Name: "Neuer Hafen...", IsDummy: true }]);
+        });
+        this.ProcessHarbourSelectOptions = function (option, item) {
+            if (item !== undefined && item !== null && item.IsDummy === true) {
+                option.value = "filled";
+                var context_1 = ko.contextFor(option);
+                var select = $(option).parent();
+                if (select.data("new-change-handler") === undefined)
+                    select.data("new-change-handler", select.change(function () {
+                        if ($(option).is(":selected")) {
+                            var harbour_1 = _this.CreateHarbour();
+                            _this.HarbourHelper.Editing(harbour_1);
+                            var subscription_1 = _this.HarbourHelper.Editing.subscribe(function () {
+                                if (harbour_1.Id() !== undefined) {
+                                    _this.Harbours.push(harbour_1);
+                                    context_1.$data.Harbour(harbour_1);
+                                }
+                                else {
+                                    harbour_1.RemoveFromMap();
+                                    context_1.$data.Harbour(undefined);
+                                }
+                                subscription_1.dispose();
+                            });
+                        }
+                    }));
+            }
+        };
+        this.PersonsToSelect = ko.computed(function () {
+            return _this.Persons().sort(function (p1, p2) { return p1.FullName() > p2.FullName() ? 1 : -1; }).concat([{ FullName: "Neue Person...", IsDummy: true }]);
+        });
+        this.ProcessPersonSelectOptions = function (option, item) {
+            if (item !== undefined && item !== null && item.IsDummy === true) {
+                option.value = "filled";
+                var context_2 = ko.contextFor(option);
+                var select = $(option).parent();
+                if (select.data("new-change-handler") === undefined)
+                    select.data("new-change-handler", select.change(function () {
+                        if ($(option).is(":selected")) {
+                            var person_1 = new Person();
+                            _this.PersonHelper.Editing(person_1);
+                            var subscription_2 = _this.PersonHelper.Editing.subscribe(function () {
+                                if (person_1.Id() !== undefined) {
+                                    _this.Persons.push(person_1);
+                                    context_2.$data.Person(person_1);
+                                }
+                                else {
+                                    context_2.$data.Person(undefined);
+                                }
+                                subscription_2.dispose();
+                            });
+                        }
+                    }));
+            }
+        };
+        this.AlbumStack = ko.observableArray();
         L.mapbox
             .accessToken =
             "pk.eyJ1IjoiZGFuaWVsLWt1b24iLCJhIjoiY2lldnVtY29iMDBiOHQxbTBvZzBqZWl6cCJ9.UEc2YqH59pB1YTpv22vg8A";
@@ -327,7 +414,7 @@ var MapViewModel = (function () {
                     text: "Neuer Hafen",
                     callback: function (e) {
                         console.log(e);
-                        mapViewModel.EditingHarbour(mapViewModel.CreateHarbour("", e.latlng));
+                        mapViewModel.HarbourHelper.Editing(mapViewModel.CreateHarbour("", e.latlng));
                     }
                 }
             ]
@@ -336,7 +423,22 @@ var MapViewModel = (function () {
         this.Map.setView([54.40774166820069, 10.523529052734373], 9);
         L.tileLayer("http://t1.openseamap.org/seamark/{z}/{x}/{y}.png").addTo(this.Map);
         this.LoadData();
-        this.SelectedHarbour.subscribe(function (newHarbour) {
+        $.get("/Account/LoggedIn").done(function (data) { return _this.IsLoggedIn(data); });
+        this.ContentPages.subscribe(function (data) {
+            var nav = $("#leftNav");
+            $(".contentPageLink", nav).remove();
+            var _loop_1 = function(cP) {
+                $("<li role=\"presentation\" class=\"contentPageLink\"><a href=\"#\">" + cP.Title() + "</a></li>").click(function () {
+                    mapViewModel.ContentPageHelper.Detail(cP);
+                    return false;
+                }).appendTo(nav);
+            };
+            for (var _i = 0, data_1 = data; _i < data_1.length; _i++) {
+                var cP = data_1[_i];
+                _loop_1(cP);
+            }
+        });
+        this.HarbourHelper.Detail.subscribe(function (newHarbour) {
             if (newHarbour !== undefined) {
                 mapViewModel.CalculateDistances(newHarbour);
                 mapViewModel.Harbours.sort(function (h1, h2) { return h1.Distance() - h2.Distance(); });
@@ -350,121 +452,10 @@ var MapViewModel = (function () {
             mapViewModel.routeFixed = false;
             mapViewModel.HideRoute();
         });
-        this.EditingHarbour.subscribe(function (harbour) {
-            if (harbour === undefined) {
-                editingHarbourModal.modal("hide");
-            }
-            else {
-                harbour.SaveState();
-                editingHarbourModal.modal("show");
-            }
-        });
-        this.EditingHarbour.subscribe(function (harbour) {
-            if (harbour !== undefined) {
-                harbour.RevertState(true);
-                if (harbour.Id() === undefined)
-                    mapViewModel.Map.removeLayer(harbour.marker);
-            }
+        this.HarbourHelper.Editing.subscribe(function (harbour) {
+            if (harbour !== undefined && harbour.Id() === undefined)
+                mapViewModel.Map.removeLayer(harbour.marker);
         }, this, "beforeChange");
-        this.DeletingHarbour.subscribe(function (h) {
-            if (h === undefined) {
-                deletingHarbourModal.modal("hide");
-            }
-            else {
-                deletingHarbourModal.modal("show");
-            }
-        });
-        this.EditingWaypoint.subscribe(function (waypoint) {
-            if (waypoint === undefined) {
-                editingWaypointModal.modal("hide");
-            }
-            else {
-                waypoint.SaveState();
-                editingWaypointModal.modal("show");
-            }
-        });
-        this.EditingWaypoint.subscribe(function (waypoint) {
-            if (mapViewModel.EditingWaypoint() !== undefined)
-                mapViewModel.EditingWaypoint().RevertState(true);
-        }, this, "beforeChange");
-        this.DeletingWaypoint.subscribe(function (h) {
-            if (h === undefined) {
-                deletingWaypointModal.modal("hide");
-            }
-            else {
-                deletingWaypointModal.modal("show");
-            }
-        });
-        this.EditingJob.subscribe(function (job) {
-            if (job === undefined) {
-                editingJobModal.modal("hide");
-            }
-            else {
-                job.SaveState();
-                editingJobModal.modal("show");
-            }
-        });
-        this.EditingJob.subscribe(function (job) {
-            if (mapViewModel.EditingJob() !== undefined)
-                mapViewModel.EditingJob().RevertState(true);
-        }, this, "beforeChange");
-        this.DeletingJob.subscribe(function (h) {
-            if (h === undefined) {
-                deletingJobModal.modal("hide");
-            }
-            else {
-                deletingJobModal.modal("show");
-            }
-        });
-        this.EditingPerson.subscribe(function (Person) {
-            if (Person === undefined) {
-                editingPersonModal.modal("hide");
-            }
-            else {
-                Person.SaveState();
-                editingPersonModal.modal("show");
-            }
-        });
-        this.EditingPerson.subscribe(function (Person) {
-            if (mapViewModel.EditingPerson() !== undefined)
-                mapViewModel.EditingPerson().RevertState(true);
-        }, this, "beforeChange");
-        this.DeletingPerson.subscribe(function (h) {
-            if (h === undefined) {
-                deletingPersonModal.modal("hide");
-            }
-            else {
-                deletingPersonModal.modal("show");
-            }
-        });
-        this.DetailedLogBookEntry.subscribe(function (logBookEntry) {
-            detailedLogBookEntryModal.modal("show");
-        });
-        this.EditingLogBookEntry.subscribe(function (logBookEntry) {
-            if (logBookEntry === undefined) {
-                editingLogBookEntryModal.modal("hide");
-            }
-            else {
-                logBookEntry.SaveState();
-                editingLogBookEntryModal.modal("show");
-            }
-        });
-        this.EditingLogBookEntry.subscribe(function (job) {
-            if (mapViewModel.EditingLogBookEntry() !== undefined)
-                mapViewModel.EditingLogBookEntry().RevertState(true);
-        }, this, "beforeChange");
-        this.SelectedHarbour.subscribe(function (h) {
-            if (h === undefined)
-                rightSidebar.Hide();
-            else
-                rightSidebar.Show();
-        });
-        this.SelectedTrip.subscribe(function (t) {
-            if (t === undefined)
-                bottomSidebar.Hide();
-            else
-                bottomSidebar.Show();
-        });
         this.Map.addEventListener("mousemove", function (e) {
             if (_this.GetMapMode() === MapMode.RouteDrawing) {
                 _this.DrawingLatLng.lat = e.latlng.lat;
@@ -545,18 +536,18 @@ var MapViewModel = (function () {
     MapViewModel.prototype.StartRoute = function () {
         var trip = new ClientModel.Trip();
         var tack = new ClientModel.Tack();
-        var harbour = mapViewModel.SelectedHarbour();
+        var harbour = mapViewModel.HarbourHelper.Detail();
         tack.Start(harbour);
         trip.Tacks.push(tack);
-        mapViewModel.SelectedTrip(trip);
+        mapViewModel.TripHelper.Editing(trip);
         mapViewModel.routePolyline(L.polyline([], {
             color: "#009900"
         }));
         mapViewModel.routePolyline().addTo(mapViewModel.Map);
     };
     MapViewModel.prototype.AddToRoute = function () {
-        var trip = mapViewModel.SelectedTrip();
-        var targetHarbour = mapViewModel.SelectedHarbour();
+        var trip = mapViewModel.TripHelper.Editing();
+        var targetHarbour = mapViewModel.HarbourHelper.Editing();
         var tack = new ClientModel.Tack();
         var lastTack = trip.Tacks()[trip.Tacks().length - 1];
         var startHarbour = lastTack.Start();
@@ -578,7 +569,7 @@ var MapViewModel = (function () {
             color: "#009900"
         }));
         mapViewModel.routePolyline().addTo(mapViewModel.Map);
-        for (var _i = 0, _a = mapViewModel.SelectedTrip().Tacks(); _i < _a.length; _i++) {
+        for (var _i = 0, _a = mapViewModel.TripHelper.Editing().Tacks(); _i < _a.length; _i++) {
             var tack = _a[_i];
             var targetHarbour = tack.End();
             var startHarbour = tack.Start();
@@ -596,7 +587,7 @@ var MapViewModel = (function () {
     };
     MapViewModel.prototype.PullTack = function () {
         var tack = this;
-        var tacks = mapViewModel.SelectedTrip().Tacks;
+        var tacks = mapViewModel.TripHelper.Editing().Tacks;
         var index = tacks.indexOf(tack);
         var prevTack = tacks()[index - 1];
         var tmpEnd = tack.End();
@@ -610,7 +601,7 @@ var MapViewModel = (function () {
     };
     MapViewModel.prototype.PushTack = function () {
         var tack = this;
-        var tacks = mapViewModel.SelectedTrip().Tacks;
+        var tacks = mapViewModel.TripHelper.Editing().Tacks;
         var index = tacks.indexOf(tack);
         var nextTack = tacks()[index + 1];
         tack.End(nextTack.End());
@@ -623,7 +614,7 @@ var MapViewModel = (function () {
     };
     MapViewModel.prototype.RemoveTack = function () {
         var tack = this;
-        var tacks = mapViewModel.SelectedTrip().Tacks;
+        var tacks = mapViewModel.TripHelper.Editing().Tacks;
         var index = tacks.indexOf(tack);
         var prevTack = tacks()[index - 1];
         if (prevTack !== undefined)
@@ -744,10 +735,28 @@ var MapViewModel = (function () {
         ServerApi.Crews.Get()
             .done(function (d) {
             for (var _i = 0, d_11 = d; _i < d_11.length; _i++) {
-                var ai = d_11[_i];
-                _this.Crews.push(ai);
+                var c = d_11[_i];
+                _this.Crews.push(c);
             }
             _this.CrewsLoaded = true;
+            _this.InitializeModel();
+        });
+        ServerApi.Wifis.Get()
+            .done(function (d) {
+            for (var _i = 0, d_12 = d; _i < d_12.length; _i++) {
+                var c = d_12[_i];
+                _this.Wifis.push(new ClientModel.Wifi().LoadFromServerEntity(c));
+            }
+            _this.WifisLoaded = true;
+            _this.InitializeModel();
+        });
+        ServerApi.ContentPages.Get()
+            .done(function (d) {
+            for (var _i = 0, d_13 = d; _i < d_13.length; _i++) {
+                var c = d_13[_i];
+                _this.ContentPages.push(new ClientModel.ContentPage().LoadFromServerEntity(c));
+            }
+            _this.ContentPagesLoaded = true;
             _this.InitializeModel();
         });
         //ServerApi.WaypointTacks.Get().done(d => {
@@ -758,8 +767,8 @@ var MapViewModel = (function () {
         ServerApi.Tacks
             .Get()
             .done(function (d) {
-            for (var _i = 0, d_12 = d; _i < d_12.length; _i++) {
-                var sEntity = d_12[_i];
+            for (var _i = 0, d_14 = d; _i < d_14.length; _i++) {
+                var sEntity = d_14[_i];
                 _this.Tacks.push(new ClientModel.Tack().LoadFromServerEntity(sEntity));
             }
             _this.TacksLoaded = true;
@@ -793,7 +802,10 @@ var MapViewModel = (function () {
             this.TacksLoaded &&
             this.LocationsLoaded &&
             this.CrewsLoaded &&
-            this.AlbumImagesLoaded) {
+            this.LogBookEntriesLoaded &&
+            this.AlbumImagesLoaded &&
+            this.WifisLoaded &&
+            this.ContentPagesLoaded) {
             for (var _i = 0, _a = this.Jobs(); _i < _a.length; _i++) {
                 var entity = _a[_i];
                 if (entity.AssignedToId() !== undefined)
@@ -809,31 +821,31 @@ var MapViewModel = (function () {
                 var entity = _c[_b];
                 entity.Album(this.GetAlbumById(entity.AlbumId()));
             }
-            for (var _d = 0, _e = this.Locations(); _d < _e.length; _d++) {
-                var entity = _e[_d];
+            for (var _e = 0, _f = this.Locations(); _e < _f.length; _e++) {
+                var entity = _f[_e];
                 entity.Address(this.GetAddressById(entity.AddressId()));
                 this.GetHarbourById(entity.HarbourId()).Locations.push(entity);
             }
-            for (var _f = 0, _g = this.AlbumImages(); _f < _g.length; _f++) {
-                var entity = _g[_f];
+            for (var _g = 0, _h = this.AlbumImages(); _g < _h.length; _g++) {
+                var entity = _h[_g];
                 this.GetAlbumById(entity.AlbumId).Images.push(this.GetImageById(entity.ImageId));
             }
-            for (var _h = 0, _j = mapViewModel.WaypointConnections(); _h < _j.length; _h++) {
-                var connection = _j[_h];
+            for (var _j = 0, _k = mapViewModel.WaypointConnections(); _j < _k.length; _j++) {
+                var connection = _k[_j];
                 var polyline = mapViewModel.AddPolyline([
                     mapViewModel.GetWayPointById(connection.Waypoint1Id), mapViewModel
                         .GetWayPointById(connection.Waypoint2Id)
                 ]);
                 addDummyHandle(polyline);
             }
-            for (var _k = 0, _l = mapViewModel.LogBookEntries(); _k < _l.length; _k++) {
-                var entry = _l[_k];
+            for (var _l = 0, _m = mapViewModel.LogBookEntries(); _l < _m.length; _l++) {
+                var entry = _m[_l];
                 entry.Start(mapViewModel.GetHarbourById(entry.StartId()));
                 entry.End(mapViewModel.GetHarbourById(entry.EndId()));
                 entry.Album(mapViewModel.GetAlbumById(entry.AlbumId()));
             }
-            for (var _m = 0, _o = mapViewModel.Crews(); _m < _o.length; _m++) {
-                var crew = _o[_m];
+            for (var _o = 0, _p = mapViewModel.Crews(); _o < _p.length; _o++) {
+                var crew = _p[_o];
                 var lBE = mapViewModel.GetLogBookEntryById(crew.TackId);
                 var tack = mapViewModel.GetTackById(crew.TackId);
                 var trip = mapViewModel.GetTripById(crew.TackId);
@@ -845,12 +857,18 @@ var MapViewModel = (function () {
                 else if (trip !== undefined)
                     trip.Persons.push(p);
             }
+            for (var _q = 0, _r = mapViewModel.Wifis(); _q < _r.length; _q++) {
+                var wifi = _r[_q];
+                var h = mapViewModel.GetHarbourById(wifi.HarbourId());
+                h.Wifis.push(wifi);
+                wifi.Harbour(h);
+            }
             ko.applyBindings(mapViewModel);
             $("#loadingOverlay").remove();
         }
     };
     MapViewModel.prototype.InitializeMap = function () {
-        mapViewModel.SelectedHarbour(undefined);
+        mapViewModel.HarbourHelper.Detail(undefined);
         for (var _i = 0, _a = mapViewModel.Waypoints(); _i < _a.length; _i++) {
             var wp = _a[_i];
             if (wp.marker !== undefined)
@@ -863,22 +881,22 @@ var MapViewModel = (function () {
                 mapViewModel.Map.removeLayer(h.marker);
             mapViewModel.CreateMarker(MarkerType.Harbour, h);
         }
-        for (var _d = 0, _e = mapViewModel.Polylines; _d < _e.length; _d++) {
-            var p = _e[_d];
+        for (var _e = 0, _f = mapViewModel.Polylines; _e < _f.length; _e++) {
+            var p = _f[_e];
             if (p.DummyHandle.marker !== undefined)
                 mapViewModel.Map.removeLayer(p.DummyHandle.marker);
             mapViewModel.CreateMarker(MarkerType.Dummy, p.DummyHandle);
         }
         if (mapViewModel.MapMode() === MapMode.Admin) {
-            for (var _f = 0, _g = mapViewModel.Polylines; _f < _g.length; _f++) {
-                var p = _g[_f];
+            for (var _g = 0, _h = mapViewModel.Polylines; _g < _h.length; _g++) {
+                var p = _h[_g];
                 p.addTo(mapViewModel.Map);
             }
             mapViewModel.Map.contextmenu.enable();
         }
         else {
-            for (var _h = 0, _j = mapViewModel.Polylines; _h < _j.length; _h++) {
-                var p = _j[_h];
+            for (var _j = 0, _k = mapViewModel.Polylines; _j < _k.length; _j++) {
+                var p = _k[_j];
                 mapViewModel.Map.removeLayer(p);
             }
             mapViewModel.Map.contextmenu.disable();
@@ -896,6 +914,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Waypoint with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetHarbourById = function (id) {
         for (var _i = 0, _a = this.Harbours(); _i < _a.length; _i++) {
@@ -904,6 +923,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Harbour with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetPersonById = function (id) {
         for (var _i = 0, _a = this.Persons(); _i < _a.length; _i++) {
@@ -912,6 +932,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Person with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetJobById = function (id) {
         for (var _i = 0, _a = this.Jobs(); _i < _a.length; _i++) {
@@ -920,6 +941,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Job with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetTripById = function (id) {
         for (var _i = 0, _a = this.Trips(); _i < _a.length; _i++) {
@@ -928,6 +950,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Trip with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetAddressById = function (id) {
         for (var _i = 0, _a = this.Addresses(); _i < _a.length; _i++) {
@@ -936,6 +959,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Address with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetImageById = function (id) {
         for (var _i = 0, _a = this.Images(); _i < _a.length; _i++) {
@@ -944,6 +968,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Image with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetTackById = function (id) {
         for (var _i = 0, _a = this.Tacks(); _i < _a.length; _i++) {
@@ -952,6 +977,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Tack with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetLogBookEntryById = function (id) {
         for (var _i = 0, _a = this.LogBookEntries(); _i < _a.length; _i++) {
@@ -960,6 +986,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Tack with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetAlbumById = function (id) {
         for (var _i = 0, _a = this.Albums(); _i < _a.length; _i++) {
@@ -968,6 +995,7 @@ var MapViewModel = (function () {
                 return entity;
         }
         //throw "No Tack with id " + id + " found";
+        return undefined;
     };
     MapViewModel.prototype.GetLocationById = function (id) {
         for (var _i = 0, _a = this.Locations(); _i < _a.length; _i++) {
@@ -980,12 +1008,13 @@ var MapViewModel = (function () {
             if (entity.Id() === id)
                 return entity;
         }
-        for (var _d = 0, _e = this.Restaurants(); _d < _e.length; _d++) {
-            var entity = _e[_d];
+        for (var _e = 0, _f = this.Restaurants(); _e < _f.length; _e++) {
+            var entity = _f[_e];
             if (entity.Id() === id)
                 return entity;
         }
         //throw "No Location with id " + id + " found";
+        return undefined;
     };
     //SortedLogBookEntries = ko.computed({
     //    read: () => this.LogBookEntries.sort((l1, l2) => {
@@ -995,10 +1024,11 @@ var MapViewModel = (function () {
     //    }),
     //    deferEvaluation: true
     //});
-    MapViewModel.prototype.InitGallery = function () {
+    MapViewModel.prototype.InitGallery = function (item, event) {
         var items = new Array();
+        var albumElem = event.target.parentElement;
         var currImage = this;
-        for (var _i = 0, _a = mapViewModel.SelectedHarbour().Album().Images(); _i < _a.length; _i++) {
+        for (var _i = 0, _a = mapViewModel.AlbumStack()[0].Images(); _i < _a.length; _i++) {
             var data = _a[_i];
             items.push({
                 h: data.Height(),
@@ -1007,9 +1037,9 @@ var MapViewModel = (function () {
             });
         }
         gallery = new PhotoSwipe(pswp, PhotoSwipeUI_Default, items, {
-            index: mapViewModel.SelectedHarbour().Album().Images.indexOf(currImage),
+            index: mapViewModel.AlbumStack()[0].Images.indexOf(currImage),
             getThumbBoundsFn: function (index) {
-                var elem = $(".images:first img")[index];
+                var elem = $("img", albumElem)[index];
                 var padding = parseFloat(window.getComputedStyle(elem, null)
                     .getPropertyValue("padding-left")
                     .replace("px", ""));
@@ -1030,7 +1060,23 @@ var MapViewModel = (function () {
         harbour.SaveToServer();
     };
     MapViewModel.prototype.AddPolyline = function (arg) {
+        //var options = {
+        //    contextmenu: true,
+        //    contextmenuInheritItems: false,
+        //    contextmenuItems: [
+        //        {
+        //            text: "FFFFFFFFFFFFFFFFFF",
+        //            callback: function() { console.log(this);
+        //                console.log(arguments);mapViewModel.HarbourHelper.Editing(this) }
+        //        },
+        //        {
+        //            text: "Löschen",
+        //            callback: function() { mapViewModel.HarbourHelper.Deleting(this) }
+        //        }
+        //    ]
+        //};
         var polyline = new L.Polyline([]);
+        //polyline.bindContextMenu(options);
         mapViewModel.Polylines.push(polyline);
         polyline.addEventListener("click", function (e) {
             var p1 = mapViewModel.Map.latLngToContainerPoint(polyline.getLatLngs()[0]);
@@ -1054,7 +1100,7 @@ var MapViewModel = (function () {
                     waypoint.AddToPolyline(polyline);
                 }
         polyline.addEventListener("mouseover", function () {
-            //mapViewModel.HoveredPolyine = polyline;
+            mapViewModel.HoveredPolyine = polyline;
         });
         return polyline;
     };
@@ -1077,7 +1123,7 @@ var MapViewModel = (function () {
         throw "No Waypoint with id " + id + " in model";
     };
     MapViewModel.prototype.CalculateDistances = function (start, target) {
-        if (start === void 0) { start = mapViewModel.SelectedHarbour(); }
+        if (start === void 0) { start = mapViewModel.HarbourHelper.Detail(); }
         var waypoints = [start];
         var calculating = new Array();
         var calculated = new Array();
@@ -1102,24 +1148,24 @@ var MapViewModel = (function () {
             }
         }
         else {
-            for (var _d = 0, _e = mapViewModel.Waypoints(); _d < _e.length; _d++) {
-                var wp = _e[_d];
+            for (var _e = 0, _f = mapViewModel.Waypoints(); _e < _f.length; _e++) {
+                var wp = _f[_e];
                 wp.Precessor(undefined);
             }
-            for (var _f = 0, _g = mapViewModel.Harbours(); _f < _g.length; _f++) {
-                var h = _g[_f];
+            for (var _g = 0, _h = mapViewModel.Harbours(); _g < _h.length; _g++) {
+                var h = _h[_g];
                 h.Precessor(undefined);
             }
         }
         while (calculating.length > 0) {
             var minimalDist = Number.POSITIVE_INFINITY;
-            var minimalWP = void 0;
-            for (var _h = 0, calculating_1 = calculating; _h < calculating_1.length; _h++) {
-                var wp = calculating_1[_h];
-                for (var _j = 0, _k = wp.ConnectedWayPoints; _j < _k.length; _j++) {
-                    var cWP = _k[_j];
-                    if ((calculateRoute ? cWP.RoutePrecessor() : cWP.Precessor()) !== undefined)
-                        removeFromArray(wp.ConnectedWayPoints, cWP);
+            var minimalWp = void 0;
+            for (var _j = 0, calculating_1 = calculating; _j < calculating_1.length; _j++) {
+                var wp = calculating_1[_j];
+                for (var _k = 0, _l = wp.ConnectedWayPoints; _k < _l.length; _k++) {
+                    var cWp = _l[_k];
+                    if ((calculateRoute ? cWp.RoutePrecessor() : cWp.Precessor()) !== undefined)
+                        removeFromArray(wp.ConnectedWayPoints, cWp);
                 }
                 if (wp.ConnectedWayPoints.length === 0) {
                     removeFromArray(calculating, wp);
@@ -1129,22 +1175,22 @@ var MapViewModel = (function () {
                     var dist = wp.Distance + wp.ConnectedWayPoints[0].LatLng.distanceTo(wp.LatLng) / 1.852;
                     if (dist < minimalDist) {
                         minimalDist = dist;
-                        minimalWP = wp;
+                        minimalWp = wp;
                     }
                 }
             }
-            if (minimalWP !== undefined) {
-                calculating.push(new WaypointDistance(minimalWP.Waypoint, minimalWP.ConnectedWayPoints.shift(), minimalDist, waypoints, calculateRoute));
+            if (minimalWp !== undefined) {
+                calculating.push(new WaypointDistance(minimalWp.Waypoint, minimalWp.ConnectedWayPoints.shift(), minimalDist, waypoints, calculateRoute));
             }
         }
         if (calculateRoute)
-            for (var _l = 0, calculated_1 = calculated; _l < calculated_1.length; _l++) {
-                var wp = calculated_1[_l];
+            for (var _m = 0, calculated_1 = calculated; _m < calculated_1.length; _m++) {
+                var wp = calculated_1[_m];
                 wp.Waypoint.RouteDistance(Math.round(wp.Distance / 100) / 10);
             }
         else
-            for (var _m = 0, calculated_2 = calculated; _m < calculated_2.length; _m++) {
-                var wp = calculated_2[_m];
+            for (var _o = 0, calculated_2 = calculated; _o < calculated_2.length; _o++) {
+                var wp = calculated_2[_o];
                 wp.Waypoint.Distance(Math.round(wp.Distance / 100) / 10);
             }
     };
@@ -1159,7 +1205,7 @@ var MapViewModel = (function () {
             return;
         var latLngs = [h.LatLng];
         var dist = h.Distance();
-        if (dist === undefined)
+        if (dist === undefined || dist === null)
             dist = 0;
         while (h.Precessor() !== undefined) {
             h = h.Precessor();
@@ -1232,17 +1278,18 @@ var MapViewModel = (function () {
             if (mapViewModel.MapMode() === MapMode.Admin) {
                 options.contextmenu = true;
                 options.contextmenuInheritItems = false;
+                // ReSharper disable SuspiciousThisUsage
                 if (markerType === MarkerType.Harbour) {
                     options.contextmenuItems = [
                         {
                             text: "Bearbeiten",
                             context: wp,
-                            callback: function () { mapViewModel.EditingHarbour(this); }
+                            callback: function () { mapViewModel.HarbourHelper.Editing(this); }
                         },
                         {
                             text: "Löschen",
                             context: wp,
-                            callback: function () { mapViewModel.DeletingHarbour(this); }
+                            callback: function () { mapViewModel.HarbourHelper.Deleting(this); }
                         }
                     ];
                 }
@@ -1251,12 +1298,12 @@ var MapViewModel = (function () {
                         {
                             text: "Bearbeiten",
                             context: wp,
-                            callback: function () { mapViewModel.EditingWaypoint(this); }
+                            callback: function () { mapViewModel.WaypointHelper.Editing(this); }
                         },
                         {
                             text: "Löschen",
                             context: wp,
-                            callback: function () { mapViewModel.DeletingWaypoint(this); }
+                            callback: function () { mapViewModel.WaypointHelper.Deleting(this); }
                         }
                     ];
                 }
@@ -1268,21 +1315,19 @@ var MapViewModel = (function () {
             if (mapViewModel.MapMode() === MapMode.Admin) {
                 if (markerType === MarkerType.Dummy)
                     marker.addEventListener("mouseout", function (e) {
-                        if (e.target.Waypoint.IsDummy()) {
+                        if (e.target.Waypoint.IsDummy())
                             mapViewModel.HoveredPolyine = undefined;
-                        }
                     });
-                marker.addEventListener("drag", function (e) {
-                    wp.SetLatLng(wp.marker.getLatLng());
-                });
+                marker.addEventListener("drag", function () { wp.SetLatLng(wp.marker.getLatLng()); });
                 if (markerType === MarkerType.Waypoint || markerType === MarkerType.Dummy) {
                     this.WaypointMarkers.push(wp.marker);
                     wp.marker.Point = mapViewModel.Map.latLngToContainerPoint(wp.LatLng);
                 }
-                wp.marker.addEventListener("click", function (e) {
+                wp.marker.addEventListener("click", function () {
                     if (wp.IsDummy()) {
-                        mapViewModel.Waypoints.push(wp);
+                        mapViewModel.HoveredPolyine = undefined;
                         wp.convertFromDummyHandle();
+                        mapViewModel.Waypoints.push(wp);
                     }
                     if (mapViewModel.GetMapMode() === MapMode.RouteDrawing) {
                         if (!wp.IsInPolyline(mapViewModel.DrawingPolyline)) {
@@ -1307,23 +1352,21 @@ var MapViewModel = (function () {
                     mapViewModel.DrawingPolyline.addLatLng(mapViewModel.DrawingLatLng);
                 });
                 if (markerType === MarkerType.Dummy)
-                    wp.marker.addOneTimeEventListener("drag", function (e) {
+                    wp.marker.addOneTimeEventListener("drag", function () {
                         wp.convertFromDummyHandle();
                         mapViewModel.Waypoints.push(wp);
                     });
                 //else if (markerType === MarkerType.Waypoint) {
                 //    wp.Name(`Wegpunkt ${mapViewModel.Waypoints().length + 1}`);
                 //}
-                wp.marker.addEventListener("dragend", function (e) {
-                    wp.SaveToServer();
-                });
+                wp.marker.addEventListener("dragend", function () { wp.SaveToServer(); });
             }
             else if (markerType === MarkerType.Harbour) {
                 wp.marker.addEventListener("mouseover", function () {
-                    if (mapViewModel.SelectedHarbour() !== undefined)
+                    if (mapViewModel.HarbourHelper.Detail() !== undefined)
                         mapViewModel.ShowRoute(wp);
                 });
-                wp.marker.addEventListener("click", function () { return mapViewModel.SelectedHarbour(wp); });
+                wp.marker.addEventListener("click", function () { return mapViewModel.HarbourHelper.Detail(wp); });
             }
         }
     };
@@ -1337,139 +1380,28 @@ var MapViewModel = (function () {
         this.InitializeWaypoint(h, MarkerType.Harbour);
         return h;
     };
-    MapViewModel.prototype.SaveHarbour = function () {
-        var harbour = this;
-        if (harbour.Id() === undefined) {
-            mapViewModel.Harbours.push(harbour);
-        }
-        harbour.SaveToServer()
-            .done(function () {
-            mapViewModel.EditingHarbour(undefined);
-        });
-    };
-    MapViewModel.prototype.DeleteHarbour = function () {
-        var h = mapViewModel.DeletingHarbour();
-        ServerApi.WaypointConnections
-            .Disconnect(h.Id())
-            .done(function () {
-            h.DeleteOnServer()
-                .done(function () {
-                h.RemoveFromMap();
-                mapViewModel.Harbours.remove(h);
-                mapViewModel.DeletingHarbour(undefined);
-            });
-        });
-    };
-    MapViewModel.prototype.SaveWaypoint = function () {
-        var waypoint = this;
-        waypoint.SaveToServer()
-            .done(function () {
-            mapViewModel.EditingWaypoint(undefined);
-        });
-    };
-    MapViewModel.prototype.DeleteWaypoint = function () {
-        var wp = mapViewModel.DeletingWaypoint();
-        ServerApi.WaypointConnections
-            .Disconnect(wp.Id())
-            .done(function () {
-            wp.DeleteOnServer()
-                .done(function () {
-                wp.RemoveFromMap();
-                mapViewModel.Waypoints.remove(wp);
-                mapViewModel.DeletingWaypoint(undefined);
-            });
-        });
-    };
-    ;
-    MapViewModel.prototype.SaveJob = function () {
-        var job = this;
-        var newJob = job.Id() === undefined;
-        job.SaveToServer()
-            .done(function () {
-            if (newJob) {
-                mapViewModel.Jobs.push(mapViewModel.EditingJob());
-                if (mapViewModel.EditingJob().SuperJobId() !== undefined)
-                    mapViewModel.GetJobById(mapViewModel.EditingJob().SuperJobId()).SubJobs.push(mapViewModel.EditingJob());
-            }
-            mapViewModel.EditingJob(undefined);
-        });
-    };
-    MapViewModel.prototype.DeleteJob = function () {
-        var job = mapViewModel.DeletingJob();
-        job.DeleteOnServer()
-            .done(function () {
-            mapViewModel.Jobs.remove(job);
-            if (job.SuperJobId() !== undefined)
-                mapViewModel.GetJobById(job.SuperJobId()).SubJobs.remove(job);
-            mapViewModel.DeletingJob(undefined);
-        });
-    };
-    MapViewModel.prototype.SaveLogBookEntry = function () {
-        var job = this;
-        var newLogBookEntry = job.Id() === undefined;
-        job.SaveToServer()
-            .done(function () {
-            if (newLogBookEntry) {
-                mapViewModel.LogBookEntries.push(mapViewModel.EditingLogBookEntry());
-            }
-            mapViewModel.EditingLogBookEntry(undefined);
-        });
-    };
-    MapViewModel.prototype.DeleteLogBookEntry = function () {
-        var job = mapViewModel.DeletingLogBookEntry();
-        job.DeleteOnServer()
-            .done(function () {
-            mapViewModel.LogBookEntries.remove(job);
-            mapViewModel.DeletingLogBookEntry(undefined);
-        });
-    };
     MapViewModel.prototype.SetOptionKey = function (option, item) {
         ko.applyBindingsToNode(option, { attr: { "data-id": item.Id } }, item);
         ko.applyBindingsToNode(option, { attr: { "value": item.Id } }, item);
     };
     ;
-    MapViewModel.prototype.SavePerson = function () {
-        mapViewModel.EditingPerson().SaveToServer().done(function () {
-            mapViewModel.Persons.push(mapViewModel.EditingPerson());
-            mapViewModel.EditingPerson(undefined);
-        });
-    };
-    MapViewModel.prototype.DeletePerson = function () {
-        mapViewModel.DeletingPerson()
-            .DeleteOnServer()
-            .done(function () {
-            mapViewModel.Persons.remove(mapViewModel.DeletingPerson());
-            mapViewModel.DeletingPerson(undefined);
-        });
-    };
     return MapViewModel;
 }());
-var mapViewModel = new MapViewModel(MapMode.View);
 var dropzoneModalOpenedByDrag = false;
 var dropzoneModal = $("#dropzoneModal");
-var editingLogBookEntryModal = $("#editingLogBookEntryModal");
-var detailedLogBookEntryModal = $("#detailedLogBookEntryModal");
-var editingHarbourModal = $("#editingHarbourModal");
-var deletingHarbourModal = $("#deletingHarbourModal");
-var editingWaypointModal = $("#editingWaypointModal");
-var deletingWaypointModal = $("#deletingWaypointModal");
-var deletingJobModal = $("#deletingJobModal");
-var editingJobModal = $("#editingJobModal");
 var jobOverviewModal = $("#jobOverviewModal");
-var editingPersonModal = $("#editingPersonModal");
-var deletingPersonModal = $("#deletingPersonModal");
 var personOverviewModal = $("#personOverviewModal");
 var dropzone;
 var hasDrag = false;
 var uploadModalVisible = false;
 var pswp = $(".pswp")[0];
 var personDeails = $("#personDetails");
-var Person = ClientModel.Person;
 var deletePerson = $("#deletePerson");
 var leftSidebar = new Sidebar($("#leftSidebar"));
 var rightSidebar = new Sidebar($("#rightSidebar"));
 var bottomSidebar = new Sidebar($("#bottomSidebar"));
 var harbourInfo = $("#harbourInfo");
+var mapViewModel = new MapViewModel(MapMode.View);
 Dropzone.options.dropzone =
     {
         acceptedFiles: "image/jpeg,image/png",
@@ -1486,19 +1418,18 @@ Dropzone.options.dropzone =
                 if (dropzoneModalOpenedByDrag)
                     dropzoneModal.modal("hide");
             });
-            dropzone.on("dragover", function () {
-                hasDrag = true;
-            });
+            dropzone.on("dragover", function () { hasDrag = true; });
         }
     };
 document.ondragenter =
     function (e) {
-        if (!uploadModalVisible &&
+        if (mapViewModel.IsLoggedIn &&
+            !uploadModalVisible &&
             !hasDrag &&
             !dropzoneModalOpenedByDrag &&
             dropzoneModal.is(":not(.in)") &&
             e.dataTransfer.types[0] === "Files" &&
-            mapViewModel.SelectedHarbour() !== undefined) {
+            mapViewModel.AlbumStack()[0] !== undefined) {
             dropzoneModal.modal("show");
             uploadModalVisible = true;
             dropzoneModalOpenedByDrag = true;
@@ -1507,10 +1438,7 @@ document.ondragenter =
         e.preventDefault();
         e.stopPropagation();
     };
-document.ondragover =
-    function (e) {
-        hasDrag = true;
-    };
+document.ondragover = function () { hasDrag = true; };
 document.ondragleave =
     function (e) {
         if (uploadModalVisible && hasDrag && dropzoneModalOpenedByDrag && dropzone.getQueuedFiles().length === 0 ||
@@ -1539,11 +1467,11 @@ dropzoneModal.on("hide.bs.modal", function (e) {
     }
 });
 var gallery;
-$(".modal").on("hidden.bs.modal", function (event) {
+$(".modal").on("hidden.bs.modal", function () {
     $(this).removeClass("fv-modal-stack");
     $("body").data("fv_open_modals", $("body").data("fv_open_modals") - 1);
 });
-$(".modal").on("shown.bs.modal", function (event) {
+$(".modal").on("shown.bs.modal", function () {
     // keep track of the number of open modals
     if (typeof ($("body").data("fv_open_modals")) == "undefined") {
         $("body").data("fv_open_modals", 0);
@@ -1569,12 +1497,48 @@ ko.bindingHandlers.daterange = {
         $(element)
             .daterangepicker({
             "singleDatePicker": true,
+            "showDropdowns": true,
             "timePicker": true,
             "timePicker24Hour": true,
-            "autoApply": true,
+            "timePickerIncrement": 15,
+            "locale": {
+                "format": "DD.MM.YYYY HH:mm",
+                "separator": " - ",
+                "applyLabel": "Speichern",
+                "cancelLabel": "Abbrechen",
+                "fromLabel": "Von",
+                "toLabel": "Bis",
+                "customRangeLabel": "Custom",
+                "weekLabel": "W",
+                "daysOfWeek": [
+                    "S0",
+                    "Mo",
+                    "Di",
+                    "Mi",
+                    "Do",
+                    "Fr",
+                    "Sa"
+                ],
+                "monthNames": [
+                    "Januar",
+                    "Februar",
+                    "März",
+                    "April",
+                    "Mai",
+                    "Juni",
+                    "Juli",
+                    "August",
+                    "September",
+                    "Oktober",
+                    "November",
+                    "Dezember"
+                ],
+                "firstDay": 1
+            },
+            "alwaysShowCalendars": true,
             "startDate": value,
             "endDate": value
-        }, function (start, end, label) {
+        }, function (start) {
             valueAccessor()(start._d.toJSON());
         });
     },
@@ -1582,3 +1546,8 @@ ko.bindingHandlers.daterange = {
         $(element).data("daterangepicker").setStartDate(moment(valueAccessor()()));
     }
 };
+window.Parsley.on("form:validate", function (form) {
+    if (form.submitEvent === undefined)
+        return false;
+});
+window.Parsley.on("form:submit", function (form) { return false; });

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNet.Authorization;
 using Microsoft.AspNet.Http;
 using Microsoft.AspNet.Mvc;
 using Microsoft.Data.Entity;
@@ -26,6 +27,7 @@ namespace SMS.Controllers.WebApi
             return _context.WaypointConnections;
         }
 
+        [Authorize]
         [HttpPost("{id1}/{id2}")]
         public IActionResult Connect([FromRoute] int id1, [FromRoute] int id2)
         {
@@ -40,6 +42,7 @@ namespace SMS.Controllers.WebApi
             return new HttpStatusCodeResult(StatusCodes.Status204NoContent);
         }
 
+        [Authorize]
         [HttpDelete("{id1}/{id2}")]
         public async Task<IActionResult> Disconnect([FromRoute] int id1, [FromRoute] int id2)
         {
@@ -55,6 +58,7 @@ namespace SMS.Controllers.WebApi
             return new HttpStatusCodeResult(StatusCodes.Status204NoContent);
         }
 
+        [Authorize]
         [HttpDelete("{id}")]
         public async Task<IActionResult> Disconnect([FromRoute] int id)
         {

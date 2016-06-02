@@ -1,40 +1,10 @@
-function CreateObservable<T extends ClientModel.IEntity>(options: IKoOptions): KnockoutObservable<T>;
-function CreateObservable<T extends ClientModel.IEntity>(val?: T, options?: IKoOptions): KnockoutObservable<T>;
-function CreateObservable<T extends ClientModel.IEntity>(val?: T | IKoOptions, options?: IKoOptions): KnockoutObservable<T> {
-    var ob: KnockoutObservable<T>;
-    if (val instanceof ClientModel.Entity)
-        ob = ko.observable<T>(<any>val);
-    else {
-        ob = ko.observable<T>();
-        if (options === undefined)
-            options = val;
-    }
-    if (options !== undefined) {
-        ob.ForeignKeyFor = options.ForeignKeyFor;
-        ob.AddTransferMode = options.AddTransferMode;
-        ob.UpdateTransferMode = options.UpdateTransferMode;
-    }
-    return ob;
+function CreateObservable<T extends ClientModel.IEntity>(options: IKoOptions, val?: T): KnockoutObservable<T> {
+    return $.extend(ko.observable(val), new KoOptions(), options);
 }
 
 
-function CreateObservableArray<T extends ClientModel.IEntity>(options: IKoOptions): KnockoutObservableArray<T>;
-function CreateObservableArray<T extends ClientModel.IEntity>(val?: T[], options?: IKoOptions): KnockoutObservableArray<T>;
-function CreateObservableArray<T extends ClientModel.IEntity>(val?: T[]|IKoOptions, options?: IKoOptions): KnockoutObservableArray<T> {
-    var ob: KnockoutObservableArray<T>;
-    if (val instanceof Array)
-        ob = ko.observableArray<T>(<T[]>val);
-    else {
-        ob = ko.observableArray<T>();
-        if (options === undefined)
-            options = val;
-    }
-    if (options !== undefined) {
-        ob.ForeignKeyFor = options.ForeignKeyFor;
-        ob.AddTransferMode = options.AddTransferMode;
-        ob.UpdateTransferMode = options.UpdateTransferMode;
-    }
-    return ob;
+function CreateObservableArray<T extends ClientModel.IEntity>(options: IKoOptions, val?: T[]): KnockoutObservableArray<T> {
+    return $.extend(ko.observableArray(val), new KoOptions(), options);
 }
 
 interface KnockoutObservable<T> extends IKoOptions {
@@ -47,8 +17,17 @@ enum TransferMode {
 }
 
 interface IKoOptions {
-    ForeignKeyFor?: KnockoutObservable<ClientModel.IEntity>;
+    NavigationProperty?: <T extends ClientModel.Entity>(o: T) => KnockoutObservable<ClientModel.Entity>;
+    ForeignKey?: <T extends ClientModel.Entity>(o: T) => KnockoutObservable<number>;
+    ReverseNavigationProperty?: <T extends ClientModel.Entity>(o: T) => KnockoutObservable<ClientModel.Entity>;
     AddTransferMode?: TransferMode;
     UpdateTransferMode?: TransferMode;
+    IncludeInDelete?: boolean;
     Block?: boolean;
+}
+
+class KoOptions {
+    AddTransferMode = TransferMode.Exclude;
+    UpdateTransferMode = TransferMode.Exclude;
+    IncludeInDelete = false;
 }

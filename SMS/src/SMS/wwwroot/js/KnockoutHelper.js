@@ -1,34 +1,8 @@
-function CreateObservable(val, options) {
-    var ob;
-    if (val instanceof ClientModel.Entity)
-        ob = ko.observable(val);
-    else {
-        ob = ko.observable();
-        if (options === undefined)
-            options = val;
-    }
-    if (options !== undefined) {
-        ob.ForeignKeyFor = options.ForeignKeyFor;
-        ob.AddTransferMode = options.AddTransferMode;
-        ob.UpdateTransferMode = options.UpdateTransferMode;
-    }
-    return ob;
+function CreateObservable(options, val) {
+    return $.extend(ko.observable(val), new KoOptions(), options);
 }
-function CreateObservableArray(val, options) {
-    var ob;
-    if (val instanceof Array)
-        ob = ko.observableArray(val);
-    else {
-        ob = ko.observableArray();
-        if (options === undefined)
-            options = val;
-    }
-    if (options !== undefined) {
-        ob.ForeignKeyFor = options.ForeignKeyFor;
-        ob.AddTransferMode = options.AddTransferMode;
-        ob.UpdateTransferMode = options.UpdateTransferMode;
-    }
-    return ob;
+function CreateObservableArray(options, val) {
+    return $.extend(ko.observableArray(val), new KoOptions(), options);
 }
 var TransferMode;
 (function (TransferMode) {
@@ -36,3 +10,11 @@ var TransferMode;
     TransferMode[TransferMode["IdOnly"] = 1] = "IdOnly";
     TransferMode[TransferMode["Include"] = 2] = "Include";
 })(TransferMode || (TransferMode = {}));
+var KoOptions = (function () {
+    function KoOptions() {
+        this.AddTransferMode = TransferMode.Exclude;
+        this.UpdateTransferMode = TransferMode.Exclude;
+        this.IncludeInDelete = false;
+    }
+    return KoOptions;
+}());

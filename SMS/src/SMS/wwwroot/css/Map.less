@@ -40,37 +40,14 @@
     }
 }
 
-.multiselectContainer{
-
-    > .btn-group {
+.multiselectContainer {
+    /*> .btn-group {
         width:100%;
 
         > .btn {
         width:100%;
     }
-    }
-}
-
-.mapOverlayBoxXXX {
-    -moz-box-shadow: 0 0 10px 5px #000000;
-    -moz-box-shadow: 0 0 10px 5px rgba(0, 0, 0, 0.4);
-    -ms-box-shadow: 0 0 10px 5px #000000;
-    -webkit-box-shadow: 0 0 10px 5px #000000;
-    -webkit-box-shadow: 0 0 10px 5px rgba(0, 0, 0, 0.4);
-    background-color: white;
-    border-radius: 5px;
-    box-shadow: 0 0 10px 5px #000000;
-    box-shadow: 0 0 10px 5px rgba(0, 0, 0, 0.4);
-    position: absolute;
-    padding: 10px;
-    overflow-x: auto;
-    z-index: 900;
-    overflow-y: hidden;
-
-    > * {
-        margin-left: 0;
-        margin-right: 0;
-    }
+    }*/
 }
 
 body {
@@ -141,81 +118,90 @@ body {
     > .heading {
         /*position:absolute;*/
     }
-
-    @media (min-width: @screen-md-min) {
-        overflow: hidden;
-
-
-        > .content {
-            position: absolute;
+    /*@media (min-width: @screen-md-min) {
+        overflow: hidden;*/
+    > .content {
+        /*position: absolute;
             top: 70px;
             bottom: 55px;
             left: 0;
-            right: 0;
-            overflow-x: hidden;
-            overflow-y: auto;
+            right: 0;*/
+        overflow-x: hidden;
+        overflow-y: auto;
+    }
+
+    > footer {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 10px;
+        background-color: #f0f0f0;
+        border-top: 1px solid #ccc;
+
+        > button {
+            float: right;
         }
+    }
+}
 
-        > footer {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            padding: 10px;
-            background-color: #f0f0f0;
-            border-top: 1px solid #ccc;
+.modal{
+    max-height:100%;
+    overflow:auto;
+}
 
-            > button {
-                float: right;
-            }
+.modal-body > .albumViewSmall {
+    margin: 0 -15px;
+    clear: both;
+}
+
+.sidebar .albumViewSmall {
+    margin: 0 -10px;
+}
+
+.albumViewSmall {
+    position: relative;
+    right: 0;
+    left: 0;
+    .media-height(217px, 217px, 117px, 217px);
+    overflow-y: hidden;
+    background-color: #fafafa;
+    overflow-x: scroll;
+    white-space: nowrap;
+
+    img, .pseudoImg {
+        .media-max-height(190px, 190px, 90px, 190px);
+        margin: 5px 5px 5px 0px;
+        display: inline-block;
+        background-color: #fff;
+        padding: 5px;
+        border: 1px solid #e0e0e0;
+        cursor: zoom-in;
+        vertical-align: middle;
+        max-width: 200px;
+
+        &:first-child {
+            margin-left: 5px;
         }
     }
 
-    .images {
-        position: relative;
-        right: 0;
-        margin: 0 -10px;
-        left: 0;
-        .media-height(217px, 217px, 117px, 217px);
-        overflow-y: hidden;
-        background-color: #fafafa;
-        overflow-x: scroll;
-        white-space: nowrap;
+    .pseudoImg {
+        cursor: pointer;
+        vertical-align: middle;
+        .media-height(190px, 190px, 90px, 190px);
 
-        img, .pseudoImg {
-            .media-max-height(190px, 190px, 90px, 190px);
-            margin: 5px 5px 5px 0px;
-            display: inline-block;
-            background-color: #fff;
-            padding: 5px;
-            border: 1px solid #e0e0e0;
-            cursor: zoom-in;
-            vertical-align: middle;
-            max-width: 200px;
-
-            &:first-child {
-                margin-left: 5px;
-            }
-        }
-
-        .pseudoImg {
-            cursor: pointer;
-            vertical-align: middle;
-            .media-height(190px, 190px, 90px, 190px);
-
-            & > div {
-                vertical-align: text-bottom;
-                .media-margin-top(60px, 60px, 0, 60px);
-                font-size: 20pt;
-                color: #c0c0c0;
-                text-align: center;
-            }
+        & > div {
+            vertical-align: text-bottom;
+            .media-margin-top(60px, 60px, 0, 60px);
+            font-size: 20pt;
+            color: #c0c0c0;
+            text-align: center;
         }
     }
 }
 
 #loadingOverlay {
-    position: absolute;
+    position: fixed;
     height: 100%;
     top: 0;
     width: 100%;

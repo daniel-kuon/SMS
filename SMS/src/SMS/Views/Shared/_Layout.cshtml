@@ -5,7 +5,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>@ViewData["Title"] - SMS</title>
+    <title>Lady-Helmsman.de</title>
 
     <environment names="Development">
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.css" />
@@ -71,21 +71,23 @@
 </head>
 <body>
     <navbar fixed position="BootstrapTagHelpers.Navigation.NavbarPosition.FixedTop">
-        <brand>
-            Allet Jute
+        <brand href="/">
+            Kairos
         </brand>
-        <navbar-nav>
-            <nav-item href="#" b-modal-target="jobOverviewModal">Aufgaben</nav-item>
+        <navbar-nav id="leftNav">
             <nav-item href="#" b-modal-target="logBookOverviewModal">Logbuch</nav-item>
         </navbar-nav>
-        <navbar-nav b-navbar-right>
+        <navbar-nav b-navbar-right data-bind="visible:$root.IsLoggedIn" style="display: none;">
             <dropdown text="Admin">
+                <a href="Account/Register">Neuer Benutzer</a>
                 <a href="#" b-modal-target="personsOverviewModal">Personen</a>
+                <a href="#" b-modal-target="jobOverviewModal">Aufgaben</a>
+                <a href="#" b-modal-target="editingContentPageModal">Neue Seite</a>
                 <a href="#" data-bind="if:IsInAdminMode, click:function () {MapMode(/*MapMode.View*/ 1);}">Karte Normal</a>
                 <a href="#" data-bind="if:IsInViewMode, click:function () {MapMode(/*MapMode.Admin*/ 0);}">Karte Admin</a>
             </dropdown>
         </navbar-nav>
-        @*@await Html.PartialAsync("_LoginPartial")*@
+        @await Html.PartialAsync("_LoginPartial")
     </navbar>
     <div class="container body-content">
         @RenderBody()
@@ -95,74 +97,24 @@
         </footer>
     </div>
     <environment names="Development">
+        <script src="~/lib/js-cookie/src/js.cookie.js"></script>
+        <script src="~/js/parsleyconfig.js"></script>
         <script src="~/lib/jquery/dist/jquery.js"></script>
-        <script src="~/lib/jquery-ui/ui/effect.js"></script>
         <script src="~/lib/bootstrap/dist/js/bootstrap.js"></script>
-        <script src="~/js/sidebars.js"></script>
-        @*<script src="~/js/site.js" asp-append-version="true"></script>*@
-        @*<script src="~/lib/leaflet/dist/leaflet-src.js"></script>*@
-        <script src="~/lib/mapbox.js/mapbox.js"></script>
-        <script src="~/lib/leaflet.label/dist/leaflet.label-src.js"></script>
-        <script src="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu-src.js"></script>
         <script src="~/lib/knockout/dist/knockout.debug.js"></script>
-        @*<script src="~/lib/moment/moment.js"></script>
-        <script src="~/lib/moment/locale/de.js"></script>*@
-        <script src="~/lib/moment/min/moment-with-locales.js"></script>
-        <script src="~/lib/knockout-moment/knockout.moment.js"></script>
-        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker.js"></script>
-        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker-ko.js"></script>
         <script src="~/lib/parsleyjs/dist/parsley.js"></script>
         <script src="~/lib/parsleyjs/dist/i18n/de.js"></script>
-        <script src="~/lib/tinymce/tinymce.js"></script>
-        <script src="~/js/knockouthelper.js"></script>
-        <script src="~/js/servermodel.js"></script>
-        <script src="~/js/serverapi.js"></script>
-        <script src="~/js/clientmodel.js"></script>
-        <script src="~/lib/moment/locale/de.js"></script>
-        <script src="~/lib/dropzone/dist/dropzone.js"></script>
-        <script src="~/lib/photoswipe/dist/photoswipe.js"></script>
-        <script src="~/lib/photoswipe/dist/photoswipe-ui-default.js"></script>
-        <script src="~/lib/bootstrap-multiselect/dist/js/bootstrap-multiselect.js"></script>
-        <script src="~/lib/tinymce/tinymce.js"></script>
-        <script src="~/lib/tinymce/jquery.tinymce.js"></script>
-        <script src="~/lib/knockout-pickadate-tinymce/knockout-tinymce.js"></script>
-        <script src="~/lib/bootstrap-daterangepicker/daterangepicker.js"></script>
-        <script src="~/js/viewmodels/home/map.js"></script>
+        <script src="~/lib/parsleyjs/dist/i18n/de.extra.js"></script>
     </environment>
     <environment names="Staging,Production">
+        <script src="~/lib/js-cookie/src/js.cookie.js"></script>
+        <script src="~/js/parsleyconfig.min.js"></script>
         <script src="~/lib/jquery/dist/jquery.min.js"></script>
-        <script src="~/lib/jquery-ui/ui/effect.js"></script>
         <script src="~/lib/bootstrap/dist/js/bootstrap.min.js"></script>
-        <script src="~/js/sidebars.min.js"></script>
-        @*<script src="~/js/site.min.js" asp-append-version="true"></script>*@
-        @*<script src="~/lib/leaflet/dist/leaflet-src.min.js"></script>*@
-        <script src="~/lib/mapbox.js/mapbox.min.js"></script>
-        <script src="~/lib/leaflet.label/dist/leaflet.label-src.js"></script>
-        <script src="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu-src.js"></script>
         <script src="~/lib/knockout/dist/knockout.js"></script>
-        @*<script src="~/lib/moment/moment.min.js"></script>
-        <script src="~/lib/moment/locale/de.min.js"></script>*@
-        <script src="~/lib/moment/min/moment-with-locales.min.js"></script>
-        <script src="~/lib/knockout-moment/knockout.moment.js"></script>
-        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker.min.js"></script>
-        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker-ko.js"></script>
         <script src="~/lib/parsleyjs/dist/parsley.min.js"></script>
         <script src="~/lib/parsleyjs/dist/i18n/de.js"></script>
-        <script src="~/lib/tinymce/tinymce.min.js"></script>
-        <script src="~/js/knockouthelper.min.js"></script>
-        <script src="~/js/servermodel.min.js"></script>
-        <script src="~/js/serverapi.min.js"></script>
-        <script src="~/js/clientmodel.min.js"></script>
-        <script src="~/lib/moment/locale/de.js"></script>
-        <script src="~/lib/dropzone/dist/min/dropzone.min.js"></script>
-        <script src="~/lib/photoswipe/dist/photoswipe.min.js"></script>
-        <script src="~/lib/photoswipe/dist/photoswipe-ui-default.min.js"></script>
-        <script src="~/lib/bootstrap-multiselect/dist/js/bootstrap-multiselect.min.js"></script>
-        <script src="~/lib/tinymce/tinymce.min.js"></script>
-        <script src="~/lib/tinymce/jquery.tinymce.min.js"></script>
-        <script src="~/lib/knockout-pickadate-tinymce/knockout-tinymce.min.js"></script>
-        <script src="~/lib/bootstrap-daterangepicker/daterangepicker.js"></script>
-        <script src="~/js/viewmodels/home/map.min.js"></script>
+        <script src="~/lib/parsleyjs/dist/i18n/de.extra.js"></script>
     </environment>
 
 

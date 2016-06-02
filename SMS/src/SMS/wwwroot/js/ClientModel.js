@@ -7,18 +7,73 @@ var ClientModel;
 (function (ClientModel) {
     var Entity = (function () {
         function Entity() {
+            var _this = this;
             this.AlbumId = ko.observable();
             this.CommentListId = ko.observable();
-            this.Album = CreateObservable({ AddTransferMode: TransferMode.Include, UpdateTransferMode: TransferMode.Include });
+            this.Album = CreateObservable({
+                ForeignKey: function (t) { return t.AlbumId; }
+            });
             this.InsertDate = ko.observable(Date);
             this.UpdateDate = ko.observable(Date);
-            this.ClientId = ++Entity.clientIdCounter;
+            this.ClientId = Entity.clientIdCounter++;
             this.ServerApi = ServerApi.GetApi(this);
+            this.savedStates = new Array();
+            this.SaveState = function (alreadySavedEntities) {
+                if (alreadySavedEntities === void 0) { alreadySavedEntities = new Array(); }
+                var savedState = new Object();
+                if (alreadySavedEntities.indexOf(_this) !== -1)
+                    return;
+                alreadySavedEntities.push(_this);
+                for (var _i = 0, _a = _this.GetObservableNames(); _i < _a.length; _i++) {
+                    var prop = _a[_i];
+                    var val = ko.unwrap(_this[prop]);
+                    if (val instanceof Array) {
+                        val = val.slice(0);
+                        for (var _b = 0, val_1 = val; _b < val_1.length; _b++) {
+                            var elem = val_1[_b];
+                            if (elem instanceof Entity)
+                                elem.SaveState(alreadySavedEntities);
+                        }
+                    }
+                    else if (val instanceof Entity)
+                        val.SaveState(alreadySavedEntities);
+                    savedState[prop] = val;
+                }
+                _this.savedStates.push(savedState);
+            };
+            this.RevertState = function (ignoreError, alreadyRevertedEntities) {
+                if (ignoreError === void 0) { ignoreError = false; }
+                if (alreadyRevertedEntities === void 0) { alreadyRevertedEntities = new Array(); }
+                if (alreadyRevertedEntities.indexOf(_this) !== -1)
+                    return;
+                alreadyRevertedEntities.push(_this);
+                if (_this.savedStates.length === 0)
+                    if (ignoreError)
+                        return;
+                    else
+                        throw "No saved state";
+                for (var _i = 0, _a = _this.GetObservableNames(); _i < _a.length; _i++) {
+                    var prop = _a[_i];
+                    var val = _this.savedStates[0][prop];
+                    //this.savedState[prop] = val;
+                    _this[prop](val);
+                    if (val instanceof Entity)
+                        val.RevertState(ignoreError, alreadyRevertedEntities);
+                    else if (val instanceof Array)
+                        for (var _b = 0, val_2 = val; _b < val_2.length; _b++) {
+                            var elem = val_2[_b];
+                            if (elem instanceof Entity)
+                                elem.RevertState(ignoreError, alreadyRevertedEntities);
+                        }
+                }
+                _this.savedStates.shift();
+            };
             this.Id = ko.observable();
             Entity.entityDb[this.ClientId.toString()] = this;
         }
         Entity.prototype.DeleteOnServer = function () {
-            return this.ServerApi.Delete(this.Id());
+            var _this = this;
+            return this.ServerApi.Delete(this.Id()).done(function () { _this.removeFromContext(); });
         };
         ;
         Entity.prototype.SaveToServer = function () {
@@ -26,17 +81,33 @@ var ClientModel;
             if (this.Id() === undefined)
                 return this.ServerApi.Create(this.ConvertToServerEntity())
                     .done(function (data) {
-                    _this.savedState = undefined;
+                    _this.savedStates = [];
                     _this.LoadFromServerEntity(data);
+                    _this.addToContext();
                 });
             return this.ServerApi.Update(this.ConvertToServerEntity())
                 .done(function (data) {
-                _this.savedState = undefined;
+                _this.savedStates = [];
                 _this.LoadFromServerEntity(data);
             });
             ;
         };
+        Entity.prototype.LoadNavigationProperties = function () {
+            for (var propName in this.GetObservableNames()) {
+                var prop = this[propName];
+            }
+        };
+        Entity.prototype.addToContext = function () {
+            if (this.Context().indexOf(this) !== -1)
+                return;
+            this.Context().push(this);
+        };
+        Entity.prototype.removeFromContext = function () {
+            this.Context().remove(this);
+        };
         Entity.prototype.LoadFromServerEntity = function (serverEntity) {
+            if (serverEntity.ProcessOnServer === false)
+                return this;
             for (var _i = 0, _a = this.GetObservableNames(); _i < _a.length; _i++) {
                 var prop = _a[_i];
                 var sVal = serverEntity[prop];
@@ -62,48 +133,42 @@ var ClientModel;
         };
         Entity.prototype.ConvertToServerEntity = function (idOnly) {
             if (idOnly === void 0) { idOnly = false; }
+            if (idOnly) {
+                return { Id: this.Id(), ProcessOnServer: false };
+            }
+            var isUpdate = this.Id() !== undefined;
             var serverEntity = { ClientId: this.ClientId };
             var entity = this;
             for (var _i = 0, _a = this.GetObservableNames(); _i < _a.length; _i++) {
                 var propName = _a[_i];
                 var prop = entity[propName];
                 var val = prop();
-                if (val !== undefined && val !== Date) {
+                if (val !== undefined) {
                     if (val instanceof Array) {
                         var arr = new Array();
-                        for (var _b = 0, val_1 = val; _b < val_1.length; _b++) {
-                            var elem = val_1[_b];
-                            arr.push(elem.ConvertToServerEntity());
+                        for (var _b = 0, _c = val; _b < _c.length; _b++) {
+                            var elem = _c[_b];
+                            if (elem.Id() === undefined ||
+                                isUpdate && prop.UpdateTransferMode === TransferMode.Include ||
+                                !isUpdate && prop.AddTransferMode === TransferMode.Include)
+                                arr.push(elem.ConvertToServerEntity());
                         }
                         serverEntity[propName] = arr;
                     }
                     else
-                        serverEntity[propName] = val instanceof Entity ? val.ConvertToServerEntity() : val;
+                        serverEntity[propName] = val instanceof Entity
+                            ? (val.Id() === undefined ||
+                                isUpdate && prop.UpdateTransferMode === TransferMode.Include ||
+                                !isUpdate && prop.AddTransferMode === TransferMode.Include
+                                ? val.ConvertToServerEntity()
+                                : undefined)
+                            : val;
                 }
             }
             return serverEntity;
         };
         Entity.prototype.CopyTo = function (entity) {
             entity.Id(this.Id());
-        };
-        Entity.prototype.SaveState = function () {
-            var entity = this;
-            entity.savedState = new Object();
-            for (var _i = 0, _a = this.GetObservableNames(); _i < _a.length; _i++) {
-                var prop = _a[_i];
-                var val = ko.unwrap(entity[prop]);
-                if (val instanceof Array) {
-                    val = val.slice(0);
-                    for (var _b = 0, val_2 = val; _b < val_2.length; _b++) {
-                        var elem = val_2[_b];
-                        if (elem instanceof Entity)
-                            elem.SaveState();
-                    }
-                }
-                else if (val instanceof Entity)
-                    val.SaveState();
-                entity.savedState[prop] = val;
-            }
         };
         Entity.prototype.GetObservableNames = function () {
             var out = new Array();
@@ -113,29 +178,6 @@ var ClientModel;
                     if (ko.isWriteableObservable(entity[prop]) && !entity[prop].Block)
                         out.push(prop);
             return out;
-        };
-        Entity.prototype.RevertState = function (ignoreError) {
-            if (ignoreError === void 0) { ignoreError = false; }
-            if (this.savedState === undefined)
-                if (ignoreError)
-                    return;
-                else
-                    throw "No saved state";
-            var entity = this;
-            for (var _i = 0, _a = this.GetObservableNames(); _i < _a.length; _i++) {
-                var prop = _a[_i];
-                var val = entity.savedState[prop];
-                //this.savedState[prop] = val;
-                entity[prop](val);
-                if (val instanceof Entity)
-                    val.RevertState();
-                else if (val instanceof Array)
-                    for (var _b = 0, val_3 = val; _b < val_3.length; _b++) {
-                        var elem = val_3[_b];
-                        if (elem instanceof Entity)
-                            elem.RevertState();
-                    }
-            }
         };
         Entity.clientIdCounter = 0;
         Entity.entityDb = {};
@@ -148,6 +190,9 @@ var ClientModel;
             _super.apply(this, arguments);
             this.Images = ko.observableArray();
         }
+        Album.prototype.Context = function () {
+            return mapViewModel.Albums;
+        };
         return Album;
     }(Entity));
     ClientModel.Album = Album;
@@ -160,6 +205,9 @@ var ClientModel;
             this.FirstName = ko.observable();
             this.FullName = ko.computed(function () { return _this.FirstName() + " " + _this.LastName(); });
         }
+        Person.prototype.Context = function () {
+            return mapViewModel.Persons;
+        };
         return Person;
     }(Entity));
     ClientModel.Person = Person;
@@ -179,6 +227,9 @@ var ClientModel;
             this.TripId = ko.observable();
             this.SubJobs = ko.observableArray();
         }
+        Job.prototype.Context = function () {
+            return mapViewModel.Jobs;
+        };
         return Job;
     }(Entity));
     ClientModel.Job = Job;
@@ -198,6 +249,7 @@ var ClientModel;
             this.RoutePrecessor = ko.observable();
             this.Name = ko.observable();
             this.Description = ko.observable();
+            this.Wifis = ko.observableArray();
             if (Map === undefined) {
                 if (typeof markerType == "number") {
                     Map = latLng;
@@ -285,11 +337,13 @@ var ClientModel;
             });
         };
         Waypoint.prototype.convertFromDummyHandle = function () {
+            if (this.markerType !== MarkerType.Dummy)
+                return;
             this.marker.setOpacity(1);
             var w1 = this.polylines[0].Waypoints[0];
             var w2 = this.polylines[0].Waypoints[1];
-            splitPolyline(this.polylines[0]);
             this.markerType = MarkerType.Waypoint;
+            splitPolyline(this.polylines[0]);
             this.SaveToServer()
                 .done(function (w) {
                 var wCA = ServerApi.WaypointConnections;
@@ -299,9 +353,9 @@ var ClientModel;
             });
         };
         Waypoint.prototype.IsInPolyline = function (polyline) {
-            for (var _i = 0, _a = this.polylines; _i < _a.length; _i++) {
-                var currentPolyline = _a[_i];
-                if (polyline === currentPolyline)
+            for (var _i = 0, _a = polyline.Waypoints; _i < _a.length; _i++) {
+                var wp = _a[_i];
+                if (this === wp)
                     return true;
             }
             return false;
@@ -317,19 +371,21 @@ var ClientModel;
         Waypoint.prototype.AddToPolyline = function (polyline) {
             if (this.IsInPolyline(polyline))
                 return false;
-            if (polyline.DummyHandle !== this) {
+            if (!this.IsDummy() && polyline.DummyHandle !== this) {
                 polyline.Waypoints.push(this);
                 polyline.addLatLng(this.LatLng);
                 polyline.redraw();
             }
-            this.LatLng.Polylines.push(polyline);
-            this.polylines.push(polyline);
+            if (this.polylines[0] !== polyline) {
+                this.LatLng.Polylines.push(polyline);
+                this.polylines.push(polyline);
+            }
             //ServerApi.WaypointConnectionApi.GetDefault().
             return true;
         };
         Waypoint.prototype.RemoveFromPolyline = function (polyline) {
-            if (!this.IsInPolyline(polyline))
-                return false;
+            //if (!this.IsInPolyline(polyline))
+            //    return false;
             removeFromArray(polyline.Waypoints, this);
             removeFromArray(this.polylines, polyline);
             removeFromArray(this.LatLng.Polylines, polyline);
@@ -353,6 +409,13 @@ var ClientModel;
         };
         Waypoint.prototype.IsDummy = function () {
             return this.markerType === MarkerType.Dummy;
+        };
+        Waypoint.prototype.Context = function () {
+            return mapViewModel.Waypoints;
+        };
+        Waypoint.prototype.DeleteOnServer = function () {
+            var _this = this;
+            return _super.prototype.DeleteOnServer.call(this).done(function () { return _this.RemoveFromMap(); });
         };
         return Waypoint;
     }(Entity));
@@ -384,19 +447,24 @@ var ClientModel;
             //    }
             //});
             this.Name.subscribe(function (d) {
-                var label = _this.marker.getLabel();
-                if (label !== undefined) {
-                    _this.marker.updateLabelContent(d);
-                }
-                else {
-                    _this.marker.bindLabel(d, {
-                        direction: "auto"
-                    });
+                if (_this.marker !== undefined) {
+                    var label = _this.marker.getLabel();
+                    if (label !== undefined) {
+                        _this.marker.updateLabelContent(d);
+                    }
+                    else {
+                        _this.marker.bindLabel(d, {
+                            direction: "auto"
+                        });
+                    }
                 }
             });
         }
         Harbour.prototype.RemoveIfHasZeroOrOnePolylines = function () {
             return false;
+        };
+        Harbour.prototype.Context = function () {
+            return mapViewModel.Harbours;
         };
         return Harbour;
     }(Waypoint));
@@ -410,6 +478,9 @@ var ClientModel;
             this.Town = ko.observable();
             this.Comment = ko.observable();
         }
+        Address.prototype.Context = function () {
+            return mapViewModel.Addresses;
+        };
         return Address;
     }(Entity));
     ClientModel.Address = Address;
@@ -421,6 +492,9 @@ var ClientModel;
             this.Height = ko.observable();
             this.Width = ko.observable();
         }
+        Image.prototype.Context = function () {
+            return mapViewModel.Images;
+        };
         return Image;
     }(Entity));
     ClientModel.Image = Image;
@@ -437,6 +511,7 @@ var ClientModel;
             this.End = ko.observable();
             this.Persons = ko.observableArray();
             this.Distance = ko.observable(0);
+            this.Album = ko.observable(new Album());
             this.CrewList = ko.computed({
                 read: function () {
                     var persons = _this.Persons();
@@ -475,6 +550,9 @@ var ClientModel;
             this.Tacks = ko.observableArray();
             this.IsDummy = ko.observable();
         }
+        Trip.prototype.Context = function () {
+            return mapViewModel.Trips;
+        };
         return Trip;
     }(TackBase));
     ClientModel.Trip = Trip;
@@ -486,8 +564,13 @@ var ClientModel;
             this.MotorHoursEnd = ko.observable();
             this.LogStart = ko.observable();
             this.LogEnd = ko.observable();
+            this.WindSpeed = ko.observable();
+            this.WindDirection = ko.observable();
             this.SpecialOccurences = ko.observable();
         }
+        LogBookEntry.prototype.Context = function () {
+            return mapViewModel.LogBookEntries;
+        };
         return LogBookEntry;
     }(TackBase));
     ClientModel.LogBookEntry = LogBookEntry;
@@ -499,9 +582,9 @@ var ClientModel;
             this.Waypoints = ko.observableArray();
             this.CanRemoveTack = ko.computed({
                 read: function () {
-                    if (mapViewModel.SelectedTrip() === undefined)
+                    if (mapViewModel.TripHelper.Editing() === undefined)
                         return false;
-                    var tacks = mapViewModel.SelectedTrip().Tacks;
+                    var tacks = mapViewModel.TripHelper.Editing().Tacks;
                     var index = tacks.indexOf(_this);
                     var prevTack = tacks()[index - 1];
                     var nextTack = tacks()[index + 1];
@@ -521,6 +604,9 @@ var ClientModel;
                 return "";
             });
         }
+        Tack.prototype.Context = function () {
+            return mapViewModel.Tacks;
+        };
         return Tack;
     }(TackBase));
     ClientModel.Tack = Tack;
@@ -533,6 +619,9 @@ var ClientModel;
             this.Rating = ko.observable();
             this.ParentId = ko.observable();
         }
+        Comment.prototype.Context = function () {
+            throw "not implemented";
+        };
         return Comment;
     }(Entity));
     ClientModel.Comment = Comment;
@@ -547,6 +636,9 @@ var ClientModel;
             this.Address = ko.observable();
             this.AddressId = ko.observable();
         }
+        Location.prototype.Context = function () {
+            return mapViewModel.Locations;
+        };
         return Location;
     }(Entity));
     ClientModel.Location = Location;
@@ -592,6 +684,36 @@ var ClientModel;
         return WaypointDistance;
     }());
     ClientModel.WaypointDistance = WaypointDistance;
+    var Wifi = (function (_super) {
+        __extends(Wifi, _super);
+        function Wifi() {
+            _super.apply(this, arguments);
+            this.Name = ko.observable();
+            this.Password = ko.observable();
+            this.Speed = ko.observable();
+            this.Free = ko.observable();
+            this.HarbourId = ko.observable();
+            this.Harbour = ko.observable();
+        }
+        Wifi.prototype.Context = function () {
+            return mapViewModel.Wifis;
+        };
+        return Wifi;
+    }(Entity));
+    ClientModel.Wifi = Wifi;
+    var ContentPage = (function (_super) {
+        __extends(ContentPage, _super);
+        function ContentPage() {
+            _super.apply(this, arguments);
+            this.Title = ko.observable();
+            this.Content = ko.observable();
+        }
+        ContentPage.prototype.Context = function () {
+            return mapViewModel.ContentPages;
+        };
+        return ContentPage;
+    }(Entity));
+    ClientModel.ContentPage = ContentPage;
 })(ClientModel || (ClientModel = {}));
 var MarkerType;
 (function (MarkerType) {

@@ -1,7 +1,6 @@
-﻿module ClientModel {
+module ClientModel {
 
     import SEntity = ServerModel.Entity
-    import SWaypointConnection = ServerModel.WaypointConnection
 
     export interface IEntity {
         Id: KnockoutObservable<number>;
@@ -15,43 +14,64 @@
 
         AlbumId = ko.observable<number>();
         CommentListId = ko.observable<number>();
-        Album = CreateObservable<Album>({ AddTransferMode: TransferMode.Include, UpdateTransferMode: TransferMode.Include });
-        InsertDate = ko.observable<number>(<any>Date);
-        UpdateDate = ko.observable<number>(<any>Date);
-
+        Album = CreateObservable<Album>({
+            ForeignKey: (t: this) => t.AlbumId
+        });
+        InsertDate = ko.observable<number>(Date as any);
+        UpdateDate = ko.observable<number>(Date as any);
 
         private static clientIdCounter = 0;
         private static entityDb = {};
 
-        ClientId = ++Entity.clientIdCounter;
+        ClientId = Entity.clientIdCounter++;
 
         protected ServerApi = ServerApi.GetApi(this);
 
         DeleteOnServer(): JQueryPromise<SEntity> {
-            return this.ServerApi.Delete(this.Id());
+            return this.ServerApi.Delete(this.Id()).done(() => { this.removeFromContext(); });
         };
 
         SaveToServer(): JQueryPromise<SEntity> {
             if (this.Id() === undefined)
                 return this.ServerApi.Create(this.ConvertToServerEntity())
                     .done(data => {
-                        this.savedState = undefined;
+                        this.savedStates=[];
                         this.LoadFromServerEntity(data);
+                        this.addToContext();
                     });
             return this.ServerApi.Update(this.ConvertToServerEntity())
                 .done((data) => {
-                    this.savedState = undefined;
+                    this.savedStates=[];
                     this.LoadFromServerEntity(data);
                 });;
         }
 
+        private LoadNavigationProperties(): void {
+            for (let propName in this.GetObservableNames()) {
+                const prop = <KnockoutObservable<any>>this[propName];
+                //if (prop.)
+            }
+        }
+
+        private addToContext() {
+            if (this.Context().indexOf(this) !== -1)
+                return;
+            this.Context().push(this);
+        }
+
+        private removeFromContext() {
+            this.Context().remove(this);
+        }
+        
         LoadFromServerEntity(serverEntity: SEntity): this {
+            if (serverEntity.ProcessOnServer === false)
+                return this;
             for (let prop of this.GetObservableNames()) {
                 const sVal = serverEntity[prop];
                 if (sVal !== undefined && sVal !== null) {
                     if (sVal instanceof Array) {
                         for (let obj of sVal) {
-                            var entity = Entity.entityDb[obj.ClientId.toString()];
+                            const entity = Entity.entityDb[obj.ClientId.toString()];
                             if (entity !== undefined)
                                 entity.LoadFromServerEntity(obj);
                         }
@@ -59,10 +79,6 @@
                         const cVal = this[prop]();
                         if (cVal instanceof Entity)
                             cVal.LoadFromServerEntity(sVal);
-                        //else if (cVal === Date)
-                        //    this[prop](new Date(sVal));
-                        //else if (cVal instanceof Date)
-                        //    (<Date>cVal).setTime(new Date(sVal).getTime());
                         else
                             this[prop](sVal);
                     }
@@ -72,50 +88,62 @@
         }
 
         ConvertToServerEntity(idOnly: boolean = false): SEntity {
+            if (idOnly) {
+                return { Id: this.Id(), ProcessOnServer: false };
+            }
+            const isUpdate = this.Id() !== undefined;
             const serverEntity = { ClientId: this.ClientId };
             const entity = this;
             for (let propName of this.GetObservableNames()) {
                 const prop = entity[propName];
                 const val = prop();
-                if (val !== undefined && val !== Date) {
+                if (val !== undefined) {
                     if (val instanceof Array) {
                         const arr = new Array();
-                        for (let elem of val) {
-                            arr.push(elem.ConvertToServerEntity());
+                        for (let elem of val as Entity[]) {
+                            if (elem.Id() === undefined ||
+                                isUpdate && prop.UpdateTransferMode === TransferMode.Include ||
+                                !isUpdate && prop.AddTransferMode === TransferMode.Include)
+                                arr.push(elem.ConvertToServerEntity());
                         }
                         serverEntity[propName] = arr;
-                    }
-                    //else if (val instanceof Date) {
-                    //    serverEntity[propName] = (<Date>val).toJSON();
-                    //}
-                    else
-                        serverEntity[propName] = val instanceof Entity ? val.ConvertToServerEntity() : val;
+                    } else
+                        serverEntity[propName] = val instanceof Entity
+                            ? (val.Id() === undefined ||
+                                isUpdate && prop.UpdateTransferMode === TransferMode.Include ||
+                                !isUpdate && prop.AddTransferMode === TransferMode.Include
+                                ? val.ConvertToServerEntity()
+                                : undefined)
+                            : val;
                 }
             }
-            return <any>serverEntity;
+            return serverEntity as any;
         }
 
         CopyTo(entity: this) {
             entity.Id(this.Id());
         }
 
-        private savedState: any;
+        private savedStates=new Array();
 
-        SaveState() {
-            const entity = this;
-            entity.savedState = new Object();
+        SaveState= (alreadySavedEntities = new Array<Entity>()) => {
+            const savedState = new Object();
+            if (alreadySavedEntities.indexOf(this) !== -1)
+                return;
+            alreadySavedEntities.push(this);
             for (let prop of this.GetObservableNames()) {
-                let val = ko.unwrap(entity[prop]);
+                let val = ko.unwrap(this[prop]);
                 if (val instanceof Array) {
                     val = val.slice(0);
                     for (let elem of val) {
                         if (elem instanceof Entity)
-                            elem.SaveState();
+                            elem.SaveState(alreadySavedEntities);
                     }
                 } else if (val instanceof Entity)
-                    val.SaveState();
-                entity.savedState[prop] = val;
+                    val.SaveState(alreadySavedEntities);
+                savedState[prop] = val;
             }
+            this.savedStates.push(savedState);
         }
 
         protected GetObservableNames(): string[] {
@@ -128,32 +156,41 @@
             return out;
         }
 
-        RevertState(ignoreError: boolean = false) {
-            if (this.savedState === undefined)
+        RevertState = (ignoreError: boolean = false, alreadyRevertedEntities = new Array<Entity>()) => {
+            if (alreadyRevertedEntities.indexOf(this) !== -1)
+                return;
+            alreadyRevertedEntities.push(this);
+            if (this.savedStates.length=== 0)
                 if (ignoreError)
                     return;
                 else
                     throw "No saved state";
-            const entity = this;
             for (let prop of this.GetObservableNames()) {
-                const val = entity.savedState[prop];
+                const val = this.savedStates[0][prop];
                 //this.savedState[prop] = val;
-                entity[prop](val);
+                this[prop](val);
                 if (val instanceof Entity)
-                    val.RevertState();
+                    val.RevertState(ignoreError, alreadyRevertedEntities);
                 else if (val instanceof Array)
                     for (let elem of val) {
                         if (elem instanceof Entity)
-                            elem.RevertState();
+                            elem.RevertState(ignoreError, alreadyRevertedEntities);
                     }
             }
+            this.savedStates.shift();
         }
 
-        Id: KnockoutObservable<number> = ko.observable<number>();
+        Id = ko.observable<number>();
+
+        abstract Context(): KnockoutObservableArray<this>;
     }
 
     export class Album extends Entity {
         Images = ko.observableArray<Image>();
+
+        Context() {
+            return mapViewModel.Albums as any;
+        }
     }
 
     export class Person extends Entity {
@@ -161,10 +198,14 @@
         FirstName = ko.observable<string>();
         FullName = ko.computed(() => this.FirstName() + " " + this.LastName());
 
+        Context() {
+            return mapViewModel.Persons as any;
+        }
+
     }
 
     export class Job extends Entity {
-        DueTo = ko.observable<Date>(<any>Date);
+        DueTo = ko.observable<Date>(Date as any);
         AssignedTo = ko.observable<Person>();
         AssignedToId = ko.observable<number>();
         Title = ko.observable<String>();
@@ -175,25 +216,32 @@
         Trip = ko.observable<Trip>();
         TripId = ko.observable<number>();
         SubJobs = ko.observableArray<Job>();
+
+        Context() {
+            return mapViewModel.Jobs as any;
+        }
     }
 
     export class Waypoint extends Entity {
         constructor(latLng: L.LatLng, markerType: MarkerType, map: L.mapbox.Map);
         constructor(markerType: MarkerType, map: L.mapbox.Map);
-        constructor(latLng: L.LatLng | MarkerType, markerType: MarkerType | L.mapbox.Map, protected Map?: L.mapbox.Map) {
+        constructor(latLng: L.LatLng | MarkerType,
+            markerType: MarkerType | L.mapbox.Map,
+            protected Map?: L.mapbox.
+            Map) {
             super();
             if (Map === undefined) {
                 if (typeof markerType == "number") {
-                    Map = <L.mapbox.Map><any>latLng;
-                    latLng = <MarkerType>markerType;
+                    Map = ((latLng as any) as L.mapbox.Map);
+                    latLng = (markerType as MarkerType);
                     markerType = Map;
                 }
-                this.Map = <L.mapbox.Map>(markerType);
+                this.Map = ((markerType) as L.mapbox.Map);
                 this.LatLng = new L.LatLng(0, 0);
-                markerType = <MarkerType>latLng;
+                markerType = (latLng as MarkerType);
             } else {
-                this.Latitude((<L.LatLng>latLng).lat);
-                this.Longitude((<L.LatLng>latLng).lng);
+                this.Latitude((latLng as L.LatLng).lat);
+                this.Longitude((latLng as L.LatLng).lng);
             }
             this.LatLng = new L.LatLng(this.Latitude(), this.Longitude());
             this.Latitude.subscribe((value) => {
@@ -240,6 +288,7 @@
             }
         }
 
+
         Show(highlight: boolean = false): void {
             this.marker.setOpacity(this.marker.Waypoint.IsDummy() ? 0.5 : 1);
             if (highlight)
@@ -273,11 +322,13 @@
         }
 
         convertFromDummyHandle() {
+            if (this.markerType !== MarkerType.Dummy)
+                return;
             this.marker.setOpacity(1);
             var w1 = this.polylines[0].Waypoints[0];
             var w2 = this.polylines[0].Waypoints[1];
-            splitPolyline(this.polylines[0]);
             this.markerType = MarkerType.Waypoint;
+            splitPolyline(this.polylines[0]);
             this.SaveToServer()
                 .done((w) => {
                     const wCA = ServerApi.WaypointConnections;
@@ -288,8 +339,8 @@
         }
 
         IsInPolyline(polyline: L.Polyline): boolean {
-            for (const currentPolyline of this.polylines) {
-                if (polyline === currentPolyline)
+            for (const wp of polyline.Waypoints) {
+                if (this === wp)
                     return true;
             }
             return false;
@@ -305,20 +356,22 @@
         AddToPolyline(polyline: L.Polyline): boolean {
             if (this.IsInPolyline(polyline))
                 return false;
-            if (polyline.DummyHandle !== this) {
+            if (!this.IsDummy() && polyline.DummyHandle !== this) {
                 polyline.Waypoints.push(this);
                 polyline.addLatLng(this.LatLng);
                 polyline.redraw();
             }
-            this.LatLng.Polylines.push(polyline);
-            this.polylines.push(polyline);
+            if (this.polylines[0] !== polyline) {
+                this.LatLng.Polylines.push(polyline);
+                this.polylines.push(polyline);
+            }
             //ServerApi.WaypointConnectionApi.GetDefault().
             return true;
         }
 
         RemoveFromPolyline(polyline: L.Polyline): boolean {
-            if (!this.IsInPolyline(polyline))
-                return false;
+            //if (!this.IsInPolyline(polyline))
+            //    return false;
             removeFromArray(polyline.Waypoints, this);
             removeFromArray(this.polylines, polyline);
             removeFromArray(this.LatLng.Polylines, polyline);
@@ -364,6 +417,15 @@
 
         Name = ko.observable<string>();
         Description = ko.observable<string>();
+        Wifis = ko.observableArray<Wifi>();
+
+        Context() {
+            return mapViewModel.Waypoints as any;
+        }
+
+        DeleteOnServer(): JQueryPromise<Object> {
+            return super.DeleteOnServer().done(() => this.RemoveFromMap());
+        }
     }
 
     export class Harbour extends Waypoint {
@@ -371,7 +433,7 @@
         constructor(map: L.mapbox.Map);
         constructor(latLng: L.LatLng, map: L.mapbox.Map);
         constructor(latLng: L.LatLng | L.mapbox.Map, map?: L.mapbox.Map) {
-            super(<L.LatLng>latLng, MarkerType.Harbour, map);
+            super(latLng as L.LatLng, MarkerType.Harbour, map);
             //if (map)
             //this.Distance.subscribe((d) => {
             //    const label = this.marker.getLabel();
@@ -389,14 +451,16 @@
             //    }
             //});
             this.Name.subscribe((d) => {
-                const label = this.marker.getLabel();
-                if (label !== undefined) {
-                    this.marker.updateLabelContent(d);
-                } else {
-                    this.marker.bindLabel(d,
+                if (this.marker !== undefined) {
+                    const label = this.marker.getLabel();
+                    if (label !== undefined) {
+                        this.marker.updateLabelContent(d);
+                    } else {
+                        this.marker.bindLabel(d,
                         {
                             direction: "auto"
                         } as any);
+                    }
                 }
             });
         }
@@ -411,6 +475,10 @@
         Rating = ko.observable<number>();
         Content = ko.observable<string>();
         Website = ko.observable<string>();
+
+        Context() {
+            return mapViewModel.Harbours as any;
+        }
     }
 
     export class Address extends Entity {
@@ -418,6 +486,10 @@
         Zip = ko.observable<string>();
         Town = ko.observable<string>();
         Comment = ko.observable<string>();
+
+        Context() {
+            return mapViewModel.Addresses as any;
+        }
     }
 
     export class Image extends Entity {
@@ -425,6 +497,10 @@
         Path = ko.observable<string>();
         Height = ko.observable<number>();
         Width = ko.observable<number>();
+
+        Context() {
+            return mapViewModel.Images as any;
+        }
     }
 
     export abstract class TackBase extends Entity {
@@ -436,6 +512,7 @@
         End = ko.observable<Harbour>();
         Persons = ko.observableArray<Person>();
         Distance = ko.observable<number>(0);
+        Album = ko.observable(new Album());
 
         CrewList = ko.computed({
             read: () => {
@@ -446,15 +523,15 @@
                 if (persons.length === 1)
                     return first.FullName();
                 else {
-                    var list = first.FullName();
+                    let list = first.FullName();
                     for (let i = 1; i < persons.length; i++) {
-                        list += ", " + persons[i].FullName();
+                        list += `, ${persons[i].FullName()}`;
                     }
                     return list;
                 }
             },
             deferEvaluation: true
-            
+
         });
 
         SaillingTime = ko.computed(() => {
@@ -471,6 +548,10 @@
         Content = ko.observable<string>();
         Tacks = ko.observableArray<Tack>();
         IsDummy = ko.observable<boolean>();
+
+        Context() {
+            return mapViewModel.Trips as any;
+        }
     }
 
     export class LogBookEntry extends TackBase {
@@ -478,18 +559,24 @@
         MotorHoursEnd = ko.observable<number>();
         LogStart = ko.observable<number>();
         LogEnd = ko.observable<number>();
+        WindSpeed = ko.observable<number>();
+        WindDirection = ko.observable<string>();
         SpecialOccurences = ko.observable<string>();
 
+        Context() {
+            return mapViewModel.LogBookEntries as any;
         }
+
+    }
 
     export class Tack extends TackBase {
         Waypoints = ko.observableArray<ServerModel.WaypointTack>();
 
         CanRemoveTack = ko.computed({
             read: () => {
-                if (mapViewModel.SelectedTrip() === undefined)
+                if (mapViewModel.TripHelper.Editing() === undefined)
                     return false;
-                const tacks = mapViewModel.SelectedTrip().Tacks;
+                const tacks = mapViewModel.TripHelper.Editing().Tacks;
                 const index = tacks.indexOf(this);
                 const prevTack = tacks()[index - 1];
                 const nextTack = tacks()[index + 1];
@@ -510,12 +597,21 @@
             return "";
         });
 
+        Context() {
+            return mapViewModel.Tacks as any;
+        }
+
     }
+
     export class Comment extends Entity {
         Title = ko.observable<string>();
         Content = ko.observable<string>();
         Rating = ko.observable<number>();
         ParentId = ko.observable<number>();
+
+        Context():KnockoutObservableArray<Comment> {
+            throw "not implemented";
+        }
 
     }
 
@@ -526,6 +622,10 @@
         Rating = ko.observable<number>();
         Address = ko.observable<Address>();
         AddressId = ko.observable<number>();
+
+        Context() {
+            return mapViewModel.Locations as any;
+        }
     }
 
     export class Restaurant extends Location {
@@ -560,6 +660,28 @@
         ConnectedWayPoints = new Array<Waypoint>();
         ConnectedDistances = new Array<WaypointDistance>();
         LatLng: L.LatLng;
+    }
+
+    export class Wifi extends Entity {
+        Name = ko.observable<string>();
+        Password = ko.observable<string>();
+        Speed = ko.observable<number>();
+        Free = ko.observable<boolean>();
+        HarbourId = ko.observable<number>();
+        Harbour = ko.observable<Harbour>();
+
+        Context() {
+            return mapViewModel.Wifis as any;
+        }
+    }
+
+    export class ContentPage extends Entity {
+        Title = ko.observable<string>();
+        Content = ko.observable<string>();
+
+        Context() {
+            return mapViewModel.ContentPages as any;
+        }
     }
 
 }

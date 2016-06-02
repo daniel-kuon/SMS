@@ -8,6 +8,8 @@ import Harbour = ClientModel.Harbour;
 import Job = ClientModel.Job;
 import WaypointDistance = ClientModel.WaypointDistance;
 
+var ctrlPressed = false;
+
 if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
     $("body").addClass("mobile");
 }
@@ -18,17 +20,19 @@ function renderTime(startDate: Date | number, endDate?: Date) {
     if (startDate instanceof Date)
         return renderTime(endDate.getTime() - startDate.getTime());
     const duration = <number>startDate;
-    var time = Math.ceil(duration / 60000);
+    var time = Math.floor(duration / 60000);
     var mins = (time % 60).toString();
     if (mins.length === 1)
         mins = "0" + mins;
-    time = Math.ceil(time / 60);
+    time = Math.floor(time / 60);
     return time.toString() + ":" + mins;
 }
 
 function getMiddle(pol: L.Polyline): L.LatLng {
     const start = pol.getLatLngs()[0];
     const end = pol.getLatLngs()[1];
+    //if (end === undefined)
+    //    return start;
     return new L.LatLng(start.lat + ((end.lat - start.lat) / 2), start.lng + ((end.lng - start.lng) / 2));
 }
 
@@ -159,22 +163,32 @@ class EditingHelper<T extends ClientModel.Entity> {
 
     constructor(editingModalId: string, deletingModalId: string, Factory: () => T, Dataset: KnockoutObservableArray<T>, detailModalId: string);
     constructor(editingModalId: string, deletingModalId: string, Factory: () => T, Dataset: KnockoutObservableArray<T>, detailedSidebar: Sidebar);
+    constructor(editingModalId: string, deletingModalId: string, Factory: () => T, Dataset: KnockoutObservableArray<T>);
     constructor(editingModalId: string, deletingModalId: string, protected Factory: () => T, protected Dataset: KnockoutObservableArray<T>, detailModalId?: string | Sidebar) {
         this.EditingModal = $(`#${editingModalId}`);
         this.DeletingModal = $(`#${deletingModalId}`);
 
+        if ($("form:first").length === 1)
+            this.Parsley = $("form:first", this.EditingModal).parsley(window.ParsleyConfig);
         this.EditingModal.on("show.bs.modal",
             () => {
                 this.EditingModalOpen = true;
                 if (this.Editing() === undefined)
                     this.Editing(this.Factory());
+                mapViewModel.AlbumStack.unshift(this.Editing().Album());
+            });
+
+        this.EditingModal.on("shown.bs.modal",
+            () => {
+                window.setTimeout(() => $("input, select, textarea", this.EditingModal).first().focus(), 200);
             });
 
         this.EditingModal.on("hidden.bs.modal",
             () => {
-                this.EditingModalOpen = false;
                 if (this.Editing() !== undefined)
                     this.Editing(undefined);
+                this.EditingModalOpen = false;
+                mapViewModel.AlbumStack.shift();
             });
         this.Editing.subscribe((entity) => {
             if (entity === undefined && this.EditingModalOpen) {
@@ -185,8 +199,9 @@ class EditingHelper<T extends ClientModel.Entity> {
             }
         });
         this.Editing.subscribe(() => {
-            if (this.Editing() !== undefined)
+            if (this.Editing() !== undefined) {
                 this.Editing().RevertState(true);
+            }
         },
             this,
             "beforeChange");
@@ -194,13 +209,15 @@ class EditingHelper<T extends ClientModel.Entity> {
         this.DeletingModal.on("show.bs.modal",
             () => {
                 this.DeletingModalOpen = true;
+                mapViewModel.AlbumStack.unshift(undefined);
             });
 
         this.DeletingModal.on("hidden.bs.modal",
             () => {
-                this.DeletingModalOpen = false;
                 if (this.Deleting() !== undefined)
                     this.Deleting(undefined);
+                mapViewModel.AlbumStack.shift();
+                this.DeletingModalOpen = false;
             });
         this.Deleting.subscribe((entity) => {
             if (entity === undefined && this.DeletingModalOpen) {
@@ -215,32 +232,37 @@ class EditingHelper<T extends ClientModel.Entity> {
                 this.DetailSidebar = detailModalId;
                 this.Detail.subscribe((entity) => {
                     if (entity === undefined && this.DetailSidebar.IsActiv()) {
+                        mapViewModel.AlbumStack.shift();
                         this.DetailSidebar.Hide();
-                    } else if (!this.DetailSidebar.IsActiv()) {
-                        this.DetailSidebar.Hide();
+                    } else if (entity !== undefined && !this.DetailSidebar.IsActiv()) {
+                        this.DetailSidebar.Show();
+                        mapViewModel.AlbumStack.unshift(entity.Album());
                     }
                 });
             } else {
-                this.DetailModal=$(`#${detailModalId}`);
+                this.DetailModal = $(`#${detailModalId}`);
                 this.Detail.subscribe((entity) => {
                     if (entity === undefined && this.DetailModalOpen) {
                         this.DetailModal.modal("hide");
-                    } else if (!this.DetailModalOpen) {
-                        entity.SaveState();
+                    } else if (entity !== undefined && !this.DetailModalOpen) {
                         this.DetailModal.modal("show");
                     }
                 });
+
+                this.DetailModal.on("show.bs.modal",
+                    () => {
+                        this.DetailModalOpen = true;
+                        mapViewModel.AlbumStack.unshift(this.Detail().Album());
+                    });
+
+                this.DetailModal.on("hide.bs.modal",
+                    () => {
+                        this.DetailModalOpen = false;
+                        mapViewModel.AlbumStack.shift();
+                    });
             }
         }
 
-        this.Deleting.subscribe((entity) => {
-            if (entity === undefined && this.DeletingModalOpen) {
-                this.DeletingModal.modal("hide");
-            } else if (!this.DeletingModalOpen) {
-                entity.SaveState();
-                this.DeletingModal.modal("show");
-            }
-        });
     }
 
     protected EditingModal: JQuery;
@@ -250,6 +272,7 @@ class EditingHelper<T extends ClientModel.Entity> {
     protected EditingModalOpen = false;
     protected DeletingModalOpen = false;
     protected DetailModalOpen = false;
+    protected Parsley: any;
 
     Detail = ko.observable<T>();
     Editing = ko.observable<T>();
@@ -259,20 +282,38 @@ class EditingHelper<T extends ClientModel.Entity> {
         this.Deleting()
             .DeleteOnServer()
             .done(() => {
-                this.Dataset.remove(this.Deleting());
+                //this.Dataset.remove(this.Deleting());
                 this.Deleting(undefined);
+                if (this.Detail() !== undefined)
+                    this.Detail(undefined);
+                if (this.Editing() !== undefined)
+                    this.Editing(undefined);
             });
     };
 
     Save = () => {
-        var isNew = this.Editing().Id() === undefined;
-        this.Editing()
-            .SaveToServer()
-            .done(() => {
-                if (isNew)
-                    this.Dataset.push(this.Editing());
-                this.Deleting(undefined);
-            });
+        if (this.Parsley !== undefined)
+            this.Parsley.whenValidate()
+                .done(() => {
+                    var isNew = this.Editing().Id() === undefined;
+                    this.Editing()
+                        .SaveToServer()
+                        .done(() => {
+                            //if (isNew)
+                            //    this.Dataset.push(this.Editing());
+                            this.Editing(undefined);
+                        });
+                });
+        else {
+            var isNew = this.Editing().Id() === undefined;
+            this.Editing()
+                .SaveToServer()
+                .done(() => {
+                    //if (isNew)
+                    //    this.Dataset.push(this.Editing());
+                    this.Editing(undefined);
+                });
+        }
     };
 }
 
@@ -292,7 +333,7 @@ class MapViewModel {
                     text: "Neuer Hafen",
                     callback: function (e) {
                         console.log(e);
-                        mapViewModel.EditingHarbour(mapViewModel.CreateHarbour("", e.latlng))
+                        mapViewModel.HarbourHelper.Editing(mapViewModel.CreateHarbour("", e.latlng));
                     }
                 }
             ]
@@ -303,7 +344,19 @@ class MapViewModel {
         this.Map.setView([54.40774166820069, 10.523529052734373], 9);
         L.tileLayer("http://t1.openseamap.org/seamark/{z}/{x}/{y}.png").addTo(this.Map);
         this.LoadData();
-        this.SelectedHarbour.subscribe((newHarbour) => {
+        $.get("/Account/LoggedIn").done((data) => this.IsLoggedIn(data));
+        this.ContentPages.subscribe((data) => {
+            var nav = $("#leftNav");
+            $(".contentPageLink", nav).remove();
+            for (let cP of data) {
+                $(`<li role="presentation" class="contentPageLink"><a href="#">${cP.Title()}</a></li>`).click(() => {
+                    mapViewModel.ContentPageHelper.Detail(cP);
+                    return false;
+                }).appendTo(nav);
+            }
+        });
+
+        this.HarbourHelper.Detail.subscribe((newHarbour) => {
             if (newHarbour !== undefined) {
                 mapViewModel.CalculateDistances(newHarbour);
                 mapViewModel.Harbours.sort((h1, h2) => h1.Distance() - h2.Distance());
@@ -315,128 +368,13 @@ class MapViewModel {
             mapViewModel.routeFixed = false;
             mapViewModel.HideRoute();
         });
-        this.EditingHarbour.subscribe((harbour) => {
-            if (harbour === undefined) {
-                editingHarbourModal.modal("hide");
-            } else {
-                harbour.SaveState();
-                editingHarbourModal.modal("show");
-            }
-        });
-        this.EditingHarbour.subscribe((harbour) => {
-            if (harbour !== undefined) {
-                harbour.RevertState(true);
-                if (harbour.Id() === undefined)
-                    mapViewModel.Map.removeLayer(harbour.marker);
-            }
-        },
-            this,
-            "beforeChange");
-        this.DeletingHarbour.subscribe((h) => {
-            if (h === undefined) {
-                deletingHarbourModal.modal("hide");
-            } else {
-                deletingHarbourModal.modal("show");
-            }
-        });
-        this.EditingWaypoint.subscribe((waypoint) => {
-            if (waypoint === undefined) {
-                editingWaypointModal.modal("hide");
-            } else {
-                waypoint.SaveState();
-                editingWaypointModal.modal("show");
-            }
-        });
-        this.EditingWaypoint.subscribe((waypoint) => {
-            if (mapViewModel.EditingWaypoint() !== undefined)
-                mapViewModel.EditingWaypoint().RevertState(true);
-        },
-            this,
-            "beforeChange");
-        this.DeletingWaypoint.subscribe((h) => {
-            if (h === undefined) {
-                deletingWaypointModal.modal("hide");
-            } else {
-                deletingWaypointModal.modal("show");
-            }
-        });
-        this.EditingJob.subscribe((job) => {
-            if (job === undefined) {
-                editingJobModal.modal("hide");
-            } else {
-                job.SaveState();
-                editingJobModal.modal("show");
-            }
-        });
-        this.EditingJob.subscribe((job) => {
-            if (mapViewModel.EditingJob() !== undefined)
-                mapViewModel.EditingJob().RevertState(true);
-        },
-            this,
-            "beforeChange");
-        this.DeletingJob.subscribe((h) => {
-            if (h === undefined) {
-                deletingJobModal.modal("hide");
-            } else {
-                deletingJobModal.modal("show");
-            }
-        });
-
-        this.EditingPerson.subscribe((Person) => {
-            if (Person === undefined) {
-                editingPersonModal.modal("hide");
-            } else {
-                Person.SaveState();
-                editingPersonModal.modal("show");
-            }
-        });
-        this.EditingPerson.subscribe((Person) => {
-            if (mapViewModel.EditingPerson() !== undefined)
-                mapViewModel.EditingPerson().RevertState(true);
-        },
-            this,
-            "beforeChange");
-        this.DeletingPerson.subscribe((h) => {
-            if (h === undefined) {
-                deletingPersonModal.modal("hide");
-            } else {
-                deletingPersonModal.modal("show");
-            }
-        });
-
-
-        this.DetailedLogBookEntry.subscribe((logBookEntry) => {
-            detailedLogBookEntryModal.modal("show");
-        });
-
-        this.EditingLogBookEntry.subscribe((logBookEntry) => {
-            if (logBookEntry === undefined) {
-                editingLogBookEntryModal.modal("hide");
-            } else {
-                logBookEntry.SaveState();
-                editingLogBookEntryModal.modal("show");
-            }
-        });
-        this.EditingLogBookEntry.subscribe((job) => {
-            if (mapViewModel.EditingLogBookEntry() !== undefined)
-                mapViewModel.EditingLogBookEntry().RevertState(true);
+        this.HarbourHelper.Editing.subscribe((harbour) => {
+            if (harbour !== undefined && harbour.Id() === undefined)
+                mapViewModel.Map.removeLayer(harbour.marker);
         },
             this,
             "beforeChange");
 
-        this.SelectedHarbour.subscribe((h) => {
-            if (h === undefined)
-                rightSidebar.Hide();
-            else
-                rightSidebar.Show();
-
-        });
-        this.SelectedTrip.subscribe((t) => {
-            if (t === undefined)
-                bottomSidebar.Hide();
-            else
-                bottomSidebar.Show();
-        });
         this.Map.addEventListener("mousemove",
             (e: L.LeafletMouseEvent) => {
                 if (this.GetMapMode() === MapMode.RouteDrawing) {
@@ -521,15 +459,17 @@ class MapViewModel {
             });
     }
 
+    IsLoggedIn = ko.observable(false);
+
     private routePolyline = ko.observable<L.Polyline>();
 
     StartRoute() {
         const trip = new ClientModel.Trip();
         const tack = new ClientModel.Tack();
-        const harbour = mapViewModel.SelectedHarbour();
+        const harbour = mapViewModel.HarbourHelper.Detail();
         tack.Start(harbour);
         trip.Tacks.push(tack);
-        mapViewModel.SelectedTrip(trip);
+        mapViewModel.TripHelper.Editing(trip);
         mapViewModel.routePolyline(L.polyline([],
             {
                 color: "#009900"
@@ -539,8 +479,8 @@ class MapViewModel {
 
     IsLastTakInRoute = ko.computed({
         read: () => {
-            var trip = mapViewModel.SelectedTrip();
-            var h = mapViewModel.SelectedHarbour();
+            var trip = mapViewModel.TripHelper.Editing();
+            var h = mapViewModel.HarbourHelper.Detail();
             return trip !== undefined && h !== undefined && trip.Tacks()[trip.Tacks().length - 1].Start() === h;
         },
         deferEvaluation: true
@@ -549,7 +489,7 @@ class MapViewModel {
     GetRouteDistance = ko.computed({
         read: () => {
             var distance = 0;
-            for (let tack of mapViewModel.SelectedTrip().Tacks()) {
+            for (let tack of mapViewModel.TripHelper.Editing().Tacks()) {
                 if (!isNaN(tack.Distance()))
                     distance += tack.Distance();
             }
@@ -566,8 +506,8 @@ class MapViewModel {
     });
 
     AddToRoute() {
-        const trip = mapViewModel.SelectedTrip();
-        const targetHarbour = mapViewModel.SelectedHarbour();
+        const trip = mapViewModel.TripHelper.Editing();
+        const targetHarbour = mapViewModel.HarbourHelper.Editing();
         const tack = new ClientModel.Tack();
         const lastTack = trip.Tacks()[trip.Tacks().length - 1];
         const startHarbour = lastTack.Start();
@@ -592,7 +532,7 @@ class MapViewModel {
                 color: "#009900"
             }));
         mapViewModel.routePolyline().addTo(mapViewModel.Map);
-        for (let tack of mapViewModel.SelectedTrip().Tacks()) {
+        for (let tack of mapViewModel.TripHelper.Editing().Tacks()) {
             const targetHarbour = tack.End();
             const startHarbour = tack.Start();
             if (targetHarbour === undefined)
@@ -610,7 +550,7 @@ class MapViewModel {
 
     PullTack() {
         const tack: ClientModel.Tack = <any>this;
-        const tacks = mapViewModel.SelectedTrip().Tacks;
+        const tacks = mapViewModel.TripHelper.Editing().Tacks;
         const index = tacks.indexOf(tack);
         const prevTack = tacks()[index - 1];
         var tmpEnd = tack.End();
@@ -625,7 +565,7 @@ class MapViewModel {
 
     PushTack() {
         const tack: ClientModel.Tack = <any>this;
-        const tacks = mapViewModel.SelectedTrip().Tacks;
+        const tacks = mapViewModel.TripHelper.Editing().Tacks;
         const index = tacks.indexOf(tack);
         const nextTack = tacks()[index + 1];
         tack.End(nextTack.End());
@@ -639,7 +579,7 @@ class MapViewModel {
 
     RemoveTack() {
         const tack: ClientModel.Tack = <any>this;
-        const tacks = mapViewModel.SelectedTrip().Tacks;
+        const tacks = mapViewModel.TripHelper.Editing().Tacks;
         const index = tacks.indexOf(tack);
         const prevTack = tacks()[index - 1];
         if (prevTack !== undefined)
@@ -765,10 +705,26 @@ class MapViewModel {
             });
         ServerApi.Crews.Get()
             .done(d => {
-                for (let ai of d) {
-                    this.Crews.push(ai);
+                for (let c of d) {
+                    this.Crews.push(c);
                 }
                 this.CrewsLoaded = true;
+                this.InitializeModel();
+            });
+        ServerApi.Wifis.Get()
+            .done(d => {
+                for (let c of d) {
+                    this.Wifis.push(new ClientModel.Wifi().LoadFromServerEntity(c));
+                }
+                this.WifisLoaded = true;
+                this.InitializeModel();
+            });
+        ServerApi.ContentPages.Get()
+            .done(d => {
+                for (let c of d) {
+                    this.ContentPages.push(new ClientModel.ContentPage().LoadFromServerEntity(c));
+                }
+                this.ContentPagesLoaded = true;
                 this.InitializeModel();
             });
         //ServerApi.WaypointTacks.Get().done(d => {
@@ -814,7 +770,10 @@ class MapViewModel {
             this.TacksLoaded &&
             this.LocationsLoaded &&
             this.CrewsLoaded &&
-            this.AlbumImagesLoaded) {
+            this.LogBookEntriesLoaded &&
+            this.AlbumImagesLoaded &&
+            this.WifisLoaded &&
+            this.ContentPagesLoaded) {
             for (let entity of this.Jobs()) {
                 if (entity.AssignedToId() !== undefined)
                     entity.AssignedTo(this.GetPersonById(entity.AssignedToId()));
@@ -859,13 +818,18 @@ class MapViewModel {
                 else if (trip !== undefined)
                     trip.Persons.push(p);
             }
+            for (let wifi of mapViewModel.Wifis()) {
+                var h = mapViewModel.GetHarbourById(wifi.HarbourId());
+                h.Wifis.push(wifi);
+                wifi.Harbour(h);
+            }
             ko.applyBindings(mapViewModel);
             $("#loadingOverlay").remove();
         }
     }
 
     InitializeMap() {
-        mapViewModel.SelectedHarbour(undefined);
+        mapViewModel.HarbourHelper.Detail(undefined);
         for (let wp of mapViewModel.Waypoints()) {
             if (wp.marker !== undefined)
                 mapViewModel.Map.removeLayer(wp.marker);
@@ -884,11 +848,13 @@ class MapViewModel {
         if (mapViewModel.MapMode() === MapMode.Admin) {
             for (let p of mapViewModel.Polylines) {
                 p.addTo(mapViewModel.Map);
+                //p.contextmenu.enable();
             }
             mapViewModel.Map.contextmenu.enable();
         } else {
             for (let p of mapViewModel.Polylines) {
                 mapViewModel.Map.removeLayer(p);
+                //p.contextmenu.disable();
             }
             mapViewModel.Map.contextmenu.disable();
         }
@@ -904,6 +870,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Waypoint with id " + id + " found";
+        return undefined;
     }
 
     GetHarbourById(id: number): ClientModel.Harbour {
@@ -911,6 +878,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Harbour with id " + id + " found";
+        return undefined;
     }
 
     GetPersonById(id: number): ClientModel.Person {
@@ -918,6 +886,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Person with id " + id + " found";
+        return undefined;
     }
 
     GetJobById(id: number): ClientModel.Job {
@@ -925,6 +894,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Job with id " + id + " found";
+        return undefined;
     }
 
     GetTripById(id: number): ClientModel.Trip {
@@ -932,6 +902,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Trip with id " + id + " found";
+        return undefined;
     }
 
     GetAddressById(id: number): ClientModel.Address {
@@ -939,6 +910,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Address with id " + id + " found";
+        return undefined;
     }
 
     GetImageById(id: number): ClientModel.Image {
@@ -946,6 +918,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Image with id " + id + " found";
+        return undefined;
     }
 
     GetTackById(id: number): ClientModel.Tack {
@@ -953,13 +926,15 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Tack with id " + id + " found";
+        return undefined;
     }
 
-    GetLogBookEntryById(id: number): ClientModel.Tack {
+    GetLogBookEntryById(id: number): ClientModel.LogBookEntry {
         for (let entity of this.LogBookEntries()) {
             if (entity.Id() === id) return entity;
         }
         //throw "No Tack with id " + id + " found";
+        return undefined;
     }
 
     GetAlbumById(id: number): ClientModel.Album {
@@ -967,6 +942,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Tack with id " + id + " found";
+        return undefined;
     }
 
     GetLocationById(id: number): ClientModel.Location {
@@ -980,6 +956,7 @@ class MapViewModel {
             if (entity.Id() === id) return entity;
         }
         //throw "No Location with id " + id + " found";
+        return undefined;
     }
 
     WaypointsLoaded = false;
@@ -996,6 +973,8 @@ class MapViewModel {
     AlbumImagesLoaded = false;
     LogBookEntriesLoaded = false;
     CrewsLoaded = false;
+    WifisLoaded = false;
+    ContentPagesLoaded = false;
 
     Waypoints = ko.observableArray<ClientModel.Waypoint>();
     WaypointConnections = ko.observableArray<ServerModel.WaypointConnection>();
@@ -1013,19 +992,33 @@ class MapViewModel {
     AlbumImages = ko.observableArray<ServerModel.AlbumImage>();
     LogBookEntries = ko.observableArray<ClientModel.LogBookEntry>();
     Crews = ko.observableArray<ServerModel.Crew>();
+    Wifis = ko.observableArray<ClientModel.Wifi>();
+    ContentPages = ko.observableArray<ClientModel.ContentPage>();
 
-    SelectedWaypoint = ko.observable<ClientModel.Waypoint>();
-    SelectedHarbour = ko.observable<ClientModel.Harbour>();
-    SelectedPerson = ko.observable<ClientModel.Person>();
-    SelectedJob = ko.observable<ClientModel.Job>();
-    SelectedTrip = ko.observable<ClientModel.Trip>();
-    SelectedAddress = ko.observable<ClientModel.Address>();
-    SelectedImage = ko.observable<ClientModel.Image>();
-    SelectedTack = ko.observable<ClientModel.Tack>();
-    SelectedLocation = ko.observable<ClientModel.Location>();
-    SelectedSupermarket = ko.observable<ClientModel.Supermarket>();
-    SelectedRestaurant = ko.observable<ClientModel.Restaurant>();
-    SelectedLogBookEntry = ko.observable<ClientModel.LogBookEntry>();
+    WaypointHelper = new EditingHelper("editingWaypointModal", "deletingWaypointModal", () => this.CreateWaypoint(MarkerType.Waypoint), this.Waypoints);
+    HarbourHelper = new EditingHelper("editingHarbourModal", "deletingHarbourModal", () => this.CreateHarbour(), this.Harbours, rightSidebar);
+    PersonHelper = new EditingHelper("editingPersonModal", "deletingPersonModal", () => new ClientModel.Person(), this.Persons);
+    JobHelper = new EditingHelper("editingJobModal", "deletingJobModal", () => new ClientModel.Job(), this.Jobs);
+    TripHelper = new EditingHelper("editingTripModal", "deletingTripModal", () => new ClientModel.Trip(), this.Trips);
+    AddressHelper = new EditingHelper("editingAddressModal", "deletingAddressModal", () => new ClientModel.Address(), this.Addresses);
+    ImageHelper = new EditingHelper("editingImageModal", "deletingImageModal", () => new ClientModel.Image(), this.Images);
+    TackHelper = new EditingHelper("editingTackModal", "deletingTackModal", () => new ClientModel.Tack(), this.Tacks);
+    LocationHelper = new EditingHelper("editingLocationModal", "deletingLocationModal", () => new ClientModel.Location(), this.Locations);
+    SupermarketHelper = new EditingHelper("editingSupermarketModal", "deletingSupermarketModal", () => new ClientModel.Supermarket(), this.Supermarkets);
+    RestaurantHelper = new EditingHelper("editingRestaurantModal", "deletingRestaurantModal", () => new ClientModel.Restaurant(), this.Restaurants);
+    LogBookEntryHelper = new EditingHelper("editingLogBookEntryModal", "deletingLogBookEntryModal", () => new ClientModel.LogBookEntry(), this.LogBookEntries, "detailedLogBookEntryModal");
+    ContentPageHelper = new EditingHelper("editingContentPageModal", "deletingContentPageModal", () => new ClientModel.ContentPage(), this.ContentPages, "detailedContentPageModal");
+    WifiHelper = new EditingHelper("editingWifiModal", "deletingWifiModal", () => {
+        const w = new ClientModel.Wifi();
+        w.HarbourId(mapViewModel.HarbourHelper.Detail().Id());
+        return w;
+    }, this.Wifis, "detailWifiModal");
+
+    HarboursByName = ko.computed<Harbour[]>(() => this.Harbours.sort((h1, h2) => h1.Name() > h2.Name()?1:-1)());
+    HarboursByDistance = ko.computed<Harbour[]>(() => this.Harbours.sort((h1, h2) => h1.Distance() - h2.Distance())());
+    LogBookEntriesByStartDate = ko.computed<ClientModel.LogBookEntry[]>(() => this.LogBookEntries.sort((l1, l2) => Date.parse(l1.StartDate()) - Date.parse(l2.StartDate()))());
+
+
 
     //SortedLogBookEntries = ko.computed({
     //    read: () => this.LogBookEntries.sort((l1, l2) => {
@@ -1036,10 +1029,11 @@ class MapViewModel {
     //    deferEvaluation: true
     //});
 
-    InitGallery() {
+    InitGallery(item: ClientModel.Image, event: JQueryEventObject) {
         const items = new Array<PhotoSwipe.Item>();
+        const albumElem = event.target.parentElement;
         const currImage: ClientModel.Image = this as any;
-        for (let data of mapViewModel.SelectedHarbour().Album().Images()) {
+        for (let data of mapViewModel.AlbumStack()[0].Images()) {
             items.push(({
                 h: data.Height(),
                 w: data.Width(),
@@ -1050,9 +1044,9 @@ class MapViewModel {
             PhotoSwipeUI_Default,
             items,
             {
-                index: mapViewModel.SelectedHarbour().Album().Images.indexOf(currImage) as number,
+                index: mapViewModel.AlbumStack()[0].Images.indexOf(currImage) as number,
                 getThumbBoundsFn: (index: number): { x: number; y: number; w: number } => {
-                    const elem = $(".images:first img")[index];
+                    const elem = $("img", albumElem)[index];
                     var padding = parseFloat(window.getComputedStyle(elem, null)
                         .getPropertyValue("padding-left")
                         .replace("px", ""));
@@ -1075,13 +1069,10 @@ class MapViewModel {
     }
 
     RemoveHarbour = () => {
-        mapViewModel.SelectedWaypoint().RemoveFromMap();
-        mapViewModel.Waypoints.remove(this.SelectedWaypoint());
+        mapViewModel.HarbourHelper.Detail().DeleteOnServer();
     };
     RemoveWaypoint = () => {
-        mapViewModel.SelectedHarbour().RemoveFromMap();
-        mapViewModel.Harbours.remove(this.SelectedHarbour());
-        mapViewModel.Harbours.remove(this.SelectedHarbour());
+        mapViewModel.WaypointHelper.Detail().DeleteOnServer();
     };
 
     //CopyHarbour(h1: Harbour, h2: Harbour): void {
@@ -1099,7 +1090,26 @@ class MapViewModel {
     AddPolyline(waypoint?: Waypoint): L.Polyline;
     AddPolyline(waypoints?: Waypoint[]): L.Polyline;
     AddPolyline(arg?): L.Polyline {
+        //var options = {
+        //    contextmenu: true,
+        //    contextmenuInheritItems: false,
+        //    contextmenuItems: [
+        //        {
+        //            text: "FFFFFFFFFFFFFFFFFF",
+        //            callback: function() { console.log(this);
+        //                console.log(arguments);mapViewModel.HarbourHelper.Editing(this) }
+        //        },
+        //        {
+        //            text: "Löschen",
+        //            callback: function() { mapViewModel.HarbourHelper.Deleting(this) }
+        //        }
+        //    ]
+        //};
+
         const polyline = new L.Polyline([]);
+
+        //polyline.bindContextMenu(options);
+
         mapViewModel.Polylines.push(polyline);
         polyline.addEventListener("click", (e: L.LeafletMouseEvent) => {
             const p1 = mapViewModel.Map.latLngToContainerPoint(polyline.getLatLngs()[0]);
@@ -1127,7 +1137,7 @@ class MapViewModel {
                 }
         polyline.addEventListener("mouseover",
             () => {
-                //mapViewModel.HoveredPolyine = polyline;
+                mapViewModel.HoveredPolyine = polyline;
             });
         return polyline;
     }
@@ -1160,7 +1170,7 @@ class MapViewModel {
         throw `No Waypoint with id ${id} in model`;
     }
 
-    CalculateDistances(start = mapViewModel.SelectedHarbour(), target?: ClientModel.Waypoint) {
+    CalculateDistances(start = mapViewModel.HarbourHelper.Detail(), target?: ClientModel.Waypoint) {
 
         const waypoints: Array<Waypoint> = [start];
         const calculating = new Array<WaypointDistance>();
@@ -1192,11 +1202,11 @@ class MapViewModel {
         }
         while (calculating.length > 0) {
             let minimalDist = Number.POSITIVE_INFINITY;
-            let minimalWP: WaypointDistance;
+            let minimalWp: WaypointDistance;
             for (let wp of calculating) {
-                for (let cWP of wp.ConnectedWayPoints) {
-                    if ((calculateRoute ? cWP.RoutePrecessor() : cWP.Precessor()) !== undefined)
-                        removeFromArray(wp.ConnectedWayPoints, cWP);
+                for (let cWp of wp.ConnectedWayPoints) {
+                    if ((calculateRoute ? cWp.RoutePrecessor() : cWp.Precessor()) !== undefined)
+                        removeFromArray(wp.ConnectedWayPoints, cWp);
                 }
                 if (wp.ConnectedWayPoints.length === 0) {
                     removeFromArray(calculating, wp);
@@ -1205,13 +1215,13 @@ class MapViewModel {
                     const dist = wp.Distance + wp.ConnectedWayPoints[0].LatLng.distanceTo(wp.LatLng) / 1.852;
                     if (dist < minimalDist) {
                         minimalDist = dist;
-                        minimalWP = wp;
+                        minimalWp = wp;
                     }
                 }
             }
-            if (minimalWP !== undefined) {
-                calculating.push(new WaypointDistance(minimalWP.Waypoint,
-                    minimalWP.ConnectedWayPoints.shift(),
+            if (minimalWp !== undefined) {
+                calculating.push(new WaypointDistance(minimalWp.Waypoint,
+                    minimalWp.ConnectedWayPoints.shift(),
                     minimalDist,
                     waypoints,
                     calculateRoute));
@@ -1247,7 +1257,7 @@ class MapViewModel {
             return;
         const latLngs = [h.LatLng];
         let dist = h.Distance();
-        if (dist === undefined)
+        if (dist === undefined || dist === null)
             dist = 0;
         while (h.Precessor() !== undefined) {
             h = h.Precessor();
@@ -1328,17 +1338,18 @@ class MapViewModel {
             if (mapViewModel.MapMode() === MapMode.Admin) {
                 options.contextmenu = true;
                 options.contextmenuInheritItems = false;
+                // ReSharper disable SuspiciousThisUsage
                 if (markerType === MarkerType.Harbour) {
                     options.contextmenuItems = [
                         {
                             text: "Bearbeiten",
                             context: wp,
-                            callback: function () { mapViewModel.EditingHarbour(this) }
+                            callback: function () { mapViewModel.HarbourHelper.Editing(this) }
                         },
                         {
                             text: "Löschen",
                             context: wp,
-                            callback: function () { mapViewModel.DeletingHarbour(this) }
+                            callback: function () { mapViewModel.HarbourHelper.Deleting(this) }
                         }
                     ];
                 } else {
@@ -1346,15 +1357,16 @@ class MapViewModel {
                         {
                             text: "Bearbeiten",
                             context: wp,
-                            callback: function () { mapViewModel.EditingWaypoint(this) }
+                            callback: function () { mapViewModel.WaypointHelper.Editing(this) }
                         },
                         {
                             text: "Löschen",
                             context: wp,
-                            callback: function () { mapViewModel.DeletingWaypoint(this) }
+                            callback: function () { mapViewModel.WaypointHelper.Deleting(this) }
                         }
                     ];
                 }
+                // ReSharper restore SuspiciousThisUsage
             }
 
             const marker = new L.Marker(wp.LatLng, options);
@@ -1363,42 +1375,38 @@ class MapViewModel {
             wp.marker = marker;
             if (mapViewModel.MapMode() === MapMode.Admin) {
                 if (markerType === MarkerType.Dummy)
-                    marker.addEventListener("mouseout",
-                        (e) => {
-                            if (e.target.Waypoint.IsDummy()) {
-                                mapViewModel.HoveredPolyine = undefined;
-                            }
-                        });
-                marker.addEventListener("drag",
-                    (e: L.LeafletMouseEvent) => {
-                        wp.SetLatLng(wp.marker.getLatLng());
+                    marker.addEventListener("mouseout", (e) => {
+                        if (e.target.Waypoint.IsDummy())
+                            mapViewModel.HoveredPolyine = undefined;
+
                     });
+                marker.addEventListener("drag", () => { wp.SetLatLng(wp.marker.getLatLng()); });
                 if (markerType === MarkerType.Waypoint || markerType === MarkerType.Dummy) {
                     this.WaypointMarkers.push(wp.marker);
                     wp.marker.Point = mapViewModel.Map.latLngToContainerPoint(wp.LatLng);
                 }
-                wp.marker.addEventListener("click",
-                    (e: L.LeafletMouseEvent) => {
-                        if (wp.IsDummy()) {
-                            mapViewModel.Waypoints.push(wp);
-                            wp.convertFromDummyHandle();
+                wp.marker.addEventListener("click", () => {
+                    if (wp.IsDummy()) {
+                        mapViewModel.HoveredPolyine = undefined;
+                        wp.convertFromDummyHandle();
+                        mapViewModel.Waypoints.push(wp);
+                    }
+                    if (mapViewModel.GetMapMode() === MapMode.RouteDrawing) {
+                        if (!wp.IsInPolyline(mapViewModel.DrawingPolyline)) {
+                            ServerApi.WaypointConnections
+                                .Connect(wp.Id(), mapViewModel.DrawingPolyline.Waypoints[0].Id());
+                            wp.AddToPolyline(mapViewModel.DrawingPolyline);
+                            removeFromPolyline(mapViewModel.DrawingPolyline, mapViewModel.DrawingLatLng);
+                            addDummyHandle(mapViewModel.DrawingPolyline);
+                            mapViewModel.DrawingPolyline = undefined;
+                            mapViewModel.DrawingLatLng = undefined;
+                        } else {
+                            removePolyline(mapViewModel.DrawingPolyline);
+                            mapViewModel.DrawingPolyline = undefined;
+                            mapViewModel.DrawingLatLng = undefined;
                         }
-                        if (mapViewModel.GetMapMode() === MapMode.RouteDrawing) {
-                            if (!wp.IsInPolyline(mapViewModel.DrawingPolyline)) {
-                                ServerApi.WaypointConnections
-                                    .Connect(wp.Id(), mapViewModel.DrawingPolyline.Waypoints[0].Id());
-                                wp.AddToPolyline(mapViewModel.DrawingPolyline);
-                                removeFromPolyline(mapViewModel.DrawingPolyline, mapViewModel.DrawingLatLng);
-                                addDummyHandle(mapViewModel.DrawingPolyline);
-                                mapViewModel.DrawingPolyline = undefined;
-                                mapViewModel.DrawingLatLng = undefined;
-                            } else {
-                                removePolyline(mapViewModel.DrawingPolyline);
-                                mapViewModel.DrawingPolyline = undefined;
-                                mapViewModel.DrawingLatLng = undefined;
-                            }
-                        }
-                    });
+                    }
+                });
                 wp.marker.addEventListener("dblclick",
                     (e: L.LeafletMouseEvent) => {
                         mapViewModel.DrawingPolyline = mapViewModel.AddPolyline(wp);
@@ -1406,25 +1414,20 @@ class MapViewModel {
                         mapViewModel.DrawingPolyline.addLatLng(mapViewModel.DrawingLatLng);
                     });
                 if (markerType === MarkerType.Dummy)
-                    wp.marker.addOneTimeEventListener("drag",
-                        (e: L.LeafletMouseEvent) => {
-                            wp.convertFromDummyHandle();
-                            mapViewModel.Waypoints.push(wp);
-                        });
+                    wp.marker.addOneTimeEventListener("drag", () => {
+                        wp.convertFromDummyHandle();
+                        mapViewModel.Waypoints.push(wp);
+                    });
                 //else if (markerType === MarkerType.Waypoint) {
                 //    wp.Name(`Wegpunkt ${mapViewModel.Waypoints().length + 1}`);
                 //}
-                wp.marker.addEventListener("dragend",
-                    (e: L.LeafletMouseEvent) => {
-                        wp.SaveToServer();
-                    });
+                wp.marker.addEventListener("dragend", () => { wp.SaveToServer(); });
             } else if (markerType === MarkerType.Harbour) {
-                wp.marker.addEventListener("mouseover",
-                    () => {
-                        if (mapViewModel.SelectedHarbour() !== undefined)
-                            mapViewModel.ShowRoute(wp);
-                    });
-                wp.marker.addEventListener("click", () => mapViewModel.SelectedHarbour(wp as ClientModel.Harbour));
+                wp.marker.addEventListener("mouseover", () => {
+                    if (mapViewModel.HarbourHelper.Detail() !== undefined)
+                        mapViewModel.ShowRoute(wp);
+                });
+                wp.marker.addEventListener("click", () => mapViewModel.HarbourHelper.Detail(wp as ClientModel.Harbour));
             }
         }
     }
@@ -1442,115 +1445,8 @@ class MapViewModel {
         return h;
     }
 
-    SaveHarbour() {
-        const harbour: ClientModel.Harbour = this as any;
-        if (harbour.Id() === undefined) {
-            mapViewModel.Harbours.push(harbour);
-        }
-        harbour.SaveToServer()
-            .done(() => {
-                mapViewModel.EditingHarbour(undefined);
-            });
-    }
-
-    DeleteHarbour() {
-        var h = mapViewModel.DeletingHarbour();
-        ServerApi.WaypointConnections
-            .Disconnect(h.Id())
-            .done(() => {
-                h.DeleteOnServer()
-                    .done(() => {
-                        h.RemoveFromMap();
-                        mapViewModel.Harbours.remove(h);
-                        mapViewModel.DeletingHarbour(undefined);
-                    });
-            });
-    }
-
-    SaveWaypoint() {
-        const waypoint: ClientModel.Waypoint = this as any;
-        waypoint.SaveToServer()
-            .done(() => {
-                mapViewModel.EditingWaypoint(undefined);
-            });
-    }
-
-    DeleteWaypoint() {
-        var wp = mapViewModel.DeletingWaypoint();
-        ServerApi.WaypointConnections
-            .Disconnect(wp.Id())
-            .done(() => {
-                wp.DeleteOnServer()
-                    .done(() => {
-                        wp.RemoveFromMap();
-                        mapViewModel.Waypoints.remove(wp);
-                        mapViewModel.DeletingWaypoint(undefined);
-                    });
-            });
-    };
-
-
-    SaveJob() {
-        const job: ClientModel.Job = this as any;
-        const newJob = job.Id() === undefined;
-        job.SaveToServer()
-            .done(() => {
-                if (newJob) {
-                    mapViewModel.Jobs.push(mapViewModel.EditingJob());
-                    if (mapViewModel.EditingJob().SuperJobId() !== undefined)
-                        mapViewModel.GetJobById(mapViewModel.EditingJob().SuperJobId()).SubJobs.push(mapViewModel.EditingJob());
-                }
-                mapViewModel.EditingJob(undefined);
-            });
-    }
-
-    DeleteJob() {
-        const job = mapViewModel.DeletingJob();
-        job.DeleteOnServer()
-            .done(() => {
-                mapViewModel.Jobs.remove(job);
-                if (job.SuperJobId() !== undefined)
-                    mapViewModel.GetJobById(job.SuperJobId()).SubJobs.remove(job);
-                mapViewModel.DeletingJob(undefined);
-            });
-    }
-
-
-    SaveLogBookEntry() {
-        const job: ClientModel.LogBookEntry = this as any;
-        const newLogBookEntry = job.Id() === undefined;
-        job.SaveToServer()
-            .done(() => {
-                if (newLogBookEntry) {
-                    mapViewModel.LogBookEntries.push(mapViewModel.EditingLogBookEntry());
-                }
-                mapViewModel.EditingLogBookEntry(undefined);
-            });
-    }
-
-    DeleteLogBookEntry() {
-        const job = mapViewModel.DeletingLogBookEntry();
-        job.DeleteOnServer()
-            .done(() => {
-                mapViewModel.LogBookEntries.remove(job);
-                mapViewModel.DeletingLogBookEntry(undefined);
-            });
-    }
-
-
     DrawingPolyline: L.Polyline;
     Polylines = new Array<L.Polyline>();
-    DeletingPerson = ko.observable<Person>();
-    EditingPerson = ko.observable<Person>();
-    EditingHarbour = ko.observable<Harbour>();
-    DeletingHarbour = ko.observable<Harbour>();
-    EditingWaypoint = ko.observable<Waypoint>();
-    DeletingWaypoint = ko.observable<Waypoint>();
-    DeletingJob = ko.observable<Job>();
-    EditingJob = ko.observable<Job>();
-    EditingLogBookEntry = ko.observable<ClientModel.LogBookEntry>();
-    DeletingLogBookEntry = ko.observable<ClientModel.LogBookEntry>();
-    DetailedLogBookEntry = ko.observable<ClientModel.LogBookEntry>();
     WaypointMarkers = new Array();
     HoveredPolyine: L.Polyline;
 
@@ -1559,54 +1455,85 @@ class MapViewModel {
         ko.applyBindingsToNode(option, { attr: { "value": item.Id } }, item);
     };
 
+    HarboursToSelect = ko.computed(() => {
+        return (<any[]>this.HarboursByName()).concat([{ Name: "Neuer Hafen...", IsDummy: true }]);
+    });
 
-    SavePerson() {
-        mapViewModel.EditingPerson().SaveToServer().done(() => {
-            mapViewModel.Persons.push(mapViewModel.EditingPerson());
-            mapViewModel.EditingPerson(undefined);
-        });
-
+    ProcessHarbourSelectOptions = (option: HTMLOptionElement, item) => {
+        if (item !== undefined && item !== null && item.IsDummy === true) {
+            option.value = "filled";
+            const context = ko.contextFor(option);
+            const select = $(option).parent();
+            if (select.data("new-change-handler") === undefined)
+                select.data("new-change-handler",
+                    select.change(() => {
+                        if ($(option).is(":selected")) {
+                            const harbour = this.CreateHarbour();
+                            this.HarbourHelper.Editing(harbour);
+                            const subscription = this.HarbourHelper.Editing.subscribe(() => {
+                                if (harbour.Id() !== undefined) {
+                                    this.Harbours.push(harbour);
+                                    context.$data.Harbour(harbour);
+                                } else {
+                                    harbour.RemoveFromMap();
+                                    context.$data.Harbour(undefined);
+                                }
+                                subscription.dispose();
+                            });
+                        }
+                    }));
+        }
     }
 
-    DeletePerson() {
-        mapViewModel.DeletingPerson()
-            .DeleteOnServer()
-            .done(() => {
-                mapViewModel.Persons.remove(mapViewModel.DeletingPerson());
-                mapViewModel.DeletingPerson(undefined);
-            });
+    PersonsToSelect = ko.computed(() => {
+        return (<any[]>this.Persons().sort((p1,p2)=>p1.FullName() > p2.FullName()?1:-1)).concat([{ FullName: "Neue Person...", IsDummy: true }]);
+    });
+
+    ProcessPersonSelectOptions = (option: HTMLOptionElement, item) => {
+        if (item !== undefined && item !== null && item.IsDummy === true) {
+            option.value = "filled";
+            const context = ko.contextFor(option);
+            const select = $(option).parent();
+            if (select.data("new-change-handler") === undefined)
+                select.data("new-change-handler",
+                    select.change(() => {
+                        if ($(option).is(":selected")) {
+                            const person = new Person();
+                            this.PersonHelper.Editing(person);
+                            const subscription = this.PersonHelper.Editing.subscribe(() => {
+                                if (person.Id() !== undefined) {
+                                    this.Persons.push(person);
+                                    context.$data.Person(person);
+                                } else {
+                                    context.$data.Person(undefined);
+                                }
+                                subscription.dispose();
+                            });
+                        }
+                    }));
+        }
     }
+
+    AlbumStack = ko.observableArray<ClientModel.Album>();
 }
 
-var mapViewModel = new MapViewModel(MapMode.View);
 var dropzoneModalOpenedByDrag = false;
-
 var dropzoneModal = $("#dropzoneModal");
-var editingLogBookEntryModal = $("#editingLogBookEntryModal");
-var detailedLogBookEntryModal = $("#detailedLogBookEntryModal");
-var editingHarbourModal = $("#editingHarbourModal");
-var deletingHarbourModal = $("#deletingHarbourModal");
-var editingWaypointModal = $("#editingWaypointModal");
-var deletingWaypointModal = $("#deletingWaypointModal");
-var deletingJobModal = $("#deletingJobModal");
-var editingJobModal = $("#editingJobModal");
 var jobOverviewModal = $("#jobOverviewModal");
-var editingPersonModal = $("#editingPersonModal");
-var deletingPersonModal = $("#deletingPersonModal");
 var personOverviewModal = $("#personOverviewModal");
 var dropzone: Dropzone;
 var hasDrag = false;
 var uploadModalVisible = false;
-var pswp = $(".pswp")[0]; var personDeails = $("#personDetails");
-import Person = ClientModel.Person;
-
-
+var pswp = $(".pswp")[0];
+var personDeails = $("#personDetails");
 var deletePerson = $("#deletePerson");
-
 var leftSidebar = new Sidebar($("#leftSidebar"));
 var rightSidebar = new Sidebar($("#rightSidebar"));
 var bottomSidebar = new Sidebar($("#bottomSidebar"));
 var harbourInfo = $("#harbourInfo");
+
+var mapViewModel = new MapViewModel(MapMode.View);
+
 Dropzone.options.dropzone =
     {
         acceptedFiles: "image/jpeg,image/png",
@@ -1620,26 +1547,22 @@ Dropzone.options.dropzone =
                     mapViewModel.Images.push(image);
                     mapViewModel.GetAlbumById(data.AlbumId).Images.push(image);
                 });
-            dropzone.on("queuecomplete",
-                () => {
-                    if (dropzoneModalOpenedByDrag)
-                        dropzoneModal.modal("hide");
-                });
-            dropzone.on("dragover",
-                () => {
-                    hasDrag = true;
-                });
+            dropzone.on("queuecomplete", () => {
+                if (dropzoneModalOpenedByDrag)
+                    dropzoneModal.modal("hide");
+            });
+            dropzone.on("dragover", () => { hasDrag = true; });
         }
     };
-
 document.ondragenter =
     (e: DragEvent) => {
-        if (!uploadModalVisible &&
+        if (mapViewModel.IsLoggedIn &&
+            !uploadModalVisible &&
             !hasDrag &&
             !dropzoneModalOpenedByDrag &&
             dropzoneModal.is(":not(.in)") &&
             e.dataTransfer.types[0] === "Files" &&
-            mapViewModel.SelectedHarbour() !== undefined) {
+            mapViewModel.AlbumStack()[0] !== undefined) {
             dropzoneModal.modal("show");
             uploadModalVisible = true;
             dropzoneModalOpenedByDrag = true;
@@ -1649,10 +1572,7 @@ document.ondragenter =
         e.preventDefault();
         e.stopPropagation();
     };
-document.ondragover =
-    (e: DragEvent) => {
-        hasDrag = true;
-    };
+document.ondragover = () => { hasDrag = true; };
 document.ondragleave =
     (e: DragEvent) => {
         if (uploadModalVisible && hasDrag && dropzoneModalOpenedByDrag && dropzone.getQueuedFiles().length === 0 ||
@@ -1684,13 +1604,13 @@ dropzoneModal.on("hide.bs.modal",
     });
 var gallery: PhotoSwipe<PhotoSwipe.Options>;
 
-$(".modal").on("hidden.bs.modal", function (event) {
+$(".modal").on("hidden.bs.modal", function () {
     $(this).removeClass("fv-modal-stack");
     $("body").data("fv_open_modals", $("body").data("fv_open_modals") - 1);
 });
 
 
-$(".modal").on("shown.bs.modal", function (event) {
+$(".modal").on("shown.bs.modal", function () {
 
     // keep track of the number of open modals
 
@@ -1725,7 +1645,7 @@ interface KnockoutBindingHandlers {
 }
 
 ko.bindingHandlers.daterange = {
-    init: function (element: any, valueAccessor: () => any, allBindingsAccessor?: KnockoutAllBindingsAccessor, viewModel?: any, bindingContext?: KnockoutBindingContext) {
+    init(element: any, valueAccessor: () => any, allBindingsAccessor?: KnockoutAllBindingsAccessor, viewModel?: any, bindingContext?: KnockoutBindingContext) {
         let value = valueAccessor()();
         if (value === undefined)
             valueAccessor()(new Date().toJSON());
@@ -1733,16 +1653,60 @@ ko.bindingHandlers.daterange = {
         $(element)
             .daterangepicker({
                 "singleDatePicker": true,
+                "showDropdowns": true,
                 "timePicker": true,
                 "timePicker24Hour": true,
-                "autoApply": true,
+                "timePickerIncrement": 15,
+                "locale": {
+                    "format": "DD.MM.YYYY HH:mm",
+                    "separator": " - ",
+                    "applyLabel": "Speichern",
+                    "cancelLabel": "Abbrechen",
+                    "fromLabel": "Von",
+                    "toLabel": "Bis",
+                    "customRangeLabel": "Custom",
+                    "weekLabel": "W",
+                    "daysOfWeek": [
+                        "S0",
+                        "Mo",
+                        "Di",
+                        "Mi",
+                        "Do",
+                        "Fr",
+                        "Sa"
+                    ],
+                    "monthNames": [
+                        "Januar",
+                        "Februar",
+                        "März",
+                        "April",
+                        "Mai",
+                        "Juni",
+                        "Juli",
+                        "August",
+                        "September",
+                        "Oktober",
+                        "November",
+                        "Dezember"
+                    ],
+                    "firstDay": 1
+                },
+                "alwaysShowCalendars": true,
                 "startDate": value,
                 "endDate": value
-            }, function (start, end, label) {
+            }, (start) => {
                 valueAccessor()(start._d.toJSON());
             });
     },
-    update: function (element: any, valueAccessor: () => any, allBindingsAccessor?: KnockoutAllBindingsAccessor, viewModel?: any, bindingContext?: KnockoutBindingContext) {
+    update(element: any, valueAccessor: () => any, allBindingsAccessor?: KnockoutAllBindingsAccessor, viewModel?: any, bindingContext?: KnockoutBindingContext) {
         $(element).data("daterangepicker").setStartDate(moment(valueAccessor()()));
     }
 };
+
+
+window.Parsley.on("form:validate", form => {
+    if (form.submitEvent === undefined)
+        return false;
+});
+
+window.Parsley.on("form:submit", form => false);

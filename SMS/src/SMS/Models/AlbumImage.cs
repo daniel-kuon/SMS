@@ -21,7 +21,8 @@ namespace SMS.Models
 
         public bool AddOrUpdate(SmsDbContext context)
         {
-            context.Add(this);
+            if (ImageId == null || AlbumId == null)
+                context.Add(this);
             Image?.AddOrUpdate(context);
             return true;
         }

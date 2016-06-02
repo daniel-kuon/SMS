@@ -6,6 +6,7 @@
     "dropzone": "github:DefinitelyTyped/DefinitelyTyped/dropzone/dropzone.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
     "jquery": "github:DefinitelyTyped/DefinitelyTyped/jquery/jquery.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
     "jqueryui": "registry:dt/jqueryui#1.9.0+20160317120654",
+    "js-cookie": "registry:dt/js-cookie#2.0.0+20160317120654",
     "knockout": "github:DefinitelyTyped/DefinitelyTyped/knockout/knockout.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
     "knockout.validation": "github:DefinitelyTyped/DefinitelyTyped/knockout.validation/knockout.validation.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
     "leaflet": "github:DefinitelyTyped/DefinitelyTyped/leaflet/leaflet.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",

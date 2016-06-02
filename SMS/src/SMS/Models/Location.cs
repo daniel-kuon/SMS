@@ -14,7 +14,7 @@ namespace SMS.Models
 
 
         public double Rating { get; set; }
-        public override Album Album { get; set; } = new Album();
+        public override Album Album { get; set; }
         public LocationType Type { get; set; }
 
         public override bool RemoveFromContext(SmsDbContext context)

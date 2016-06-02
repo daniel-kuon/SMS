@@ -13,6 +13,11 @@ namespace SMS.Models
         [NotMapped]
         public int? ClientId { get; set; }
 
+        [NotMapped]
+        public bool? ProcessOnSever { get; set; }
+
+        
+
         [Key]
         public int? Id { get; set; }
 
@@ -41,6 +46,8 @@ namespace SMS.Models
 
         public virtual bool AddOrUpdate(SmsDbContext context)
         {
+            if (ProcessOnSever == false)
+                return false;
             if (Id == null)
             {
                 if (context.Entry(this).State == EntityState.Added)

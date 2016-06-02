@@ -31,6 +31,7 @@ namespace SMS.Models
 
         public DbSet<Address> Addresses { get; set; }
         public DbSet<Image> Images { get; set; }
+        public DbSet<ContentPage> ContentPages { get; set; }
         public DbSet<Comment> Comments { get; set; }
 
 
@@ -112,7 +113,7 @@ namespace SMS.Models
                 .WithMany()
                 .HasForeignKey(aI => aI.ImageId)
                 .OnDelete(DeleteBehavior.Cascade);
-            modelBuilder.Entity<AlbumImage>().HasKey(aI => new {aI.ImageId, aI.AlbumId});
+            modelBuilder.Entity<AlbumImage>().HasKey(aI => new { aI.ImageId, aI.AlbumId });
             modelBuilder.Entity<Entity>().HasOne(e => e.Album).WithOne().OnDelete(DeleteBehavior.Cascade);
             modelBuilder.Entity<Entity>()
                 .HasMany(e => e.Comments)
@@ -160,7 +161,7 @@ namespace SMS.Models
                 .WithOne()
                 .HasForeignKey(t => t.TripId)
                 .OnDelete(DeleteBehavior.Restrict);
-            modelBuilder.Entity<Crew>().HasKey(c => new {c.PersonId, c.TackId});
+            modelBuilder.Entity<Crew>().HasKey(c => new { c.PersonId, c.TackId });
             modelBuilder.Entity<Crew>()
                 .HasOne(c => c.Tack)
                 .WithMany(t => t.Crew)
@@ -171,6 +172,11 @@ namespace SMS.Models
                 .WithOne()
                 .HasForeignKey(j => j.SuperJobId)
                 .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<Harbour>()
+                .HasMany(h => h.Wifis)
+                .WithOne()
+                .HasForeignKey(w => w.HarbourId);
+            modelBuilder.Entity<ContentPage>();
         }
     }
 }

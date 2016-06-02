@@ -10,6 +10,5 @@ namespace SMS.Models
         public double Rating { get; set; }
         [Required]
         public int? ParentId { get; set; }
-        
     }
 }

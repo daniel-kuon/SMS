@@ -155,11 +155,14 @@ class ServerApi {
 
     static Waypoints = new ServerApi("/api/Waypoints");
 
+    static Wifis = new ServerApi("/api/Wifis");
+
     static AlbumImages = new AlbumImageApi("/api/AlbumImages");
 
-    static Crews = new AlbumImageApi("/api/Crews");
+    static Crews = new CrewApi("/api/Crews");
 
     static LogBookEntries = new ServerApi("/api/LogBookEntries");
+    static ContentPages = new ServerApi("/api/ContentPages");
 
     static WaypointConnections = new WaypointConnectionApi("/api/WaypointConnections");
 
@@ -192,6 +195,10 @@ class ServerApi {
             return ServerApi.Waypoints;
         if (type instanceof ClientModel.LogBookEntry)
             return ServerApi.LogBookEntries;
+        if (type instanceof ClientModel.Wifi)
+            return ServerApi.Wifis;
+        if (type instanceof ClientModel.ContentPage)
+            return ServerApi.ContentPages;
         throw ("No suitable Api found");
     }
 }

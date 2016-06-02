@@ -14,13 +14,15 @@ namespace SMS.Models
         public List<Location> Locations { get; set; } = new List<Location>();
 
         public double Rating { get; set; }
-        public override Album Album { get; set; } = new Album();
+
+        public List<Wifi> Wifis { get; set; } = new List<Wifi>();
 
         public override bool RemoveFromContext(SmsDbContext context)
         {
             if (!base.RemoveFromContext(context))
                 return false;
             context.Set<Location>().Where(l => l.HarbourId == Id).ToList().ForEach(l => l.RemoveFromContext(context));
+            context.Set<Wifi>().Where(w=>w.HarbourId==Id).ToList().ForEach(w=>w.RemoveFromContext(context));
             return true;
         }
 
@@ -29,6 +31,7 @@ namespace SMS.Models
             if (!base.AddOrUpdate(context))
                 return false;
             Locations.ForEach(l => l.AddOrUpdate(context));
+            Wifis.ForEach(w=>w.AddOrUpdate(context));
             return true;
         }
     }

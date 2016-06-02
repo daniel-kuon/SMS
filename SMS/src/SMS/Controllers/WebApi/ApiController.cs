@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNet.Authorization;
 using Microsoft.AspNet.Http;
 using Microsoft.AspNet.Http.Extensions;
 using Microsoft.AspNet.Mvc;
@@ -44,6 +45,7 @@ namespace SMS.Controllers.WebApi
         }
 
         [HttpPut("{id}")]
+        [Authorize]
         public async Task<IActionResult> Put([FromRoute] int id, [FromBody] T entity)
         {
             if (!ModelState.IsValid)
@@ -79,6 +81,7 @@ namespace SMS.Controllers.WebApi
 
 
 
+        [Authorize]
         [HttpPost]
         public async Task<IActionResult> Post([FromBody] T entity)
         {
@@ -106,6 +109,7 @@ namespace SMS.Controllers.WebApi
             return Created(HttpContext.Request.GetEncodedUrl() + entity.Id, entity);
         }
 
+        [Authorize]
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete([FromRoute] int id)
         {
