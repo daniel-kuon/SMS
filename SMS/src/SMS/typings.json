@@ -15,5 +15,8 @@
     "mapbox": "github:DefinitelyTyped/DefinitelyTyped/mapbox/mapbox.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9",
     "moment": "registry:dt/moment#2.8.0+20160316155526",
     "photoswipe": "github:DefinitelyTyped/DefinitelyTyped/photoswipe/photoswipe.d.ts#8d44da84eb10cdcd2f7ea133f289caef817cb2b9"
+  },
+  "dependencies": {
+    "pickadate": "registry:dt/pickadate#3.5.5+20160317120654"
   }
 }

@@ -12,3 +12,4 @@
 /// <reference path="main/ambient/moment/index.d.ts" />
 /// <reference path="main/ambient/photoswipe/index.d.ts" />
 /// <reference path="main/definitions/moment/index.d.ts" />
+/// <reference path="main/definitions/pickadate/index.d.ts" />

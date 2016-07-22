@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using Microsoft.AspNet.Http;
-using Microsoft.AspNet.Mvc;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using SMS.Models;
 
 namespace SMS.Controllers
@@ -24,7 +24,7 @@ namespace SMS.Controllers
         public HttpResponse Dummies()
         {
             var calendar=new Calendar();
-            foreach (var trip in DbContext.Trips.Where(t=>t.IsDummy))
+            foreach (var trip in DbContext.Set<Trip>().Where(t=>t.IsDummy))
             {
                 calendar.Events.Add(new Event()
                 {

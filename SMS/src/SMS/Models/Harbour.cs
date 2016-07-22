@@ -1,7 +1,6 @@
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
-using System.Net.Sockets;
-using Microsoft.AspNet.Http.Features;
 
 namespace SMS.Models
 {

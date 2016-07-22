@@ -180,6 +180,18 @@ module ClientModel {
             this.savedStates.shift();
         }
 
+        OnSaving(): boolean {
+            return true;
+        }
+
+        OnSaved(): boolean {
+            return true;
+        }
+
+        OnDeleted(): boolean {
+            return true;
+        }
+
         Id = ko.observable<number>();
 
         abstract Context(): KnockoutObservableArray<this>;
@@ -541,6 +553,18 @@ module ClientModel {
                 return "";
             return renderTime(new Date(startDate), new Date(endDate));
         });
+
+        ConvertToServerEntity(idOnly?: boolean): SEntity {
+            this.EndId(this.End().Id());
+            this.StartId(this.Start().Id());
+            var sEntity = super.ConvertToServerEntity(idOnly);
+            const crew = new Array<ServerModel.Crew>();
+            for (let person of this.Persons()) {
+                crew.push({ PersonId: person.Id(), TackId: this.Id() });
+            }
+            (<any>sEntity).Crew = crew;
+            return sEntity;
+        }
     }
 
     export class Trip extends TackBase {

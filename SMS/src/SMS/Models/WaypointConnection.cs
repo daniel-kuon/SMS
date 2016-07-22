@@ -1,8 +1,8 @@
-using Microsoft.Data.Entity;
+using Microsoft.EntityFrameworkCore;
 
 namespace SMS.Models
 {
-    public class WaypointConnection : IEntity
+    public class WaypointConnection : IEntityBase
     {
         public int Waypoint1Id { get; set; }
         public int Waypoint2Id { get; set; }

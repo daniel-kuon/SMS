@@ -9,7 +9,86 @@
         </panel-body>
     </panel>
 </div>
+
+<script type="text/html" id="pager">
+    <div data-bind="css: {'table-responsive': UseResponsiveTable()}">
+        <table data-bind="css: {'table-striped': UseStripedTable(), 'table-hover':HasDetailView()}">
+            <thead>
+            <tr>
+                <!--ko foreach:DisplayColumns-->
+                <th data-bind="html:DisplayName, click: $parent.SortBy, attr: {style: Styles, 'class': CssClasses}"></th>
+                <!-- /ko -->
+                <th style="padding: 0; width:1px"></th>
+            </tr>
+            </thead>
+            <tbody data-bind="foreach: DisplaySource">
+            <tr style="cursor: pointer" data-bind="style: {cursor: $parent.HasDetailView() ? 'pointer' : ''}, click:function () {if ($parent.HasDetailView()) $parent.EditingHelper().Detail($data)}">
+                <!--ko foreach:$parent.DisplayColumns-->
+                <td data-bind="html:DisplayValue($parent), attr: {style: Styles, 'class': CssClasses}"></td>
+                <!-- /ko-->
+                <td data-bind="if:($root.IsLoggedIn && $parent.ShowEditDeleteControls()) || $parent.DisplaySpecialColumnActions($data).length>0 ">
+                    <div class="btn-group-vertical" data-bind="css:{'btn-group-xs':$parent.UseSmallColumnControls()}">
+                        <!-- ko foreach: $parent.DisplaySpecialColumnActions($data) -->
+                        <button data-bind="html: Name, enabled: Enabled, click: function (elem, e) {e.stopPropagation(); Action($parent)}"></button>
+                        <!-- /ko -->
+                        <!--ko if:$root.IsLoggedIn() && $parent.ShowEditDeleteControls() -->
+                        <button data-bind="click: function (data,e) {e.stopPropagation(); $parent.EditingHelper().Editing(data)}">Bearbeiten</button>
+                        <button data-bind="click: function (data,e) {e.stopPropagation(); $parent.EditingHelper().Deleting(data)}">Löschen</button>
+                        <!--/ko-->
+                    </div>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+    </div>
+    <form-group style="margin-top: 20px;" class="pull-right" data-bind="if: ShowPageSizeSelector() || ShowColumnSelector() || DisplaySpecialActions().length>0">
+        <div class="btn-group" data-bind="css:{'btn-group-sm':UseSmallControls()}">
+            <!-- ko foreach: DisplaySpecialActions -->
+            <button data-bind="html: Name, enabled: Enabled, click: function (elem, e) {e.stopPropagation(); Action(elem)}"></button>
+            <!-- /ko -->
+            <!--ko if:ShowColumnSelector() -->
+            <button data-toggle="modal" data-bind="attr:{'data-target':'#' + IdPrefix() + 'ColumnSelector'}">Spalten auswählen</button>
+
+            <modal data-bind="attr:{id: IdPrefix() + 'ColumnSelector'}" Header="Wähle die Spalten aus, die angezeigt werden sollen">
+                <!-- ko foreach: Columns-->
+                <form-group>
+
+                    <label>
+                        <input type="checkbox" data-bind="checked:Visible"/>
+                        <span data-bind="html:Name"></span>
+                    </label>
+                </form-group>
+                <!--/ko-->
+                <footer>
+                    <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Success" b-dismiss-modal>Ok</button>
+                </footer>
+            </modal>
+            <!-- /ko -->
+            <!--ko if: ShowPageSizeSelector() -->
+            <select class="btn btn-default" style="background-color: #fff ! important; width:auto;" data-bind="options: PageSizes, optionsText:function (count){; return count + ' pro Seite';}, value:PageSize, css:{'input-sm':UseSmallControls()}"></select>
+            <!-- /ko -->
+        </div>
+    </form-group>
+    <nav>
+        <ul class="pagination" data-bind="css:{'pagination-sm':UseSmallControls()}">
+            <li data-bind="css: {disabled: !HasPrevPage()}">
+                <a href="#" aria-label="Previous" data-bind="click:SelectPrevPage">
+                    <span aria-hidden="true">&laquo;</span>
+                </a>
+            </li>
+            <!-- ko foreach: Pages -->
+            <li data-bind="css: {active: selected}"><a href="#" data-bind="click:$parent.SelectPage, text: index"></a></li>
+            <!-- /ko -->
+            <li data-bind="css: {disabled: !HasNextPage()}">
+                <a href="#" aria-label="Next" data-bind="click:SelectNextPage">
+                    <span aria-hidden="true">&raquo;</span>
+                </a>
+            </li>
+        </ul>
+    </nav>
+</script>
 <div id="map"></div>
+
 
 <div class="sidebar left" id="leftSidebar"></div>
 
@@ -33,25 +112,26 @@
         <div class="content">
             <div data-bind="html:Content"></div>
             <h4>Entfernungen zu anderen Häfen</h4>
-            <table id="harbourDistances" b-striped b-hover>
-                <thead>
-                <th>Hafen</th>
-                <th style="width: 100px;">Entfernung</th>
-                <th style="width: 100px;"></th>
-                </thead>
-                <tbody data-bind="foreach: $root.Harbours">
-                    <tr data-bind="if: Precessor, event: {mouseover: $root.ShowRoute, mouseout:$root.HideRoute, click: $root.FixRoute}">
-                        <td data-bind="text: Name"></td>
-                        <td>
-                            <span data-bind="text: Distance"></span> sm
-                        </td>
-                        <td>
-                            <button b-size="BootstrapTagHelpers.Size.ExtraSmall" data-bind="click: function (){mapViewModel.HarbourHelper.Detail(this);}">Auswählen</button>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-            <button style="float: right;" b-size="ExtraSmall" b-modal-target="editingWifiModal" data-bind="visible:$root.IsLoggedIn">Neu</button>
+            @*<table id="harbourDistances" b-striped b-hover>
+                    <thead>
+                    <th>Hafen</th>
+                    <th style="width: 100px;">Entfernung</th>
+                    <th style="width: 100px;"></th>
+                    </thead>
+                    <tbody data-bind="foreach: $root.Harbours">
+                        <tr data-bind="if: Precessor, event: {mouseover: $root.ShowRoute, mouseout:$root.HideRoute, click: $root.FixRoute}">
+                            <td data-bind="text: Name"></td>
+                            <td>
+                                <span data-bind="text: Distance"></span> sm
+                            </td>
+                            <td>
+                                <button b-size="BootstrapTagHelpers.Size.ExtraSmall" data-bind="click: function (){mapViewModel.HarbourHelper.Detail(this);}">Auswählen</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>*@
+            <div data-bind="template:{name:'pager', data:$root.HarbourDistancePager}"></div>
+            <button style="float: right;" b-size="BootstrapTagHelpers.Size.ExtraSmall" b-modal-target="editingWifiModal" data-bind="visible:$root.IsLoggedIn">Neu</button>
             <h4>WLANs</h4>
             <table id="wifis" b-striped b-hover>
                 <thead>
@@ -67,57 +147,27 @@
             </table>
         </div>
         @*<footer>
-            <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click:$root.StartRoute, visible: !$root.routePolyline()">Neuer Törn</button>
-            <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click:$root.AddToRoute, visible: $root.routePolyline, disable:$root.IsLastTakInRoute">Zu Törn hinzufügen</button>
-        </footer>*@
+                <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click:$root.StartRoute, visible: !$root.routePolyline()">Neuer Törn</button>
+                <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click:$root.AddToRoute, visible: $root.routePolyline, disable:$root.IsLastTakInRoute">Zu Törn hinzufügen</button>
+            </footer>*@
     </div>
 </div>
 
-<modal id="logBookOverviewModal" header="Logbuch" size="BootstrapTagHelpers.SimpleSize.Large">
-    <table b-responsive>
-        <thead>
-        <th>Ziel</th>
-        <th>Zeit</th>
-        <th>Distanz</th>
-        <th>Crew</th>
-        <th>Besonder Vorkommnisse</th>
-        <th></th>
-        </thead>
-        <tbody data-bind="">
-            <!-- ko foreach: LogBookEntriesByStartDate-->
-            <tr>
-                <td data-bind="text: End().Name"></td>
-                <td data-bind="text: SaillingTime"></td>
-                <td data-bind="text: Math.round((LogEnd() - LogStart()).toString() * 10) / 10 + ' sm' "></td>
-                <td data-bind="text: CrewList"></td>
-                <td data-bind="html: SpecialOccurences"></td>
-                <td>
-                    <button-group size="BootstrapTagHelpers.Size.ExtraSmall">
-                        <button data-bind="click: function () {$root.LogBookEntryHelper.Detail($data);}">Details</button>
-                        <button data-bind="click: function () {$root.LogBookEntryHelper.Editing($data);}, visible:$root.IsLoggedIn">Bearbeiten</button>
-                        <button data-bind="click: function () {$root.LogBookEntryHelper.Deleting($data);}, visible:$root.IsLoggedIn">Löschen</button>
-                    </button-group>
-                </td>
-            </tr>
-            <!-- /ko -->
-        </tbody>
-    </table>
-    <footer>
-        <button b-modal-target="editingLogBookEntryModal" data-bind="visible:$root.IsLoggedIn">Neuer Eintrag</button>
-    </footer>
+<modal id="logBookOverviewModal" header="Logbuch" class="modal-xl">
+    <div data-bind="template:{name:'pager', data:LogBookPager}"></div>
 </modal>
 
-<modal static-backdrop no-keyboard id="editingLogBookEntryModal" data-bind="with:LogBookEntryHelper" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal static-backdrop no-keyboard id="editingLogBookEntryModal" data-bind="with:LogBookEntryHelper" size="Large">
     <form data-bind="with: Editing">
         <form-group class="col-md-6" data-bind="template:{name:'harbourSelector', data:{Label:'Start', Harbour: $data.Start}}">
         </form-group>
         <form-group class="col-md-6" data-bind="template:{name:'harbourSelector', data:{Label:'Ziel', Harbour: $data.End}}">
         </form-group>
         <form-group class="col-md-6">
-            <input type="datetime" readonly="readonly" style="background-color: #fff" data-bind="daterange:StartDate" b-label="Abgelegt" required />
+            <input type="datetime" readonly="readonly" style="background-color: #fff" data-bind="pickadatetime:StartDate" b-label="Abgelegt" required />
         </form-group>
         <form-group class="col-md-6">
-            <input type="datetime" readonly="readonly" style="background-color: #fff" data-bind="daterange:EndDate" b-label="Festgemacht" required />
+            <input type="datetime" readonly="readonly" style="background-color: #fff" data-bind="pickadatetime:EndDate" b-label="Festgemacht" required />
         </form-group>
         <form-group class="col-md-6">
             <input type="number" step="0.01" data-bind="textInput:MotorHoursStart" b-label="Motorstunden (Start)" required />
@@ -167,7 +217,7 @@
     </footer>
 </modal>
 
-<modal id="detailedLogBookEntryModal" data-bind="with:LogBookEntryHelper.Detail" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal id="detailedLogBookEntryModal" data-bind="with:LogBookEntryHelper.Detail" size="Large">
     <header></header>
     <form>
 
@@ -211,6 +261,16 @@
     <!-- /ko -->
 </modal>
 
+<modal static-backdrop no-keyboard id="deletingLogBookEntryModal" data-bind="with:LogBookEntryHelper.Deleting" size="Large">
+    <header>
+    </header>
+    Soll der Logbucheintrag wirklich gelöscht werden?
+    <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Danger" data-bind="click: $root.LogBookEntryHelper.Delete">Löschen</button>
+        <button b-dismiss-modal>Abbrechen</button>
+    </footer>
+</modal>
+
 <div class="sidebar bottom" id="bottomSidebar">
     <div id="routePlanner" data-bind="with: TripHelper">
         <!-- ko with:Editing -->
@@ -238,13 +298,13 @@
             </panel-body>
             <footer>
                 <button style="float: left;" data-bind="enable: $index, click: $root.PullTack" title="Vorziehen">
-                    <glyphicon icon="BootstrapTagHelpers.Glyphicons.ArrowLeft"></glyphicon>
+                    <glyphicon icon="ArrowLeft"></glyphicon>
                 </button>
                 <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Danger" title="Löschen" data-bind="click: $root.RemoveTack, enable: CanRemoveTack">
-                    <glyphicon icon="BootstrapTagHelpers.Glyphicons.Trash"></glyphicon>
+                    <glyphicon icon="Trash"></glyphicon>
                 </button>
                 <button style="float: right;" data-bind="enable:End, click: $root.PushTack" title="Weiter nach hinten">
-                    <glyphicon icon="BootstrapTagHelpers.Glyphicons.ArrowRight"></glyphicon>
+                    <glyphicon icon="ArrowRight"></glyphicon>
                 </button>
             </footer>
         </panel>
@@ -258,7 +318,7 @@
 
 <script type="text/html" id="singlePersonSelector">
     <label data-bind="visible: Label, text: Label"></label>
-    <select required data-bind="options: $root.PersonsToSelect, optionsText:'FullName', value:Person, optionsCaption:'Person wählen...', optionsAfterRender: $root.ProcessPersonSelectOptions"></select>
+    <select data-bind="attr: {required: Required}, options: $root.PersonsToSelect, optionsText:'FullName', value:Person, optionsCaption:'Person wählen...', optionsAfterRender: $root.ProcessPersonSelectOptions"></select>
 </script>
 
 <script type="text/html" id="multiplePersonSelector">
@@ -266,17 +326,17 @@
     <div class="multiselectContainer">
         <div class="btn-group">
             <select required multiple style="width: 100%" data-bind="options: $root.Persons, optionsText:'FullName', selectedOptions:Persons, xoptionsCaption:'Person wählen...', optionsAfterRender: $root.SetOptionKey,multiselect:{ optionsKey: 'data-id', observableKey: 'Id' }"></select>
-            <button type="button" title="Neue Person" b-modal-target="editingPersonModal"><glyphicon icon="BootstrapTagHelpers.Glyphicons.Plus"></glyphicon></button>
+            <button type="button" title="Neue Person" b-modal-target="editingPersonModal"><glyphicon icon="Plus"></glyphicon></button>
         </div>
     </div>
 </script>
 
 <script type="text/html" id="harbourSelector">
     <label data-bind="visible: Label, text: Label"></label>
-    <select required data-bind="options: $root.HarboursToSelect, optionsText:'Name', value:Harbour, optionsCaption:'Hafen wählen...', optionsAfterRender: $root.ProcessHarbourSelectOptions"></select>
+    <select data-bind="options: $root.HarboursToSelect, optionsText:'Name', value:Harbour, optionsCaption:'Hafen wählen...', optionsAfterRender: $root.ProcessHarbourSelectOptions"></select>
 </script>
 
-<modal header="Aufgaben" id="jobOverviewModal" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal header="Aufgaben" id="jobOverviewModal" size="Large">
     <!-- ko template: {foreach: TopJobs, name: 'jobTemplate'} -->
     <!-- /ko -->
     <footer>
@@ -285,7 +345,7 @@
 </modal>
 
 <script type="text/html" id="jobTemplate">
-    <panel data-bind="css: Done ? 'panel-success':''">
+    <panel data-bind="css: {'panel-success':Done()}">
         <heading data-bind="text: Title"></heading>
         <panel-body>
             <div style="margin-bottom: 20px;" data-bind="html: Content"></div>
@@ -307,7 +367,7 @@
     <div style="padding-left: 50px;" data-bind="template:{name: 'jobTemplate', foreach:SubJobs}"></div>
 </script>
 
-<modal static-backdrop no-keyboard id="deletingJobModal" data-bind="with:JobHelper.Deleting" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal static-backdrop no-keyboard id="deletingJobModal" data-bind="with:JobHelper.Deleting" size="Large">
     <header>
         <span data-bind="text: Title"></span>
     </header>
@@ -318,7 +378,7 @@
     </footer>
 </modal>
 
-<modal static-backdrop no-keyboard id="editingJobModal" data-bind="with:JobHelper" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal static-backdrop no-keyboard id="editingJobModal" data-bind="with:JobHelper" size="Large">
     <header data-bind="with:Editing">
         Aufgabe: <span data-bind="text: Title"></span>
     </header>
@@ -345,7 +405,7 @@
     </footer>
 </modal>
 
-<modal header="Bild hinzufügen" id="dropzoneModal" size="BootstrapTagHelpers.SimpleSize.Large" backdrop-static no-keyboard fade size="BootstrapTagHelpers.SimpleSize.Large">
+<modal header="Bild hinzufügen" id="dropzoneModal" size="Large" backdrop-static no-keyboard fade size="Large">
     <form id="dropzone" class="dropzone" action="/api/Images/upload" method="post">
         <input name="album_id" type="hidden" data-bind="value: AlbumStack()[0] !== undefined ? AlbumStack()[0].Id() : -1" />
         <div class="dz-message" data-dz-message>
@@ -366,7 +426,7 @@
     </footer>
 </modal>
 
-<modal static-backdrop no-keyboard id="editingHarbourModal" data-bind="with:HarbourHelper" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal static-backdrop no-keyboard id="editingHarbourModal" data-bind="with:HarbourHelper" size="Large">
     <header data-bind="with:Editing">
         <span data-bind="text: Name"></span>
     </header>
@@ -403,12 +463,13 @@
         <div class="clearfix"></div>
     </form>
     <footer>
+        <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Primary" data-bind="click: function () {$root.GetPositionForWaypoint($data.Editing())}">Aktuelle Position verwenden</button>
         <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Success" data-bind="click: Save">Speichern</button>
         <button b-context="BootstrapTagHelpers.Forms.ButtonContext.Warning" b-dismiss-modal>Abbrechen</button>
     </footer>
 </modal>
 
-<modal static-backdrop no-keyboard id="editingWaypointModal" data-bind="with:WaypointHelper" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal static-backdrop no-keyboard id="editingWaypointModal" data-bind="with:WaypointHelper" size="Large">
     <header data-bind="with:Editing">
         <span data-bind="text: Name"></span>
     </header>
@@ -560,7 +621,7 @@
     </footer>
 </modal>
 
-<modal id="detailedContentPageModal" data-bind="with: ContentPageHelper" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal id="detailedContentPageModal" data-bind="with: ContentPageHelper" size="Large">
     <header data-bind="with: Detail">
         <span data-bind="text: Title"></span>
     </header>
@@ -574,7 +635,7 @@
     </footer>
 </modal>
 
-<modal id="editingContentPageModal" data-bind="with: ContentPageHelper" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal id="editingContentPageModal" data-bind="with: ContentPageHelper" size="Large">
     <header data-bind="with: Editing">
         <span data-bind="text: Title"></span>
     </header>
@@ -593,7 +654,7 @@
     </footer>
 </modal>
 
-<modal id="deletingContentPageModal" data-bind="with: ContentPageHelper" size="BootstrapTagHelpers.SimpleSize.Large">
+<modal id="deletingContentPageModal" data-bind="with: ContentPageHelper" size="Large">
     <header data-bind="with: Deleting">
         <span data-bind="text: Title"></span>
     </header>
@@ -603,6 +664,8 @@
         <button type="button" b-context="BootstrapTagHelpers.Forms.ButtonContext.Default" b-dismiss-modal>Abbrechen</button>
     </footer>
 </modal>
+
+
 
 <div class="pswp" tabindex="-1" role="dialog" aria-hidden="true">
 
@@ -643,11 +706,9 @@
                 <div class="pswp__share-tooltip"></div>
             </div>
 
-            <button b-disable-bootstrap class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
-            </button>
+            <button b-disable-bootstrap class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)"></button>
 
-            <button b-disable-bootstrap class="pswp__button pswp__button--arrow--right" title="Next (arrow right)">
-            </button>
+            <button b-disable-bootstrap class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button>
 
             <div class="pswp__caption">
                 <div class="pswp__caption__center"></div>
@@ -662,7 +723,7 @@
 
 @section scripts
 {
-    <environment names="Development">
+    <environment names="Development, Production">
         <script src="~/js/tinymceoptions.js"></script>
         <script src="~/lib/jquery-ui/ui/effect.js"></script>
         <script src="~/js/sidebars.js"></script>
@@ -672,8 +733,13 @@
         <script src="~/lib/leaflet.label/dist/leaflet.label-src.js"></script>
         <script src="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu-src.js"></script>
         <script src="~/lib/knockout/dist/knockout.debug.js"></script>
+        <script src="~/lib/pickadate/lib/picker.js"></script>
+        <script src="~/lib/pickadate/lib/picker.date.js"></script>
+        <script src="~/lib/pickadate/lib/picker.time.js"></script>
+        <script src="~/lib/pickadate/lib/translations/de_DE.js"></script>
+        <script src="~/js/knockout.pickadateime.js"></script>
         @*<script src="~/lib/moment/moment.js"></script>
-        <script src="~/lib/moment/locale/de.js"></script>*@
+            <script src="~/lib/moment/locale/de.js"></script>*@
         <script src="~/lib/moment/min/moment-with-locales.js"></script>
         <script src="~/lib/knockout-moment/knockout.moment.js"></script>
         <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker.js"></script>
@@ -685,6 +751,7 @@
         <script src="~/js/servermodel.js"></script>
         <script src="~/js/serverapi.js"></script>
         <script src="~/js/clientmodel.js"></script>
+        <script src="~/js/Pager.js"></script>
         <script src="~/lib/moment/locale/de.js"></script>
         <script src="~/lib/dropzone/dist/dropzone.js"></script>
         <script src="~/lib/photoswipe/dist/photoswipe.js"></script>
@@ -696,69 +763,69 @@
         <script src="~/lib/bootstrap-daterangepicker/daterangepicker.js"></script>
         <script src="~/js/viewmodels/home/map.js"></script>
     </environment>
-    <environment names="Staging,Production">
+    @*<environment names="Staging,Production">
         <script src="~/js/tinymceoptions.min.js"></script>
         <script src="~/lib/jquery/dist/jquery.min.js"></script>
         <script src="~/lib/jquery-ui/ui/effect.js"></script>
         <script src="~/lib/bootstrap/dist/js/bootstrap.min.js"></script>
         <script src="~/js/sidebars.min.js"></script>
         @*<script src="~/js/site.min.js" asp-append-version="true"></script>*@
-        @*<script src="~/lib/leaflet/dist/leaflet-src.min.js"></script>*@
+    @*<script src="~/lib/leaflet/dist/leaflet-src.min.js"></script>*@@*
         <script src="~/lib/mapbox.js/mapbox.js"></script>
         <script src="~/lib/leaflet.label/dist/leaflet.label-src.js"></script>
         <script src="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu-src.js"></script>
         <script src="~/lib/knockout/dist/knockout.js"></script>
         @*<script src="~/lib/moment/moment.min.js"></script>
-        <script src="~/lib/moment/locale/de.min.js"></script>*@
-        <script src="~/lib/moment/min/moment-with-locales.min.js"></script>
-        <script src="~/lib/knockout-moment/knockout.moment.js"></script>
-        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker.min.js"></script>
-        <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker-ko.js"></script>
-        <script src="~/lib/tinymce/tinymce.min.js"></script>
-        <script src="~/js/knockouthelper.min.js"></script>
-        <script src="~/js/servermodel.min.js"></script>
-        <script src="~/js/serverapi.min.js"></script>
-        <script src="~/js/clientmodel.min.js"></script>
-        <script src="~/lib/moment/locale/de.js"></script>
-        <script src="~/lib/dropzone/dist/min/dropzone.min.js"></script>
-        <script src="~/lib/photoswipe/dist/photoswipe.min.js"></script>
-        <script src="~/lib/photoswipe/dist/photoswipe-ui-default.min.js"></script>
-        <script src="~/lib/bootstrap-multiselect/dist/js/bootstrap-multiselect.min.js"></script>
-        <script src="~/lib/tinymce/tinymce.min.js"></script>
-        <script src="~/lib/tinymce/jquery.tinymce.min.js"></script>
-        <script src="~/lib/knockout-pickadate-tinymce/knockout-tinymce.min.js"></script>
-        <script src="~/lib/bootstrap-daterangepicker/daterangepicker.js"></script>
-        <script src="~/js/viewmodels/home/map.min.js"></script>
-    </environment>
+        <script src="~/lib/moment/locale/de.min.js"></script>*@@*
+            <script src="~/lib/moment/min/moment-with-locales.min.js"></script>
+            <script src="~/lib/knockout-moment/knockout.moment.js"></script>
+            <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker.min.js"></script>
+            <script src="~/lib/moment-datepicker/moment-datepicker/moment-datepicker-ko.js"></script>
+            <script src="~/lib/tinymce/tinymce.min.js"></script>
+            <script src="~/js/knockouthelper.min.js"></script>
+            <script src="~/js/servermodel.min.js"></script>
+            <script src="~/js/serverapi.min.js"></script>
+            <script src="~/js/clientmodel.min.js"></script>
+            <script src="~/lib/moment/locale/de.js"></script>
+            <script src="~/lib/dropzone/dist/min/dropzone.min.js"></script>
+            <script src="~/lib/photoswipe/dist/photoswipe.min.js"></script>
+            <script src="~/lib/photoswipe/dist/photoswipe-ui-default.min.js"></script>
+            <script src="~/lib/bootstrap-multiselect/dist/js/bootstrap-multiselect.min.js"></script>
+            <script src="~/lib/tinymce/tinymce.min.js"></script>
+            <script src="~/lib/tinymce/jquery.tinymce.min.js"></script>
+            <script src="~/lib/knockout-pickadate-tinymce/knockout-tinymce.min.js"></script>
+            <script src="~/lib/bootstrap-daterangepicker/daterangepicker.js"></script>
+            <script src="~/js/viewmodels/home/map.min.js"></script>
+        </environment>*@
 
-    <script type="text/html" id="albumTemplateSmall">
-        <div class="albumViewSmall">
-            <!-- ko foreach:Album().Images-->
-            <img data-bind="attr:{src: '/thumbs' + Path() + '.jpg', title: Comment}, click: $root.InitGallery" />
-            <!-- /ko -->
-            <div b-modal-target="dropzoneModal" class="pseudoImg" data-bind="visible:$root.IsLoggedIn">
-                <div>
-                    Neues Bild<br><span class="glyphicon glyphicon-plus" aria-hidden="true"></span>
+        <script type="text/html" id="albumTemplateSmall">
+            <div class="albumViewSmall">
+                <!-- ko foreach:Album().Images-->
+                <img data-bind="attr:{src: '/thumbs' + Path() + '.jpg', title: Comment}, click: $root.InitGallery" />
+                <!-- /ko -->
+                <div b-modal-target="dropzoneModal" class="pseudoImg" data-bind="visible:$root.IsLoggedIn">
+                    <div>
+                        Neues Bild<br><span class="glyphicon glyphicon-plus" aria-hidden="true"></span>
+                    </div>
                 </div>
             </div>
-        </div>
-    </script>
+        </script>
 
-    <script type="text/html" id="tackTemplate">
-        <panel>
-            <heading>
-                <span data-bind="text:Start"></span>
-                <span data-bind="if: End">
-                    bis
-                    <span data-bind="text: End">
+        <script type="text/html" id="tackTemplate">
+            <panel>
+                <heading>
+                    <span data-bind="text:Start"></span>
+                    <span data-bind="if: End">
+                        bis
+                        <span data-bind="text: End">
+                        </span>
                     </span>
-                </span>
-            </heading>
-            <panel-body>
+                </heading>
+                <panel-body>
 
-            </panel-body>
-        </panel>
-    </script>
+                </panel-body>
+            </panel>
+        </script>
 }
 
 @section head

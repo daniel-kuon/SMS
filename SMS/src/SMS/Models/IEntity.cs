@@ -1,8 +1,8 @@
 ﻿namespace SMS.Models
 {
-    public interface IEntity
+    public interface IEntity:IEntityBase
     {
-        bool RemoveFromContext(SmsDbContext context);
-        bool AddOrUpdate(SmsDbContext context);
+        int? Id { get; set; }
+        
     }
 }

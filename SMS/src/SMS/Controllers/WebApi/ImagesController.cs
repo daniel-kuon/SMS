@@ -1,13 +1,11 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using ImageProcessorCore.Samplers;
 using ImageProcessorCore;
-using Microsoft.AspNet.Authorization;
-using Microsoft.AspNet.Http;
-using Microsoft.AspNet.Mvc;
-using Microsoft.Data.Entity;
+using ImageProcessorCore.Samplers;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.PlatformAbstractions;
 using Microsoft.Net.Http.Headers;
 using SMS.Models;
@@ -19,6 +17,8 @@ namespace SMS.Controllers.WebApi
     [Route("api/Images")]
     public class ImagesController : ApiController<Image>
     {
+        private IHostingEnvironment _env;
+
 
         [Authorize]
         [HttpPost("upload", Name = "AddFile")]
@@ -33,41 +33,45 @@ namespace SMS.Controllers.WebApi
                 var file = files.First();
                 var fileName = ContentDispositionHeaderValue.Parse(file.ContentDisposition).FileName.Trim('"');
 
-                var basePath = PlatformServices.Default.MapPath("~/images/upload");
+                var basePath=Path.Combine(_env.WebRootPath,"images\\upload");
                 var ticks = DateTime.Now.Ticks.ToString();
                 var outputDir = Path.Combine(basePath, ticks);
                 Directory.CreateDirectory(outputDir);
-                file.SaveAs(Path.Combine(outputDir, fileName));
-                var image = System.Drawing.Image.FromFile(Path.Combine(outputDir, fileName));
-                var dimensions = image.Size;
-                var albumImage = new AlbumImage()
+                using (var fS = new FileStream(Path.Combine(outputDir, fileName), FileMode.Create, FileAccess.Write))
                 {
-                    Image =
-                         new Image()
-                         {
-                             Path = $"/images/upload/{ticks}/{fileName}",
-                             Height = dimensions.Height,
-                             Width = dimensions.Width
-                         },
-                    AlbumId = albumId
-                };
-                albumImage.AddOrUpdate(Context);
-
-                var thumbHeight = 180;
-                var thumbWidth = Convert.ToInt32(Math.Round((decimal)dimensions.Width / ((decimal)dimensions.Height / 180)));
-                if (thumbWidth > 190)
-                {
-                    thumbWidth = 190;
-                    thumbHeight = Convert.ToInt32(Math.Round((decimal)dimensions.Height / ((decimal)dimensions.Width / 190)));
+                    file.CopyTo(fS);
+                    fS.Flush();
                 }
 
+
+                AlbumImage albumImage;
                 using (var originalStream = System.IO.File.OpenRead(Path.Combine(outputDir, fileName)))
                 {
-                    var thumbOutputDir = PlatformServices.Default.MapPath("~/thumbs/images/upload" + "/" + ticks);
+                    var thumb = new ImageProcessorCore.Image(originalStream);
+                    albumImage = new AlbumImage()
+                    {
+                        Image =
+                            new Image()
+                            {
+                                Path = $"/images/upload/{ticks}/{fileName}",
+                                Height = thumb.Height,
+                                Width = thumb.Width
+                            },
+                        AlbumId = albumId
+                    };
+                    albumImage.AddOrUpdate(Context);
+
+                    var thumbHeight = 180;
+                    var thumbWidth = Convert.ToInt32(Math.Round((decimal)thumb.Width / ((decimal)thumb.Height / 180)));
+                    if (thumbWidth > 190)
+                    {
+                        thumbWidth = 190;
+                        thumbHeight = Convert.ToInt32(Math.Round((decimal)thumb.Height / ((decimal)thumb.Width / 190)));
+                    }
+                    var thumbOutputDir = Path.Combine(_env.WebRootPath, "thumbs\\images\\upload\\" + ticks);
                     Directory.CreateDirectory(thumbOutputDir);
                     using (var thumbStream = System.IO.File.Create(Path.Combine(thumbOutputDir, fileName + ".jpg")))
                     {
-                        var thumb = new ImageProcessorCore.Image(originalStream);
                         thumb.Resize(thumbWidth, thumbHeight).SaveAsJpeg(thumbStream, 100);
                     }
                 }
@@ -80,8 +84,9 @@ namespace SMS.Controllers.WebApi
             }
         }
 
-        public ImagesController(SmsDbContext context) : base(context)
+        public ImagesController(SmsDbContext context, IHostingEnvironment hostingEnvironment) : base(context)
         {
+            _env = hostingEnvironment;
         }
     }
 }

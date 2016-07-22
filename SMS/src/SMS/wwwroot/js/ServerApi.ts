@@ -120,10 +120,10 @@ class ServerApi {
 
     static CreateRequest<T>(body: JQueryAjaxSettings): JQueryPromise<T> {
         ServerApi.conntectionCount(ServerApi.conntectionCount() + 1);
-        return $.ajax(body).fail(d => {
+        return $.ajax(body).fail(function () {
             //alert(d);
             alert("Es gab ein Fehler beim Verarbeiten der Daten auf dem Server. Bitte überprüfe deine Eingaben und versuche er erneut.");
-            console.log(d);
+            console.log(arguments);
         }).always(() => {
             ServerApi.conntectionCount(ServerApi.conntectionCount() - 1);
         });

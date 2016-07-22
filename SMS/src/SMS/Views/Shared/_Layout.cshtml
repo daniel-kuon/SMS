@@ -1,112 +1,117 @@
-﻿@using System.Threading.Tasks
-@using Microsoft.ApplicationInsights.Extensibility
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html>
 <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
     <title>Lady-Helmsman.de</title>
 
     <environment names="Development">
-    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.css" />
-    <link rel="stylesheet" href="~/css/site.css" />
-    <link href="~/lib/leaflet/dist/leaflet.css" rel="stylesheet" />
-    <link href="~/lib/mapbox.js/mapbox.css" rel="stylesheet" />
-    <link href="~/lib/photoswipe/dist/photoswipe.css" rel="stylesheet" />
-    <link href="~/lib/photoswipe/dist/default-skin/default-skin.css" rel="stylesheet" />
-    <link href="~/lib/leaflet.label/dist/leaflet.label.css" rel="stylesheet" />
-    <link href="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu.css" rel="stylesheet" />
-    <link href="~/lib/moment-datepicker/moment-datepicker/datepicker2.css" rel="stylesheet" />
-    <link href="~/lib/bootstrap-multiselect/dist/css/bootstrap-multiselect.css" rel="stylesheet" />
-    <link href="~/lib/tinymce/skins/lightgray/skin.min.css" rel="stylesheet" />
-    <link href="~/lib/dropzone/dist/dropzone.css" rel="stylesheet" />
-    <link href="~/lib/bootstrap-daterangepicker/daterangepicker.css" rel="stylesheet" />
+        <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.css"/>
+        <link rel="stylesheet" href="~/css/site.css"/>
+        <link href="~/lib/leaflet/dist/leaflet.css" rel="stylesheet"/>
+        <link href="~/lib/mapbox.js/mapbox.css" rel="stylesheet"/>
+        <link href="~/lib/photoswipe/dist/photoswipe.css" rel="stylesheet"/>
+        <link href="~/lib/photoswipe/dist/default-skin/default-skin.css" rel="stylesheet"/>
+        <link href="~/lib/leaflet.label/dist/leaflet.label.css" rel="stylesheet"/>
+        <link href="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu.css" rel="stylesheet"/>
+        <link href="~/lib/moment-datepicker/moment-datepicker/datepicker2.css" rel="stylesheet"/>
+        <link href="~/lib/bootstrap-multiselect/dist/css/bootstrap-multiselect.css" rel="stylesheet"/>
+        <link href="~/lib/tinymce/skins/lightgray/skin.min.css" rel="stylesheet"/>
+        <link href="~/lib/dropzone/dist/dropzone.css" rel="stylesheet"/>
+        <link href="~/lib/bootstrap-daterangepicker/daterangepicker.css" rel="stylesheet"/>
+        <link href="~/lib/pickadate/lib/themes/default.css" rel="stylesheet"/>
+        <link href="~/lib/pickadate/lib/themes/default.date.css" rel="stylesheet"/>
+        <link href="~/lib/pickadate/lib/themes/default.time.css" rel="stylesheet"/>
     </environment>
     @*<link href="~/lib/dropzone/dist/basic.css" rel="stylesheet" />*@
     <style type="text/css">
         .waypoint:hover, .waypoint.hover {
+            height: 16px !important;
+            margin-left: -8px !important;
+            margin-top: -8px !important;
             /*-ms-opacity: 1 !important;*/
             /*opacity: 1 !important;*/
             width: 16px !important;
-            height: 16px !important;
-            margin-top: -8px !important;
-            margin-left: -8px !important;
         }
 
         .mobile .waypoint, .mobile .waypoint.hover {
+            height: 48px !important;
+            margin-left: -24px !important;
+            margin-top: -24px !important;
             /*-ms-opacity: 1 !important;*/
             /*opacity: 1 !important;*/
             width: 48px !important;
-            height: 48px !important;
-            margin-top: -24px !important;
-            margin-left: -24px !important;
         }
 
         .waypoint.expose {
             -ms-opacity: 1 !important;
+            height: 24px !important;
+            margin-left: -12px !important;
+            margin-top: -12px !important;
             opacity: 1 !important;
             width: 24px !important;
-            height: 24px !important;
-            margin-top: -12px !important;
-            margin-left: -12px !important;
         }
+
+        .picker--date > .picker__holder { overflow-y: hidden; }
     </style>
     <environment names="Staging,Production">
-    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
-    <link rel="stylesheet" href="~/css/site.min.css" />
-    <link href="~/lib/leaflet/dist/leaflet.min.css" rel="stylesheet" />
-    <link href="~/lib/mapbox.js/mapbox.min.css" rel="stylesheet" />
-    <link href="~/lib/photoswipe/dist/photoswipe.min.css" rel="stylesheet" />
-    <link href="~/lib/photoswipe/dist/default-skin/default-skin.min.css" rel="stylesheet" />
-    <link href="~/lib/leaflet.label/dist/leaflet.label.min.css" rel="stylesheet" />
-    <link href="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu.min.css" rel="stylesheet" />
-    <link href="~/lib/moment-datepicker/moment-datepicker/datepicker2.min.css" rel="stylesheet" />
-    <link href="~/lib/bootstrap-multiselect/dist/css/bootstrap-multiselect.min.css" rel="stylesheet" />
-    <link href="~/lib/tinymce/skins/lightgray/skin.min.min.css" rel="stylesheet" />
-    <link href="~/lib/dropzone/dist/dropzone.min.css" rel="stylesheet" />
-    <link href="~/lib/bootstrap-daterangepicker/daterangepicker.min.css" rel="stylesheet" />
+        <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css"/>
+        <link rel="stylesheet" href="~/css/site.min.css"/>
+        <link href="~/lib/leaflet/dist/leaflet.min.css" rel="stylesheet"/>
+        <link href="~/lib/mapbox.js/mapbox.min.css" rel="stylesheet"/>
+        <link href="~/lib/photoswipe/dist/photoswipe.min.css" rel="stylesheet"/>
+        <link href="~/lib/photoswipe/dist/default-skin/default-skin.min.css" rel="stylesheet"/>
+        <link href="~/lib/leaflet.label/dist/leaflet.label.min.css" rel="stylesheet"/>
+        <link href="~/lib/leaflet.contextmenu/dist/leaflet.contextmenu.min.css" rel="stylesheet"/>
+        <link href="~/lib/moment-datepicker/moment-datepicker/datepicker2.min.css" rel="stylesheet"/>
+        <link href="~/lib/bootstrap-multiselect/dist/css/bootstrap-multiselect.min.css" rel="stylesheet"/>
+        <link href="~/lib/tinymce/skins/lightgray/skin.min.min.css" rel="stylesheet"/>
+        <link href="~/lib/dropzone/dist/dropzone.min.css" rel="stylesheet"/>
+        <link href="~/lib/bootstrap-daterangepicker/daterangepicker.min.css" rel="stylesheet"/>
+        <link href="~/lib/pickadate/lib/compressed/themes/default.css" rel="stylesheet"/>
+        <link href="~/lib/pickadate/lib/compressed/themes/default.date.css" rel="stylesheet"/>
+        <link href="~/lib/pickadate/lib/compressed/themes/default.time.css" rel="stylesheet"/>
     </environment>
-    @Html.ApplicationInsightsJavaScript(TelemetryConfiguration)
-    @RenderSection("head", required: false)
+    @RenderSection("head", false)
 </head>
 <body>
-    <navbar fixed position="BootstrapTagHelpers.Navigation.NavbarPosition.FixedTop">
-        <brand href="/">
-            Kairos
-        </brand>
-        <navbar-nav id="leftNav">
-            <nav-item href="#" b-modal-target="logBookOverviewModal">Logbuch</nav-item>
-        </navbar-nav>
-        <navbar-nav b-navbar-right data-bind="visible:$root.IsLoggedIn" style="display: none;">
-            <dropdown text="Admin">
-                <a href="Account/Register">Neuer Benutzer</a>
-                <a href="#" b-modal-target="personsOverviewModal">Personen</a>
-                <a href="#" b-modal-target="jobOverviewModal">Aufgaben</a>
-                <a href="#" b-modal-target="editingContentPageModal">Neue Seite</a>
-                <a href="#" data-bind="if:IsInAdminMode, click:function () {MapMode(/*MapMode.View*/ 1);}">Karte Normal</a>
-                <a href="#" data-bind="if:IsInViewMode, click:function () {MapMode(/*MapMode.Admin*/ 0);}">Karte Admin</a>
-            </dropdown>
-        </navbar-nav>
-        @await Html.PartialAsync("_LoginPartial")
-    </navbar>
-    <div class="container body-content">
-        @RenderBody()
-        <hr />
-        <footer>
-            <p>&copy; 2016 - SMS</p>
-        </footer>
-    </div>
-    <environment names="Development">
-        <script src="~/lib/js-cookie/src/js.cookie.js"></script>
-        <script src="~/js/parsleyconfig.js"></script>
-        <script src="~/lib/jquery/dist/jquery.js"></script>
-        <script src="~/lib/bootstrap/dist/js/bootstrap.js"></script>
-        <script src="~/lib/knockout/dist/knockout.debug.js"></script>
-        <script src="~/lib/parsleyjs/dist/parsley.js"></script>
-        <script src="~/lib/parsleyjs/dist/i18n/de.js"></script>
-        <script src="~/lib/parsleyjs/dist/i18n/de.extra.js"></script>
-    </environment>
-    <environment names="Staging,Production">
+<navbar fixed position="BootstrapTagHelpers.Navigation.NavbarPosition.FixedTop">
+    <brand href="/">
+        Kairos
+    </brand>
+    <navbar-nav id="leftNav">
+        <nav-item href="#" b-modal-target="logBookOverviewModal">Logbuch</nav-item>
+    </navbar-nav>
+    <navbar-nav b-navbar-right data-bind="visible:$root.IsLoggedIn" style="display: none;">
+        <dropdown href="" text="Admin">
+            <a href="Account/Register">Neuer Benutzer</a>
+            <a href="#" b-modal-target="personsOverviewModal">Personen</a>
+            <a href="#" b-modal-target="jobOverviewModal">Aufgaben</a>
+            <a href="#" b-modal-target="editingContentPageModal">Neue Seite</a>
+            <a href="#" data-bind="if:IsInAdminMode, click:function () {MapMode(/*MapMode.View*/ 1);}">Karte Normal</a>
+            <a href="#" data-bind="if:IsInViewMode, click:function () {MapMode(/*MapMode.Admin*/ 0);}">Karte Admin</a>
+        </dropdown>
+    </navbar-nav>
+    @await Html.PartialAsync("_LoginPartial")
+</navbar>
+<div class="container body-content">
+    @RenderBody()
+    <hr/>
+    <footer>
+        <p>&copy; 2016 - SMS</p>
+    </footer>
+</div>
+<environment names="Development, Production">
+    <script src="~/lib/js-cookie/src/js.cookie.js"></script>
+    <script src="~/js/parsleyconfig.js"></script>
+    <script src="~/lib/jquery/dist/jquery.js"></script>
+    <script src="~/lib/bootstrap/dist/js/bootstrap.js"></script>
+    <script src="~/lib/knockout/dist/knockout.debug.js"></script>
+    <script src="~/lib/parsleyjs/dist/parsley.js"></script>
+    <script src="~/lib/parsleyjs/dist/i18n/de.js"></script>
+    <script src="~/lib/parsleyjs/dist/i18n/de.extra.js"></script>
+</environment>
+@*<environment names="Staging,Production">
         <script src="~/lib/js-cookie/src/js.cookie.js"></script>
         <script src="~/js/parsleyconfig.min.js"></script>
         <script src="~/lib/jquery/dist/jquery.min.js"></script>
@@ -115,10 +120,10 @@
         <script src="~/lib/parsleyjs/dist/parsley.min.js"></script>
         <script src="~/lib/parsleyjs/dist/i18n/de.js"></script>
         <script src="~/lib/parsleyjs/dist/i18n/de.extra.js"></script>
-    </environment>
+    </environment>*@
 
 
 
-    @RenderSection("scripts", required: false)
+@RenderSection("scripts", false)
 </body>
 </html>

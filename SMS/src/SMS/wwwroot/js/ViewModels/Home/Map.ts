@@ -2,10 +2,8 @@
 /// <reference path="../../servermodel.ts" />
 /// <reference path="../../serverapi.ts" />
 /// <reference path="../../../../typings/browser/definitions/moment/index.d.ts" />
-
 import Waypoint = ClientModel.Waypoint;
 import Harbour = ClientModel.Harbour;
-import Job = ClientModel.Job;
 import WaypointDistance = ClientModel.WaypointDistance;
 
 var ctrlPressed = false;
@@ -19,11 +17,11 @@ function renderTime(startDate: Date, endDate: Date);
 function renderTime(startDate: Date | number, endDate?: Date) {
     if (startDate instanceof Date)
         return renderTime(endDate.getTime() - startDate.getTime());
-    const duration = <number>startDate;
-    var time = Math.floor(duration / 60000);
-    var mins = (time % 60).toString();
+    const duration = startDate as number;
+    let time = Math.floor(duration / 60000);
+    let mins = (time % 60).toString();
     if (mins.length === 1)
-        mins = "0" + mins;
+        mins = `0${mins}`;
     time = Math.floor(time / 60);
     return time.toString() + ":" + mins;
 }
@@ -161,10 +159,22 @@ declare namespace L {
 
 class EditingHelper<T extends ClientModel.Entity> {
 
-    constructor(editingModalId: string, deletingModalId: string, Factory: () => T, Dataset: KnockoutObservableArray<T>, detailModalId: string);
-    constructor(editingModalId: string, deletingModalId: string, Factory: () => T, Dataset: KnockoutObservableArray<T>, detailedSidebar: Sidebar);
+    constructor(editingModalId: string,
+        deletingModalId: string,
+        Factory: () => T,
+        Dataset: KnockoutObservableArray<T>,
+        detailModalId: string);
+    constructor(editingModalId: string,
+        deletingModalId: string,
+        Factory: () => T,
+        Dataset: KnockoutObservableArray<T>,
+        detailedSidebar: Sidebar);
     constructor(editingModalId: string, deletingModalId: string, Factory: () => T, Dataset: KnockoutObservableArray<T>);
-    constructor(editingModalId: string, deletingModalId: string, protected Factory: () => T, protected Dataset: KnockoutObservableArray<T>, detailModalId?: string | Sidebar) {
+    constructor(editingModalId: string,
+        deletingModalId: string,
+        protected Factory: () => T,
+        protected Dataset: KnockoutObservableArray<T>,
+        detailModalId?: string | Sidebar) {
         this.EditingModal = $(`#${editingModalId}`);
         this.DeletingModal = $(`#${deletingModalId}`);
 
@@ -228,6 +238,7 @@ class EditingHelper<T extends ClientModel.Entity> {
         });
 
         if (detailModalId !== undefined) {
+            this.HasDetailView = true;
             if (detailModalId instanceof Sidebar) {
                 this.DetailSidebar = detailModalId;
                 this.Detail.subscribe((entity) => {
@@ -274,6 +285,7 @@ class EditingHelper<T extends ClientModel.Entity> {
     protected DetailModalOpen = false;
     protected Parsley: any;
 
+    HasDetailView = false;
     Detail = ko.observable<T>();
     Editing = ko.observable<T>();
     Deleting = ko.observable<T>();
@@ -305,7 +317,7 @@ class EditingHelper<T extends ClientModel.Entity> {
                         });
                 });
         else {
-            var isNew = this.Editing().Id() === undefined;
+            const isNew = this.Editing().Id() === undefined;
             this.Editing()
                 .SaveToServer()
                 .done(() => {
@@ -344,15 +356,17 @@ class MapViewModel {
         this.Map.setView([54.40774166820069, 10.523529052734373], 9);
         L.tileLayer("http://t1.openseamap.org/seamark/{z}/{x}/{y}.png").addTo(this.Map);
         this.LoadData();
-        $.get("/Account/LoggedIn").done((data) => this.IsLoggedIn(data));
+        $.get("/Account/IsLoggedIn").done((data) => this.IsLoggedIn(data));
         this.ContentPages.subscribe((data) => {
             var nav = $("#leftNav");
             $(".contentPageLink", nav).remove();
             for (let cP of data) {
-                $(`<li role="presentation" class="contentPageLink"><a href="#">${cP.Title()}</a></li>`).click(() => {
-                    mapViewModel.ContentPageHelper.Detail(cP);
-                    return false;
-                }).appendTo(nav);
+                $(`<li role="presentation" class="contentPageLink"><a href="#">${cP.Title()}</a></li>`)
+                    .click(() => {
+                        mapViewModel.ContentPageHelper.Detail(cP);
+                        return false;
+                    })
+                    .appendTo(nav);
             }
         });
 
@@ -389,7 +403,10 @@ class MapViewModel {
                         else
                             marker.setOpacity(marker.Waypoint.IsDummy() ? 0.0 : 0.8);
                     }
-                if (mapViewModel.HoveredPolyine !== undefined && mapViewModel.HoveredPolyine.DummyHandle !== undefined) {
+                if (mapViewModel
+                    .HoveredPolyine !==
+                    undefined &&
+                    mapViewModel.HoveredPolyine.DummyHandle !== undefined) {
                     const polyline = mapViewModel.HoveredPolyine;
                     const p1 = mapViewModel.Map.latLngToContainerPoint(polyline.getLatLngs()[0]);
                     const p2 = mapViewModel.Map.latLngToContainerPoint(polyline.getLatLngs()[1]);
@@ -549,11 +566,11 @@ class MapViewModel {
     }
 
     PullTack() {
-        const tack: ClientModel.Tack = <any>this;
+        const tack: ClientModel.Tack = this as any;
         const tacks = mapViewModel.TripHelper.Editing().Tacks;
         const index = tacks.indexOf(tack);
         const prevTack = tacks()[index - 1];
-        var tmpEnd = tack.End();
+        const tmpEnd = tack.End();
         tack.End(prevTack.Start());
         prevTack.End(tmpEnd);
         if (index > 1) {
@@ -564,7 +581,7 @@ class MapViewModel {
     }
 
     PushTack() {
-        const tack: ClientModel.Tack = <any>this;
+        const tack: ClientModel.Tack = this as any;
         const tacks = mapViewModel.TripHelper.Editing().Tacks;
         const index = tacks.indexOf(tack);
         const nextTack = tacks()[index + 1];
@@ -578,7 +595,7 @@ class MapViewModel {
     }
 
     RemoveTack() {
-        const tack: ClientModel.Tack = <any>this;
+        const tack: ClientModel.Tack = this as any;
         const tacks = mapViewModel.TripHelper.Editing().Tacks;
         const index = tacks.indexOf(tack);
         const prevTack = tacks()[index - 1];
@@ -995,29 +1012,82 @@ class MapViewModel {
     Wifis = ko.observableArray<ClientModel.Wifi>();
     ContentPages = ko.observableArray<ClientModel.ContentPage>();
 
-    WaypointHelper = new EditingHelper("editingWaypointModal", "deletingWaypointModal", () => this.CreateWaypoint(MarkerType.Waypoint), this.Waypoints);
-    HarbourHelper = new EditingHelper("editingHarbourModal", "deletingHarbourModal", () => this.CreateHarbour(), this.Harbours, rightSidebar);
-    PersonHelper = new EditingHelper("editingPersonModal", "deletingPersonModal", () => new ClientModel.Person(), this.Persons);
+    WaypointHelper = new EditingHelper("editingWaypointModal",
+        "deletingWaypointModal",
+        () => this.CreateWaypoint(MarkerType.Waypoint),
+        this.Waypoints);
+    HarbourHelper = new EditingHelper("editingHarbourModal",
+        "deletingHarbourModal",
+        () => this.CreateHarbour(),
+        this.Harbours,
+        rightSidebar);
+    PersonHelper = new EditingHelper("editingPersonModal",
+        "deletingPersonModal",
+        () => new ClientModel.Person(),
+        this.Persons);
     JobHelper = new EditingHelper("editingJobModal", "deletingJobModal", () => new ClientModel.Job(), this.Jobs);
     TripHelper = new EditingHelper("editingTripModal", "deletingTripModal", () => new ClientModel.Trip(), this.Trips);
-    AddressHelper = new EditingHelper("editingAddressModal", "deletingAddressModal", () => new ClientModel.Address(), this.Addresses);
-    ImageHelper = new EditingHelper("editingImageModal", "deletingImageModal", () => new ClientModel.Image(), this.Images);
+    AddressHelper = new EditingHelper("editingAddressModal",
+        "deletingAddressModal",
+        () => new ClientModel.Address(),
+        this.Addresses);
+    ImageHelper = new EditingHelper("editingImageModal",
+        "deletingImageModal",
+        () => new ClientModel.Image(),
+        this.Images);
     TackHelper = new EditingHelper("editingTackModal", "deletingTackModal", () => new ClientModel.Tack(), this.Tacks);
-    LocationHelper = new EditingHelper("editingLocationModal", "deletingLocationModal", () => new ClientModel.Location(), this.Locations);
-    SupermarketHelper = new EditingHelper("editingSupermarketModal", "deletingSupermarketModal", () => new ClientModel.Supermarket(), this.Supermarkets);
-    RestaurantHelper = new EditingHelper("editingRestaurantModal", "deletingRestaurantModal", () => new ClientModel.Restaurant(), this.Restaurants);
-    LogBookEntryHelper = new EditingHelper("editingLogBookEntryModal", "deletingLogBookEntryModal", () => new ClientModel.LogBookEntry(), this.LogBookEntries, "detailedLogBookEntryModal");
-    ContentPageHelper = new EditingHelper("editingContentPageModal", "deletingContentPageModal", () => new ClientModel.ContentPage(), this.ContentPages, "detailedContentPageModal");
-    WifiHelper = new EditingHelper("editingWifiModal", "deletingWifiModal", () => {
-        const w = new ClientModel.Wifi();
-        w.HarbourId(mapViewModel.HarbourHelper.Detail().Id());
-        return w;
-    }, this.Wifis, "detailWifiModal");
+    LocationHelper = new EditingHelper("editingLocationModal",
+        "deletingLocationModal",
+        () => new ClientModel.Location(),
+        this.Locations);
+    SupermarketHelper = new EditingHelper("editingSupermarketModal",
+        "deletingSupermarketModal",
+        () => new ClientModel.Supermarket(),
+        this.Supermarkets);
+    RestaurantHelper = new EditingHelper("editingRestaurantModal",
+        "deletingRestaurantModal",
+        () => new ClientModel.Restaurant(),
+        this.Restaurants);
+    LogBookEntryHelper = new EditingHelper("editingLogBookEntryModal",
+        "deletingLogBookEntryModal",
+        () => {
+            const logBookEntry = new ClientModel.LogBookEntry();
+            if (this.LogBookEntries().length > 0) {
+                let lastEntry = this.LogBookEntries()[0];
+                for (let entry of this.LogBookEntries()) {
+                    if (new Date(entry.EndDate()) > new Date(lastEntry.EndDate()))
+                        lastEntry = entry;
+                }
+                logBookEntry.Start(lastEntry.End());
+                logBookEntry.MotorHoursStart(lastEntry.MotorHoursEnd());
+                logBookEntry.LogStart(lastEntry.LogEnd());
+                if (lastEntry.End().Name() !== "Lippe")
+                    logBookEntry.Persons(lastEntry.Persons().slice());
+            }
+            return logBookEntry;
+        },
+        this.LogBookEntries,
+        "detailedLogBookEntryModal");
+    ContentPageHelper = new EditingHelper("editingContentPageModal",
+        "deletingContentPageModal",
+        () => new ClientModel.ContentPage(),
+        this.ContentPages,
+        "detailedContentPageModal");
+    WifiHelper = new EditingHelper("editingWifiModal",
+        "deletingWifiModal",
+        () => {
+            const w = new ClientModel.Wifi();
+            w.HarbourId(mapViewModel.HarbourHelper.Detail().Id());
+            return w;
+        },
+        this.Wifis,
+        "detailWifiModal");
 
-    HarboursByName = ko.computed<Harbour[]>(() => this.Harbours.sort((h1, h2) => h1.Name() > h2.Name()?1:-1)());
+    HarboursByName = ko.computed<Harbour[]>(() => this.Harbours.sort((h1, h2) => h1.Name() > h2.Name() ? 1 : -1)());
     HarboursByDistance = ko.computed<Harbour[]>(() => this.Harbours.sort((h1, h2) => h1.Distance() - h2.Distance())());
-    LogBookEntriesByStartDate = ko.computed<ClientModel.LogBookEntry[]>(() => this.LogBookEntries.sort((l1, l2) => Date.parse(l1.StartDate()) - Date.parse(l2.StartDate()))());
-
+    LogBookEntriesByStartDate = ko
+        .computed<ClientModel.LogBookEntry[]>(() => this.LogBookEntries
+            .sort((l1, l2) => Date.parse(l1.StartDate()) - Date.parse(l2.StartDate()))());
 
 
     //SortedLogBookEntries = ko.computed({
@@ -1111,20 +1181,21 @@ class MapViewModel {
         //polyline.bindContextMenu(options);
 
         mapViewModel.Polylines.push(polyline);
-        polyline.addEventListener("click", (e: L.LeafletMouseEvent) => {
-            const p1 = mapViewModel.Map.latLngToContainerPoint(polyline.getLatLngs()[0]);
-            const p2 = mapViewModel.Map.latLngToContainerPoint(polyline.getLatLngs()[1]);
-            polyline.DummyHandle
-                .SetLatLng(mapViewModel.Map
-                    .containerPointToLatLng(L.LineUtil
-                        .closestPointOnSegment(e.containerPoint,
-                        p1,
-                        p2)),
-                false);
+        polyline.addEventListener("click",
+            (e: L.LeafletMouseEvent) => {
+                const p1 = mapViewModel.Map.latLngToContainerPoint(polyline.getLatLngs()[0]);
+                const p2 = mapViewModel.Map.latLngToContainerPoint(polyline.getLatLngs()[1]);
+                polyline.DummyHandle
+                    .SetLatLng(mapViewModel.Map
+                        .containerPointToLatLng(L.LineUtil
+                            .closestPointOnSegment(e.containerPoint,
+                            p1,
+                            p2)),
+                    false);
 
-            mapViewModel.Waypoints.push(polyline.DummyHandle);
-            polyline.DummyHandle.convertFromDummyHandle();
-        });
+                mapViewModel.Waypoints.push(polyline.DummyHandle);
+                polyline.DummyHandle.convertFromDummyHandle();
+            });
         if (mapViewModel.MapMode() === MapMode.Admin)
             polyline.addTo(this.Map);
         polyline.Waypoints = new Array();
@@ -1292,7 +1363,8 @@ class MapViewModel {
                         mapViewModel.Map.fitBounds(tmpBounds);
                     else
                         mapViewModel.previousBounds = tmpBounds;
-                }, 100);
+                },
+                    100);
             }
         }
     }
@@ -1307,7 +1379,7 @@ class MapViewModel {
     CreateWaypoint(latLng?: L.LatLng | MarkerType, markerType?: MarkerType): Waypoint {
         let wp: Waypoint;
         if (markerType !== undefined)
-            wp = new Waypoint(<L.LatLng>latLng, markerType, mapViewModel.Map as L.mapbox.Map);
+            wp = new Waypoint(latLng as L.LatLng, markerType, mapViewModel.Map as L.mapbox.Map);
         else
             wp = new Waypoint(markerType, mapViewModel.Map as L.mapbox.Map);
         this.InitializeWaypoint(wp, markerType);
@@ -1375,38 +1447,40 @@ class MapViewModel {
             wp.marker = marker;
             if (mapViewModel.MapMode() === MapMode.Admin) {
                 if (markerType === MarkerType.Dummy)
-                    marker.addEventListener("mouseout", (e) => {
-                        if (e.target.Waypoint.IsDummy())
-                            mapViewModel.HoveredPolyine = undefined;
+                    marker.addEventListener("mouseout",
+                        (e) => {
+                            if (e.target.Waypoint.IsDummy())
+                                mapViewModel.HoveredPolyine = undefined;
 
-                    });
+                        });
                 marker.addEventListener("drag", () => { wp.SetLatLng(wp.marker.getLatLng()); });
                 if (markerType === MarkerType.Waypoint || markerType === MarkerType.Dummy) {
                     this.WaypointMarkers.push(wp.marker);
                     wp.marker.Point = mapViewModel.Map.latLngToContainerPoint(wp.LatLng);
                 }
-                wp.marker.addEventListener("click", () => {
-                    if (wp.IsDummy()) {
-                        mapViewModel.HoveredPolyine = undefined;
-                        wp.convertFromDummyHandle();
-                        mapViewModel.Waypoints.push(wp);
-                    }
-                    if (mapViewModel.GetMapMode() === MapMode.RouteDrawing) {
-                        if (!wp.IsInPolyline(mapViewModel.DrawingPolyline)) {
-                            ServerApi.WaypointConnections
-                                .Connect(wp.Id(), mapViewModel.DrawingPolyline.Waypoints[0].Id());
-                            wp.AddToPolyline(mapViewModel.DrawingPolyline);
-                            removeFromPolyline(mapViewModel.DrawingPolyline, mapViewModel.DrawingLatLng);
-                            addDummyHandle(mapViewModel.DrawingPolyline);
-                            mapViewModel.DrawingPolyline = undefined;
-                            mapViewModel.DrawingLatLng = undefined;
-                        } else {
-                            removePolyline(mapViewModel.DrawingPolyline);
-                            mapViewModel.DrawingPolyline = undefined;
-                            mapViewModel.DrawingLatLng = undefined;
+                wp.marker.addEventListener("click",
+                    () => {
+                        if (wp.IsDummy()) {
+                            mapViewModel.HoveredPolyine = undefined;
+                            wp.convertFromDummyHandle();
+                            mapViewModel.Waypoints.push(wp);
                         }
-                    }
-                });
+                        if (mapViewModel.GetMapMode() === MapMode.RouteDrawing) {
+                            if (!wp.IsInPolyline(mapViewModel.DrawingPolyline)) {
+                                ServerApi.WaypointConnections
+                                    .Connect(wp.Id(), mapViewModel.DrawingPolyline.Waypoints[0].Id());
+                                wp.AddToPolyline(mapViewModel.DrawingPolyline);
+                                removeFromPolyline(mapViewModel.DrawingPolyline, mapViewModel.DrawingLatLng);
+                                addDummyHandle(mapViewModel.DrawingPolyline);
+                                mapViewModel.DrawingPolyline = undefined;
+                                mapViewModel.DrawingLatLng = undefined;
+                            } else {
+                                removePolyline(mapViewModel.DrawingPolyline);
+                                mapViewModel.DrawingPolyline = undefined;
+                                mapViewModel.DrawingLatLng = undefined;
+                            }
+                        }
+                    });
                 wp.marker.addEventListener("dblclick",
                     (e: L.LeafletMouseEvent) => {
                         mapViewModel.DrawingPolyline = mapViewModel.AddPolyline(wp);
@@ -1414,19 +1488,21 @@ class MapViewModel {
                         mapViewModel.DrawingPolyline.addLatLng(mapViewModel.DrawingLatLng);
                     });
                 if (markerType === MarkerType.Dummy)
-                    wp.marker.addOneTimeEventListener("drag", () => {
-                        wp.convertFromDummyHandle();
-                        mapViewModel.Waypoints.push(wp);
-                    });
+                    wp.marker.addOneTimeEventListener("drag",
+                        () => {
+                            wp.convertFromDummyHandle();
+                            mapViewModel.Waypoints.push(wp);
+                        });
                 //else if (markerType === MarkerType.Waypoint) {
                 //    wp.Name(`Wegpunkt ${mapViewModel.Waypoints().length + 1}`);
                 //}
                 wp.marker.addEventListener("dragend", () => { wp.SaveToServer(); });
             } else if (markerType === MarkerType.Harbour) {
-                wp.marker.addEventListener("mouseover", () => {
-                    if (mapViewModel.HarbourHelper.Detail() !== undefined)
-                        mapViewModel.ShowRoute(wp);
-                });
+                wp.marker.addEventListener("mouseover",
+                    () => {
+                        if (mapViewModel.HarbourHelper.Detail() !== undefined)
+                            mapViewModel.ShowRoute(wp);
+                    });
                 wp.marker.addEventListener("click", () => mapViewModel.HarbourHelper.Detail(wp as ClientModel.Harbour));
             }
         }
@@ -1456,7 +1532,7 @@ class MapViewModel {
     };
 
     HarboursToSelect = ko.computed(() => {
-        return (<any[]>this.HarboursByName()).concat([{ Name: "Neuer Hafen...", IsDummy: true }]);
+        return (this.HarboursByName() as any[]).concat([{ Name: "Neuer Hafen...", IsDummy: true }]);
     });
 
     ProcessHarbourSelectOptions = (option: HTMLOptionElement, item) => {
@@ -1483,10 +1559,10 @@ class MapViewModel {
                         }
                     }));
         }
-    }
-
+    };
     PersonsToSelect = ko.computed(() => {
-        return (<any[]>this.Persons().sort((p1,p2)=>p1.FullName() > p2.FullName()?1:-1)).concat([{ FullName: "Neue Person...", IsDummy: true }]);
+        return (this.Persons().sort((p1, p2) => p1.FullName() > p2.FullName() ? 1 : -1) as any[])
+            .concat([{ FullName: "Neue Person...", IsDummy: true }]);
     });
 
     ProcessPersonSelectOptions = (option: HTMLOptionElement, item) => {
@@ -1512,9 +1588,79 @@ class MapViewModel {
                         }
                     }));
         }
+    };
+    AlbumStack = ko.observableArray<ClientModel.Album>();
+
+    GetPositionForWaypoint = (waypoint: ClientModel.Waypoint) => {
+        navigator.geolocation.getCurrentPosition((location) => {
+            waypoint.Latitude(location.coords.latitude);
+            waypoint.Longitude(location.coords.longitude);
+        }, function () { console.log(arguments); alert("Die Position konnte nicht abgerufen werden") });
     }
 
-    AlbumStack = ko.observableArray<ClientModel.Album>();
+    LogBookPager = new Pager(this.LogBookEntries,
+        {
+            Columns: [
+                new PagerColumn<ClientModel.LogBookEntry, string>("Start",
+                    (h) => h.Start().Name,
+                    { Sorter: PagerColumn.StringSorter(), Visible: false }),
+                new PagerColumn<ClientModel.LogBookEntry, string>("Ziel",
+                    (h) => h.End().Name,
+                    { Sorter: PagerColumn.StringSorter(), Width: 200 }),
+                new PagerColumn<ClientModel.LogBookEntry, string>("Datum",
+                    (h) => h.StartDate,
+                    {
+                        Sorter: PagerColumn.DateSorter(),
+                        Renderer: PagerColumn.DateRenderer(),
+                        Width: 150,
+                        SortMode: SortModes.Descending
+                    }),
+                new PagerColumn<ClientModel.
+                    LogBookEntry,
+                    string>("Dauer", (h) => h.SaillingTime, { Sorter: PagerColumn.StringSorter() }),
+                new PagerColumn<ClientModel.LogBookEntry,
+                    Person[
+                    ]>("Crew",
+                    (h) => h.Persons,
+                    {
+                        Renderer: PagerColumn.ArrayRenderer<Person>("<br />", (p) => p.FullName()),
+                        Width: 150
+                    }),
+                new PagerColumn<ClientModel.LogBookEntry, string>("Besondere Vorkomnisse", (h) => h.SpecialOccurences)
+            ] as any,
+            UseResponsiveTable: true,
+            UseStripedTable: true,
+            EditingHelper: this.LogBookEntryHelper,
+            ShowEditDeleteControls: true,
+            IdPrefix: "logBookOverview_",
+            SpecialActions: [new PagerSpecialAction("Neuer Eintrag", () => $("#editingLogBookEntryModal").modal("show"), undefined, this.IsLoggedIn)]
+        });
+
+    HarbourDistancePager = new Pager(ko.computed(()=>this.Harbours().slice().filter((h)=>h.Distance()>0)),
+        {
+            Columns: [
+                new PagerColumn<ClientModel.Harbour, string>("Name",
+                    (h) => h.Name,
+                    { Sorter: PagerColumn.StringSorter() }),
+                new PagerColumn<ClientModel.Harbour, number>("Entfernung",
+                    (h) => h.Distance,
+                    {
+                        Sorter: PagerColumn.NumberSorter(),
+                        Renderer: (d) => d + " sm",
+                        SortMode: SortModes.Ascending
+                    })
+            ] as any,
+            EditingHelper: this.HarbourHelper,
+            UseResponsiveTable: true,
+            UseStripedTable: true,
+            UseSmallColumnControls: true,
+            ShowColumnSelector: false,
+            IdPrefix: "harbourDistance_",
+            SpecialColumnActions: [new PagerSpecialColumnAction<ClientModel.Harbour>("Route zeigen", (h) => {
+                this.ShowRoute(h);
+                this.FixRoute();
+            })]
+        });
 }
 
 var dropzoneModalOpenedByDrag = false;
@@ -1547,10 +1693,11 @@ Dropzone.options.dropzone =
                     mapViewModel.Images.push(image);
                     mapViewModel.GetAlbumById(data.AlbumId).Images.push(image);
                 });
-            dropzone.on("queuecomplete", () => {
-                if (dropzoneModalOpenedByDrag)
-                    dropzoneModal.modal("hide");
-            });
+            dropzone.on("queuecomplete",
+                () => {
+                    if (dropzoneModalOpenedByDrag)
+                        dropzoneModal.modal("hide");
+                });
             dropzone.on("dragover", () => { hasDrag = true; });
         }
     };
@@ -1604,48 +1751,55 @@ dropzoneModal.on("hide.bs.modal",
     });
 var gallery: PhotoSwipe<PhotoSwipe.Options>;
 
-$(".modal").on("hidden.bs.modal", function () {
-    $(this).removeClass("fv-modal-stack");
-    $("body").data("fv_open_modals", $("body").data("fv_open_modals") - 1);
-});
+$(".modal")
+    .on("hidden.bs.modal",
+    function () {
+        $(this).removeClass("fv-modal-stack");
+        $("body").data("fv_open_modals", $("body").data("fv_open_modals") - 1);
+    });
 
 
-$(".modal").on("shown.bs.modal", function () {
+$(".modal")
+    .on("shown.bs.modal",
+    function () {
 
-    // keep track of the number of open modals
+        // keep track of the number of open modals
 
-    if (typeof ($("body").data("fv_open_modals")) == "undefined") {
-        $("body").data("fv_open_modals", 0);
-    }
-
-
-    // if the z-index of this modal has been set, ignore.
-
-    if ($(this).hasClass("fv-modal-stack")) {
-        return;
-    }
-
-    $(this).addClass("fv-modal-stack");
-
-    $("body").data("fv_open_modals", $("body").data("fv_open_modals") + 1);
-
-    $(this).css("z-index", 1040 + (10 * $("body").data("fv_open_modals")));
-
-    $(".modal-backdrop").not(".fv-modal-stack")
-        .css("z-index", 1039 + (10 * $("body").data("fv_open_modals")));
+        if (typeof ($("body").data("fv_open_modals")) == "undefined") {
+            $("body").data("fv_open_modals", 0);
+        }
 
 
-    $(".modal-backdrop").not("fv-modal-stack")
-        .addClass("fv-modal-stack");
+        // if the z-index of this modal has been set, ignore.
 
-});
+        if ($(this).hasClass("fv-modal-stack")) {
+            return;
+        }
+
+        $(this).addClass("fv-modal-stack");
+
+        $("body").data("fv_open_modals", $("body").data("fv_open_modals") + 1);
+
+        $(this).css("z-index", 1040 + (10 * $("body").data("fv_open_modals")));
+
+        $(".modal-backdrop")
+            .not(".fv-modal-stack")
+            .css("z-index", 1039 + (10 * $("body").data("fv_open_modals")));
+
+
+        $(".modal-backdrop")
+            .not("fv-modal-stack")
+            .addClass("fv-modal-stack");
+
+    });
 
 interface KnockoutBindingHandlers {
     daterange?: KnockoutBindingHandler;
 }
 
 ko.bindingHandlers.daterange = {
-    init(element: any, valueAccessor: () => any, allBindingsAccessor?: KnockoutAllBindingsAccessor, viewModel?: any, bindingContext?: KnockoutBindingContext) {
+    init(element: any, valueAccessor: () => any, allBindingsAccessor?: KnockoutAllBindingsAccessor, viewModel?: any,
+        bindingContext?: KnockoutBindingContext) {
         let value = valueAccessor()();
         if (value === undefined)
             valueAccessor()(new Date().toJSON());
@@ -1694,19 +1848,30 @@ ko.bindingHandlers.daterange = {
                 "alwaysShowCalendars": true,
                 "startDate": value,
                 "endDate": value
-            }, (start) => {
+            },
+            (start) => {
                 valueAccessor()(start._d.toJSON());
             });
     },
-    update(element: any, valueAccessor: () => any, allBindingsAccessor?: KnockoutAllBindingsAccessor, viewModel?: any, bindingContext?: KnockoutBindingContext) {
+    update(element: any, valueAccessor: () => any, allBindingsAccessor?: KnockoutAllBindingsAccessor, viewModel?: any,
+        bindingContext?: KnockoutBindingContext) {
         $(element).data("daterangepicker").setStartDate(moment(valueAccessor()()));
     }
 };
 
 
-window.Parsley.on("form:validate", form => {
-    if (form.submitEvent === undefined)
-        return false;
-});
+window.Parsley.on("form:validate",
+    form => {
+        if (form.submitEvent === undefined)
+            return false;
+    });
 
 window.Parsley.on("form:submit", form => false);
+
+$(document)
+    .on("focusin",
+    function (e) {
+        if ($(e.target).closest(".mce-window").length) {
+            e.stopImmediatePropagation();
+        }
+    });

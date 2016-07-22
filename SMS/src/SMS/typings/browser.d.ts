@@ -12,3 +12,4 @@
 /// <reference path="browser/ambient/moment/index.d.ts" />
 /// <reference path="browser/ambient/photoswipe/index.d.ts" />
 /// <reference path="browser/definitions/moment/index.d.ts" />
+/// <reference path="browser/definitions/pickadate/index.d.ts" />

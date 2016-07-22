@@ -1,8 +1,9 @@
-using Microsoft.Data.Entity;
+
+using Microsoft.EntityFrameworkCore;
 
 namespace SMS.Models
 {
-    public class AlbumImage : IEntity
+    public class AlbumImage : IEntityBase
     {
         public int? AlbumId { get; set; }
         public int? Index { get; set; }
@@ -13,7 +14,7 @@ namespace SMS.Models
 
         public bool RemoveFromContext(SmsDbContext context)
         {
-            if (context.Entry(context).State == EntityState.Deleted)
+            if (context.Entry(this).State == EntityState.Deleted)
                 return false;
             context.Remove(this);
             return true;

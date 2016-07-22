@@ -1,10 +1,8 @@
-using System.Linq;
-using System.Threading;
-using Microsoft.Data.Entity;
+using Microsoft.EntityFrameworkCore;
 
 namespace SMS.Models
 {
-    public class Crew:IEntity
+    public class Crew:IEntityBase
     {
         public int? TackId { get; set; }
         public int? PersonId { get; set; }

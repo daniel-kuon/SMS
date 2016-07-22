@@ -1,17 +1,17 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.AspNet.Authorization;
-using Microsoft.AspNet.Http;
-using Microsoft.AspNet.Http.Extensions;
-using Microsoft.AspNet.Mvc;
-using Microsoft.Data.Entity;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Extensions;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using SMS.Models;
 
 namespace SMS.Controllers.WebApi
 {
     [Produces("application/json")]
-    public abstract  class ApiController<T> : Controller where T:Entity
+    public abstract  class ApiController<T> : Controller where T : class, IEntity
     {
         protected SmsDbContext Context;
 
@@ -31,14 +31,14 @@ namespace SMS.Controllers.WebApi
         {
             if (!ModelState.IsValid)
             {
-                return HttpBadRequest(ModelState);
+                return BadRequest(ModelState);
             }
 
             T Entity = await Context.Set<T>().SingleAsync(m => m.Id == id);
 
             if (Entity == null)
             {
-                return HttpNotFound();
+                return NotFound();
             }
 
             return Ok(Entity);
@@ -50,12 +50,12 @@ namespace SMS.Controllers.WebApi
         {
             if (!ModelState.IsValid)
             {
-                return HttpBadRequest(ModelState);
+                return BadRequest(ModelState);
             }
 
             if (id != entity.Id)
             {
-                return HttpBadRequest();
+                return BadRequest();
             }
 
 
@@ -68,7 +68,7 @@ namespace SMS.Controllers.WebApi
             {
                 if (!Exists(id))
                 {
-                    return HttpNotFound();
+                    return NotFound();
                 }
                 else
                 {
@@ -87,7 +87,7 @@ namespace SMS.Controllers.WebApi
         {
             if (!ModelState.IsValid)
             {
-                return HttpBadRequest(ModelState);
+                return BadRequest(ModelState);
             }
 
             entity.AddOrUpdate(Context);
@@ -99,7 +99,7 @@ namespace SMS.Controllers.WebApi
             {
                 if (Exists(entity.Id))
                 {
-                    return new HttpStatusCodeResult(StatusCodes.Status409Conflict);
+                    return new StatusCodeResult(StatusCodes.Status409Conflict);
                 }
                 else
                 {
@@ -115,13 +115,13 @@ namespace SMS.Controllers.WebApi
         {
             if (!ModelState.IsValid)
             {
-                return HttpBadRequest(ModelState);
+                return BadRequest(ModelState);
             }
 
-            Entity entity = await Context.Set<T>().SingleAsync(m => m.Id == id);
+            IEntity entity = await Context.Set<T>().SingleAsync(m => m.Id == id);
             if (entity == null)
             {
-                return HttpNotFound();
+                return NotFound();
             }
 
             entity.RemoveFromContext(Context);
