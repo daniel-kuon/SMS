@@ -37,7 +37,7 @@ State of the rewrite on branch `v2` (2026-10-16). Phases refer to `11` §11.5.
 | CSRF | Cookie auth + `SameSite=Lax` + mandatory `X-Requested-With: XMLHttpRequest` header on state-changing `/api` calls (SPA interceptor) instead of ASP.NET antiforgery tokens |
 | Rich text | Plain textarea → paragraphs; server-side `HtmlSanitizer`, Angular `[innerHTML]` sanitising. A real editor (TinyMCE/Quill) can be dropped in later |
 | Geography | Columns are `geography(Point,4326)`; coordinates are projected in memory because PostGIS has no `ST_X/ST_Y` for geography |
-| Images | ImageSharp **3.1** (Six Labors Split License) — 4.x requires a paid license for Release builds |
+| Images | ImageSharp **3.1.12** (Six Labors Split License) — 4.x requires a paid license for Release builds. The open advisories against 3.1 concern TIFF/BigTIFF, HistogramEqualization and ICC CLUT parsing; decoding is restricted to JPEG/PNG/WebP and uploads are limited to signed-in crew, so only the ICC parsing one is reachable (memory DoS by a crafted profile). Revisit when buying a 4.x license |
 | Mail | `System.Net.Mail.SmtpClient` to Mailpit; switch to MailKit for a real provider |
 | SigNoz | Pinned `signoz/signoz:v0.116.1` + collector `v0.144.2` (last upstream docker-compose before Foundry); a `signoz-setup` container registers the admin org on first start because the collector replaces its pipelines with `nop` until an org exists |
 | Angular | 21 (Node 22.14 on the dev machine is below Angular 22's minimum) |
