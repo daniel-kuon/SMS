@@ -129,7 +129,7 @@ public static class TripEndpoints
             {
                 var email = await db.Users.Where(u => u.Id == invited).Select(u => u.Email).FirstOrDefaultAsync(ct);
                 var trip = await db.Trips.AsNoTracking().Include(t => t.Ship).FirstAsync(t => t.Id == id, ct);
-                if (email is not null) await mail.SendAsync(email, $"Einladung zum Törn {trip.Name}", $"<p>Du bist zum Törn <b>{trip.Name}</b> ({trip.Ship.Name}) eingeladen: <a href=\"{WebBaseUrl(http, cfg)}/trips/{id}\">Einladung ansehen</a></p>", ct);
+                if (email is not null) await mail.SendAsync(email, $"Einladung zum Törn {trip.Name}", $"<p>Du bist zum Törn <b>{H(trip.Name)}</b> ({H(trip.Ship.Name)}) eingeladen: <a href=\"{WebBaseUrl(http, cfg)}/trips/{id}\">Einladung ansehen</a></p>", ct);
                 await notifier.NotifyAsync(invited, NotificationType.TripInvitation, $"Einladung zum Törn {trip.Name} ({trip.Ship.Name})", $"/trips/{id}", ct);
                 await db.SaveChangesAsync(ct);
             }
@@ -175,6 +175,7 @@ public static class TripEndpoints
         g.MapPost("/{id:guid}/invitations", async (Guid id, TripInviteRequest req, SmsDbContext db, Access access, CurrentUser current, MailSender mail, HttpRequest http, IConfiguration cfg, CancellationToken ct) =>
         {
             if (!await access.IsTripSkipperAsync(id, ct)) return Results.Forbid();
+            if (req.Email is { Length: > 0 } && !IsEmail(req.Email)) return Invalid("email", "Ungültige E-Mail-Adresse.");
             var inv = new TripInvitation { TripId = id, Email = req.Email?.Trim(), Role = CrewRole.Crew, Token = NewToken(), ExpiresAt = DateTimeOffset.UtcNow.AddDays(30), CreatedById = current.Id };
             db.TripInvitations.Add(inv);
             await db.SaveChangesAsync(ct);
@@ -182,7 +183,7 @@ public static class TripEndpoints
             if (inv.Email is not null)
             {
                 var trip = await db.Trips.AsNoTracking().Include(t => t.Ship).FirstAsync(t => t.Id == id, ct);
-                await mail.SendAsync(inv.Email, $"Einladung zum Törn {trip.Name}", $"<p>Komm mit auf <b>{trip.Name}</b> ({trip.Ship.Name}): <a href=\"{link}\">{link}</a></p>", ct);
+                await mail.SendAsync(inv.Email, $"Einladung zum Törn {trip.Name}", $"<p>Komm mit auf <b>{H(trip.Name)}</b> ({H(trip.Ship.Name)}): <a href=\"{link}\">{link}</a></p>", ct);
             }
             return Results.Ok(new { inv.Token, link });
         }).RequireAuthorization();

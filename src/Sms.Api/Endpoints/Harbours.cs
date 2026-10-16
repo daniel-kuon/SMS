@@ -104,18 +104,26 @@ public static class HarbourEndpoints
             return Results.Created($"/api/wifis/{w.Id}", new { w.Id });
         }).RequireAuthorization();
 
-        api.MapPut("/wifis/{id:guid}", async (Guid id, WifiUpsert req, SmsDbContext db, CancellationToken ct) =>
+        api.MapPut("/wifis/{id:guid}", async (Guid id, WifiUpsert req, SmsDbContext db, CurrentUser current, CancellationToken ct) =>
         {
             var w = await db.HarbourWifis.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (w is null) return Results.NotFound();
-            w.Name = req.Name; w.Password = req.Password; w.Speed = Math.Clamp(req.Speed, 0, 3); w.Free = req.Free;
+            // spec 08 §8.4: every registered user may edit harbour data (wiki-like); the revision keeps it auditable
+            db.HarbourRevisions.Add(new HarbourRevision { HarbourId = w.HarbourId, ChangedById = current.Id, SnapshotJson = JsonSerializer.Serialize(new { wifi = new WifiDto(w.Id, w.Name, w.Password, w.Speed, w.Free) }, JsonOpts) });
+            w.Name = req.Name; w.Password = req.Password; w.Speed = Math.Clamp(req.Speed, 0, 3); w.Free = req.Free; w.UpdatedById = current.Id;
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).RequireAuthorization().WithTags("Harbours");
 
-        api.MapDelete("/wifis/{id:guid}", async (Guid id, SmsDbContext db, CancellationToken ct) =>
-            await db.HarbourWifis.Where(x => x.Id == id).ExecuteDeleteAsync(ct) > 0 ? Results.NoContent() : Results.NotFound())
-            .RequireAuthorization().WithTags("Harbours");
+        api.MapDelete("/wifis/{id:guid}", async (Guid id, SmsDbContext db, CurrentUser current, CancellationToken ct) =>
+        {
+            var w = await db.HarbourWifis.FirstOrDefaultAsync(x => x.Id == id, ct);
+            if (w is null) return Results.NotFound();
+            db.HarbourRevisions.Add(new HarbourRevision { HarbourId = w.HarbourId, ChangedById = current.Id, SnapshotJson = JsonSerializer.Serialize(new { deletedWifi = new WifiDto(w.Id, w.Name, w.Password, w.Speed, w.Free) }, JsonOpts) });
+            db.HarbourWifis.Remove(w);
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        }).RequireAuthorization().WithTags("Harbours");
 
         // --- reviews
         g.MapPost("/{id:guid}/reviews", async (Guid id, ReviewUpsert req, SmsDbContext db, CurrentUser current, CancellationToken ct) =>

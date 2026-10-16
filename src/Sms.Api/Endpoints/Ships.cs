@@ -115,12 +115,13 @@ public static class ShipEndpoints
         g.MapPost("/{id:guid}/invitations", async (Guid id, ShipInviteRequest req, SmsDbContext db, Access access, CurrentUser current, MailSender mail, HttpRequest http, IConfiguration cfg, CancellationToken ct) =>
         {
             if (!await access.IsShipOwnerAsync(id, ct)) return Results.Forbid();
+            if (!IsEmail(req.Email)) return Invalid("email", "Ungültige E-Mail-Adresse.");
             var ship = await db.Ships.AsNoTracking().FirstAsync(s => s.Id == id, ct);
             var inv = new ShipInvitation { ShipId = id, Email = req.Email.Trim(), Role = req.Role, Token = NewToken(), ExpiresAt = DateTimeOffset.UtcNow.AddDays(14), CreatedById = current.Id };
             db.ShipInvitations.Add(inv);
             await db.SaveChangesAsync(ct);
             var link = $"{WebBaseUrl(http, cfg)}/invitations/ship/{inv.Token}";
-            await mail.SendAsync(inv.Email, $"Einladung zum Schiff {ship.Name}", $"<p>Du wurdest als {req.Role} zum Schiff <b>{ship.Name}</b> eingeladen: <a href=\"{link}\">{link}</a></p>", ct);
+            await mail.SendAsync(inv.Email, $"Einladung zum Schiff {ship.Name}", $"<p>Du wurdest als {req.Role} zum Schiff <b>{H(ship.Name)}</b> eingeladen: <a href=\"{link}\">{link}</a></p>", ct);
             return Results.Ok(new { inv.Token, link });
         }).RequireAuthorization();
 

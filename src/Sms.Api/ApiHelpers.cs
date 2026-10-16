@@ -31,6 +31,11 @@ public static class ApiHelpers
         throw new InvalidOperationException("Web:BaseUrl is not configured and the request origin is not allowed (Web:AllowedOrigins).");
     }
 
+    /// <summary>HTML-encodes user-controlled text before it is placed into mail bodies.</summary>
+    public static string H(string? text) => System.Net.WebUtility.HtmlEncode(text ?? "");
+
+    public static bool IsEmail(string? value) => value is not null && System.Net.Mail.MailAddress.TryCreate(value.Trim(), out var a) && a.Address == value.Trim();
+
     public static string NewToken() => Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24));
 
     /// <summary>Trip-local "today" for grouping items into days.</summary>
