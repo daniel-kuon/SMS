@@ -65,7 +65,10 @@ builder.Services.AddSingleton<MailSender>();
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<Access>();
 builder.Services.AddSingleton<FeedTokens>();
-builder.Services.AddHttpClient("overpass", c => c.DefaultRequestHeaders.UserAgent.ParseAdd("sailing-portal/0.1 (+https://github.com/daniel-kuon/SMS)"));
+// Overpass queries run for minutes: no standard resilience handler (its 10 s attempt timeout would abort them).
+#pragma warning disable EXTEXP0001 // RemoveAllResilienceHandlers is marked experimental
+builder.Services.AddHttpClient("overpass", c => c.DefaultRequestHeaders.UserAgent.ParseAdd("sailing-portal/0.1 (+https://github.com/daniel-kuon/SMS)")).RemoveAllResilienceHandlers();
+#pragma warning restore EXTEXP0001
 builder.Services.AddHttpClient("routing");
 builder.Services.AddSingleton<RoutingGraphBuilder>();
 builder.Services.AddScoped<SeaRouter>();

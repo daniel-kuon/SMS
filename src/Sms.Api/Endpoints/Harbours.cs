@@ -138,17 +138,14 @@ public static class HarbourEndpoints
         }).RequireAuthorization();
 
         // --- admin: OSM import (Overpass, small areas; spec 10.3) and merge
-        api.MapPost("/admin/harbours/import-osm", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, CancellationToken ct) =>
+        api.MapPost("/admin/harbours/import-osm", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             var p = bbox.Split(',');
             if (p.Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
             var query = $"[out:json][timeout:120];(nwr[\"leisure\"=\"marina\"]({bbox});nwr[\"seamark:type\"=\"harbour\"]({bbox});nwr[\"harbour\"=\"yes\"]({bbox}););out center tags;";
-            var client = http.CreateClient("overpass");
-            client.Timeout = TimeSpan.FromMinutes(3);
-            using var resp = await client.PostAsync("https://overpass-api.de/api/interpreter", new FormUrlEncodedContent([new("data", query)]), ct);
-            resp.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStreamAsync(ct));
+            using var doc = await Overpass.QueryAsync(http, cfg, query, ct);
+            if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
             var (created, updated, skipped) = (0, 0, 0);
             foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
             {

@@ -19,17 +19,14 @@ public static class SeamarkEndpoints
         api.MapGet("/seamarks/status", async (SmsDbContext db, CancellationToken ct) =>
             Results.Ok(new { count = await db.Seamarks.CountAsync(ct), lastImport = await db.Seamarks.MaxAsync(s => (DateTimeOffset?)s.ImportedAt, ct) })).WithTags("Admin");
 
-        api.MapPost("/admin/seamarks/import-osm", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, CancellationToken ct) =>
+        api.MapPost("/admin/seamarks/import-osm", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             var p = bbox.Split(',');
             if (p.Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
             var query = $"[out:json][timeout:300];nwr[\"seamark:type\"]({bbox});out center tags;";
-            var client = http.CreateClient("overpass");
-            client.Timeout = TimeSpan.FromMinutes(6);
-            using var resp = await client.PostAsync("https://overpass-api.de/api/interpreter", new FormUrlEncodedContent([new("data", query)]), ct);
-            resp.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStreamAsync(ct));
+            using var doc = await Overpass.QueryAsync(http, cfg, query, ct);
+            if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen oder eine Overpass-JSON-Datei hochladen.");
             return Results.Ok(await ImportAsync(doc, db, ct));
         }).RequireAuthorization().WithTags("Admin");
 
@@ -41,7 +38,10 @@ public static class SeamarkEndpoints
             var file = form.Files.FirstOrDefault();
             if (file is null) return Invalid("file", "Overpass-JSON-Datei fehlt.");
             await using var stream = file.OpenReadStream();
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            JsonDocument doc;
+            try { doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct); }
+            catch (JsonException) { return Invalid("file", "Kein Overpass-JSON (Datei ist kein JSON)."); }
+            using var owned = doc;
             if (!doc.RootElement.TryGetProperty("elements", out _)) return Invalid("file", "Kein Overpass-JSON (elements fehlt).");
             return Results.Ok(await ImportAsync(doc, db, ct));
         }).RequireAuthorization().WithTags("Admin");

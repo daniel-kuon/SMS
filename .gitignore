@@ -242,3 +242,5 @@ dist/
 *.esproj.user
 .aspire/
 media/
+
+.playwright-mcp/

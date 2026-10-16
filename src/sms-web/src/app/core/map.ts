@@ -12,6 +12,9 @@ export function mapConfig(): Promise<MapConfig> {
   return configPromise;
 }
 
+// MapLibre's worker is a separate ES module; under Vite/esbuild pre-bundling its relative URL breaks, so it is served as an asset (angular.json).
+maplibregl.setWorkerUrl('/maplibre-gl-worker.mjs');
+
 export const LEGACY_VIEW = { center: [10.523529052734373, 54.40774166820069] as [number, number], zoom: 9 };
 
 /**
