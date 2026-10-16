@@ -234,3 +234,11 @@ _Pvt_Extensions
 
 # FAKE - F# Make
 .fake/
+
+# v2 portal
+node_modules/
+.angular/
+dist/
+*.esproj.user
+.aspire/
+media/

@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Sms.Api/Sms.Api.csproj" />
+    <Project Path="src/Sms.AppHost/Sms.AppHost.csproj" />
+    <Project Path="src/Sms.Domain/Sms.Domain.csproj" />
+    <Project Path="src/Sms.Infrastructure/Sms.Infrastructure.csproj" />
+    <Project Path="src/Sms.ServiceDefaults/Sms.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Sms.Domain.Tests/Sms.Domain.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,5 @@
+{
+  "appHost": {
+    "path": "src/Sms.AppHost/Sms.AppHost.csproj"
+  }
+}

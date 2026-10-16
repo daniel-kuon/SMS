@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <UserSecretsId>sms-api-3f6b9d2a-1e7c-4c5a-8f1e-5a2b7c9d0e13</UserSecretsId>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Sms.ServiceDefaults\Sms.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\Sms.Infrastructure\Sms.Infrastructure.csproj" />
+    <PackageReference Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Scalar.AspNetCore" />
+    <PackageReference Include="NetTopologySuite.IO.GeoJSON4STJ" />
+    <PackageReference Include="Ical.Net" />
+  </ItemGroup>
+</Project>
