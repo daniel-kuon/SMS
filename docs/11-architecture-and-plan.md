@@ -18,7 +18,7 @@ costs of `09` and sea routing of `10`. Use the **current LTS .NET** (e.g.
     Sms.Infrastructure/         EF Core DbContext + migrations, Identity, media storage
                                 (local FS / S3 / Azure Blob behind IMediaStorage),
                                 image processing (ImageSharp), e-mail (SMTP), iCal, OSM import
-    Sms.Routing/                routing graph model, A*/Dijkstra, smoothing, graph loader (10)
+    Sms.Routing/                routing queries (pgRouting SQL), snapping, smoothing, caching (10)
     Sms.Routing.Builder/        CLI / background job that builds the routing graph
     Sms.Worker/                 background jobs: media processing, routing rebuild,
                                 OSM harbour import, notification e-mails (or hosted services in Sms.Api)
@@ -31,7 +31,7 @@ costs of `09` and sea routing of `10`. Use the **current LTS .NET** (e.g.
                                 authorization matrix tests (08 §8.4)
     sms-web e2e/                Playwright end-to-end tests
   docs/
-  docker-compose.yml            database, (optional) MinIO for S3-compatible storage, MailHog/Mailpit
+  docker-compose.yml            PostgreSQL (PostGIS + pgRouting), (optional) MinIO for S3-compatible storage, Mailpit
 ```
 
 ## 11.2 Technology decisions
@@ -39,7 +39,7 @@ costs of `09` and sea routing of `10`. Use the **current LTS .NET** (e.g.
 | Concern | Decision | Notes |
 |---------|----------|-------|
 | API style | REST controllers, camelCase JSON, `ProblemDetails`, OpenAPI | generate the Angular API client from OpenAPI (e.g. openapi-generator / orval) |
-| Database | PostgreSQL + PostGIS **or** SQL Server (`geography`) | both work with EF Core + NetTopologySuite; PostgreSQL recommended for a new multi-tenant service (and pgRouting option, `10` §10.2) |
+| Database | **PostgreSQL + PostGIS + pgRouting** (decided) | EF Core via Npgsql + NetTopologySuite; `pg_trgm` for name search/dedup; local dev & tests with a PostGIS image that includes pgRouting |
 | Auth | ASP.NET Core Identity, cookie auth for the same-origin SPA, e-mail confirmation, password reset, antiforgery header | optional external logins later; return 401/403, never redirects |
 | Authorization | policy + resource handlers, central visibility query filter | `08` §8.3/§8.4 |
 | Media | `IMediaStorage` abstraction, ImageSharp variants (thumb 400 px, preview 1600 px), EXIF read (capture time, GPS) + strip | background processing, signed URLs or authorized media endpoint for non-public files |
@@ -121,12 +121,12 @@ Ship CRUD, owner/skipper roles, invitations by e-mail/link, ship page (basic).
 ✅ Authorization tests: only owners manage members; last owner cannot leave.
 
 **Phase 3 – Harbour catalogue and map** (`07` G1, G3; legacy `04` §4.4–4.5)
-Harbour entity with PostGIS/geography, OSM import job (`10` §10.3) for the
-launch region, harbour map with clustering + OpenSeaMap overlay, harbour
+Harbour entity with PostGIS geography, OSM import job (`10` §10.3) for
+Europe (sea harbours), harbour map with clustering + OpenSeaMap overlay, harbour
 detail panel (description, WiFi with registered-only passwords, photos
 placeholder), create/edit with revision history, admin merge. Straight-line
 distances as temporary fallback.
-✅ Import creates harbours for the launch region; duplicates merged; map
+✅ Import creates sea harbours for Europe; duplicates merged; map
 loads only harbours inside the visible bbox.
 
 **Phase 4 – Trips and crew** (`07` C1, C2, C4 basic, C5)
@@ -157,12 +157,14 @@ settlement report/confirm, lock, CSV/PDF export, cost tab UI.
 ✅ Property-based tests of `09` §9.6; worked example of `09` §9.3 as a test.
 
 **Phase 8 – Sea routing** (`07` G4–G5, C3; `10`)
-Graph builder for a small test region first (Kieler Förde), then the launch
-region; in-memory routing service; nearby-ports and route endpoints; UI in
+Graph builder writing to PostgreSQL (`10` §10.2) for a small test region
+first (Kieler Förde), then all European sea areas; pgRouting-based
+nearby-ports and route endpoints; UI in
 harbour panel (distance table, hover route with "`<n> sm`"), "Nächste Häfen
 von hier/meiner Position", trip planner legs with distance/ETA; admin
 corrections and rebuild.
-✅ Golden distance tests (`10` §10.6) within ±10 %; performance targets met.
+✅ Golden distance tests (`10` §10.6) within ±10 %; performance targets met
+on the Europe graph.
 
 **Phase 9 – Social layer** (`07` E4–E5)
 Follows, personal feed and public explore page, comments, likes,
@@ -185,7 +187,9 @@ uploads with retry, background sync.
 ✅ Creating a post and uploading photos in airplane mode syncs after reconnect.
 
 **Phase 13 – Legacy import** (`07` H3, mapping `08` §8.5)
-`Sms.LegacyImport` reads the old SQL Server database and files:
+`Sms.LegacyImport` reads the old **SQL Server** database (via
+`Microsoft.Data.SqlClient`) and files and writes into the new **PostgreSQL**
+database:
 - create (or link) the owner's account and the ship "Kairos" (owner = that user);
 - harbours → catalogue (`Source = Legacy`), merge with OSM duplicates (≤ 300 m, similar name), WiFis attached;
 - persons → guest crew; logbook entries → ship logbook entries;
@@ -197,6 +201,15 @@ uploads with retry, background sync.
 - jobs → ship tasks; content pages → content pages; dummy trips → planned trips;
 - fix legacy issues on the way (`06`: sanitise HTML, WindSpeed as string, time zones).
 ✅ Row counts and spot checks match; legacy distances serve as routing test fixtures.
+
+**Phase 14 – Canals, rivers and buoyed channels** (`07` G6, `10` §10.5)
+Import OSM waterway centrelines (canals/rivers with navigability tags) as
+passages; derive fairway lines from OpenSeaMap lateral buoys/beacons and
+fairway/recommended-track objects; admin review of derived lines; prefer
+marked channels in shallow areas; import inland harbours that become
+reachable.
+✅ Routes through the Nord-Ostsee-Kanal and up the Schlei/Elbe are found;
+derived lines are reviewable and can be rejected.
 
 ## 11.6 Definition of done (every phase)
 - Server-side validation and authorization for every endpoint; tests for the

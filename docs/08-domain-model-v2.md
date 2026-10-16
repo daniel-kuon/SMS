@@ -66,7 +66,7 @@ may change it.
 | `HarbourRevision` | Id, HarbourId, ChangedById, ChangedAt, SnapshotJson | edit history / revert |
 | `HarbourWifi` | Id, HarbourId, Name, Password, Speed (0–3), Free | legacy Wifi |
 | `HarbourReview` | Id, HarbourId, AuthorId, Rating (1–5), Text, VisitedOn? | |
-| `RoutingCorrection` | Id, Kind (`Block`/`Passage`), Geometry (Polygon or LineString), Note, CreatedById, Active | manual fixes for routing |
+| `RoutingCorrection` | Id, Kind (`Block`/`Passage`), Source (`Manual`/`Derived`), Geometry (Polygon or LineString), Note, CreatedById, Active | manual fixes; `Derived` = canal/fairway lines generated from OpenSeaMap/OSM data and reviewed by admins (`10` §10.5) |
 | `RouteCache` | FromHarbourId, ToHarbourId, GraphVersion, DistanceNm, Geometry | cache of computed sea routes |
 
 ### Platform
@@ -74,8 +74,10 @@ may change it.
 |--------|-----------|
 | `ContentPage` | Id, Slug, Title, Content, Language, ShowInFooter |
 
-Spatial columns use NetTopologySuite types (SQL Server `geography` or
-PostGIS `geography(Point,4326)`).
+Database: **PostgreSQL + PostGIS** (decided). Spatial columns use
+NetTopologySuite types mapped to `geography(Point,4326)` /
+`geography(LineString,4326)` via `Npgsql.EntityFrameworkCore.PostgreSQL.NetTopologySuite`.
+Routing graph tables (`routing_node`, `routing_edge`, …) are described in `10` §10.2.
 
 ## 8.2 Relationships (overview)
 

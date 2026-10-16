@@ -47,7 +47,7 @@ only, not for navigation).
 | 8 | [08-domain-model-v2.md](08-domain-model-v2.md) | New entities, visibility rules, permission matrix, mapping from legacy |
 | 9 | [09-costs-and-settlement.md](09-costs-and-settlement.md) | Expense splitting, rounding, balances, "who pays whom" algorithm, UI, API, tests |
 | 10 | [10-sea-routing.md](10-sea-routing.md) | Automatic sea routing from OSM/OpenSeaMap data, harbour import, API, validation |
-| 11 | [11-architecture-and-plan.md](11-architecture-and-plan.md) | Solution structure, technology decisions, Angular structure, API overview, 14 implementation phases with acceptance criteria |
+| 11 | [11-architecture-and-plan.md](11-architecture-and-plan.md) | Solution structure, technology decisions, Angular structure, API overview, 15 implementation phases with acceptance criteria |
 
 ## Instructions for the session implementing the new version
 
@@ -59,7 +59,9 @@ only, not for navigation).
 3. Implement phase by phase (`11` §11.5); each phase lists acceptance
    criteria. Visibility and permission rules (`08` §8.3–8.4) must be enforced
    server-side and covered by tests before content is shown publicly.
-4. Defaults for open questions are listed in `07` §7.5 — use them unless the
+4. Decisions taken are in `07` §7.5 (PostgreSQL; routing for European sea
+   areas first, canals later via OpenSeaMap). Defaults for open questions are
+   listed in `07` §7.6 — use them unless the
    owner decides otherwise, and record decisions in these docs.
 5. UI is German first with English as a second language; legacy German labels
    are in `04`.

@@ -157,10 +157,13 @@ exist in the old app (see the referenced doc).
   from a selected harbour **or any map point / my GPS position**, list the
   nearest ports by **sea distance** with route preview and ETA at the ship's
   cruising speed. Clear disclaimer: "Nicht zur Navigation geeignet".
+  Coverage at start: **European sea areas** only (`10` §10.1).
 - **G5 Routing corrections.** Platform admins (and later trusted users) can
   add manual corrections where automatic routing is wrong (block an area, add
-  a passage such as a canal) — replaces the legacy manual waypoint graph
-  editor (`05` §5.3).
+  a passage) — replaces the legacy manual waypoint graph editor (`05` §5.3).
+- **G6 Canals, rivers and buoyed channels (stage 2).** Extend routing into
+  canals/rivers and prefer marked channels, derived from OpenSeaMap
+  lateral buoys/beacons and OSM waterway lines (`10` §10.5).
 
 ### H. Platform
 - **H1 Content pages** (legacy): admin-managed pages (Impressum,
@@ -185,7 +188,13 @@ exist in the old app (see the referenced doc).
   `Europe/Berlin`) that defines its "days".
 - **Money:** `decimal` amounts + ISO 4217 currency; no floating point.
 
-## 7.5 Open questions (defaults assumed in these docs)
+## 7.5 Decisions taken
+| Topic | Decision |
+|-------|----------|
+| Database | PostgreSQL + PostGIS (+ pgRouting for routing) |
+| Routing coverage | Europe, sea areas only at start; canals/rivers later via OpenSeaMap buoys and OSM waterways (`10` §10.5) |
+
+## 7.6 Open questions (defaults assumed in these docs)
 | # | Question | Default assumed |
 |---|----------|-----------------|
 | 1 | Do ship owners who are not on a trip see that trip's crew-only content? | Yes for logbook entries and costs summary; **no** for crew-only posts/photos |
@@ -193,5 +202,4 @@ exist in the old app (see the referenced doc).
 | 3 | Who may write logbook entries? | Trip skipper, co-skippers, ship skippers/owners |
 | 4 | Multi-currency costs? | Yes; exchange rate entered per expense (prefilled from an ECB rate feed later) |
 | 5 | Are harbour edits moderated? | No pre-moderation; history + revert + report |
-| 6 | Routing region at launch? | Baltic Sea + North Sea, extendable |
-| 7 | Monetisation / limits (storage quotas)? | Not in scope; configurable per-user storage quota |
+| 6 | Monetisation / limits (storage quotas)? | Not in scope; configurable per-user storage quota |
