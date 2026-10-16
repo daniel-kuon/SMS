@@ -19,8 +19,7 @@ public record NearbyPort(Guid HarbourId, string Name, double Lat, double Lng, de
 
 public static class HarbourEndpoints
 {
-    public const string Disclaimer = "Entfernungen sind Schätzwerte und nicht zur Navigation geeignet.";
-    public const string Attribution = "© OpenStreetMap-Mitwirkende, OpenSeaMap";
+    public const string Attribution = RoutingEndpoints.Attribution;
 
     public static void MapHarbours(this IEndpointRouteBuilder api)
     {
@@ -129,48 +128,6 @@ public static class HarbourEndpoints
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { r.Id });
         }).RequireAuthorization();
-
-        // --- nearby ports (spec 10.4). ponytail: straight-line distance via PostGIS until the sea-routing graph (phase 8) lands.
-        api.MapGet("/routing/nearby-ports", async (Guid? harbour, double? lat, double? lng, decimal? maxNm, int? limit, decimal? speedKn, SmsDbContext db, CancellationToken ct) =>
-        {
-            Point origin;
-            if (harbour is { } hid)
-            {
-                var h = await db.Harbours.AsNoTracking().FirstOrDefaultAsync(x => x.Id == hid, ct);
-                if (h is null) return Results.NotFound();
-                origin = h.Location;
-            }
-            else if (lat is { } la && lng is { } ln) origin = Geo.Point(la, ln);
-            else return Invalid("harbour", "harbour oder lat/lng angeben.");
-
-            var maxMeters = (double)Math.Clamp(maxNm ?? 50, 1, 150) * 1852;
-            var speed = speedKn is > 0 ? speedKn.Value : 5;
-            var hits = await db.Harbours.AsNoTracking()
-                .Where(h => h.IsActive && h.MergedIntoId == null && h.Id != harbour && h.Location.IsWithinDistance(origin, maxMeters))
-                .OrderBy(h => h.Location.Distance(origin))
-                .Take(Math.Clamp(limit ?? 20, 1, 100))
-                .Select(h => new { h.Id, h.Name, h.Location, Meters = h.Location.Distance(origin) })
-                .ToListAsync(ct);
-            var ports = hits.Select(h =>
-            {
-                var nm = Math.Round((decimal)h.Meters / 1852m, 1);
-                return new NearbyPort(h.Id, h.Name, h.Location.Y, h.Location.X, nm, nm, Math.Round(nm / speed, 1), "straight-line");
-            });
-            return Results.Ok(new { disclaimer = Disclaimer, attribution = Attribution, ports });
-        }).WithTags("Routing");
-
-        api.MapGet("/routing/route", async (Guid fromHarbour, Guid toHarbour, SmsDbContext db, CancellationToken ct) =>
-        {
-            var a = await db.Harbours.AsNoTracking().FirstOrDefaultAsync(h => h.Id == fromHarbour, ct);
-            var b = await db.Harbours.AsNoTracking().FirstOrDefaultAsync(h => h.Id == toHarbour, ct);
-            if (a is null || b is null) return Results.NotFound();
-            var meters = await db.Harbours.Where(h => h.Id == fromHarbour).Select(h => h.Location.Distance(b.Location)).FirstAsync(ct);
-            var nm = Math.Round((decimal)meters / 1852m, 1);
-            var line = Geo.Factory.CreateLineString([a.Location.Coordinate, b.Location.Coordinate]);
-            return Results.Ok(new { distanceNm = nm, straightLineNm = nm, geometry = line, method = "straight-line", disclaimer = Disclaimer, attribution = Attribution });
-        }).WithTags("Routing");
-
-        api.MapGet("/routing/status", () => Results.Ok(new { method = "straight-line", graphVersion = 0, note = "Sea routing graph (spec 10) not built yet; distances are straight lines." })).WithTags("Routing");
 
         // --- admin: OSM import (Overpass, small areas; spec 10.3) and merge
         api.MapPost("/admin/harbours/import-osm", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, CancellationToken ct) =>

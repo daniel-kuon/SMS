@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Sms.Domain;
 using Sms.Infrastructure;
+using Sms.Infrastructure.Routing;
 using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
@@ -210,7 +211,7 @@ public static class TripEndpoints
             return Results.Ok(await LegDtos(trip, db, ct));
         });
 
-        g.MapPut("/{id:guid}/legs", async (Guid id, List<LegUpsert> legs, SmsDbContext db, Access access, CancellationToken ct) =>
+        g.MapPut("/{id:guid}/legs", async (Guid id, List<LegUpsert> legs, SmsDbContext db, Access access, SeaRouter router, CancellationToken ct) =>
         {
             if (!await access.IsTripSkipperAsync(id, ct)) return Results.Forbid();
             var trip = await db.Trips.Include(t => t.Ship).Include(t => t.PlannedLegs).FirstOrDefaultAsync(t => t.Id == id, ct);
@@ -219,8 +220,10 @@ public static class TripEndpoints
             var order = 0;
             foreach (var l in legs)
             {
-                var meters = await db.Harbours.Where(h => h.Id == l.FromHarbourId).Select(h => h.Location.Distance(db.Harbours.First(x => x.Id == l.ToHarbourId).Location)).FirstOrDefaultAsync(ct);
-                trip.PlannedLegs.Add(new PlannedLeg { TripId = id, Order = order++, FromHarbourId = l.FromHarbourId, ToHarbourId = l.ToHarbourId, PlannedDate = l.PlannedDate, DistanceNm = Math.Round((decimal)meters / 1852m, 1) });
+                var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct);
+                var meters = route is null ? await db.Harbours.Where(h => h.Id == l.FromHarbourId).Select(h => h.Location.Distance(db.Harbours.First(x => x.Id == l.ToHarbourId).Location)).FirstOrDefaultAsync(ct) : 0;
+                trip.PlannedLegs.Add(new PlannedLeg { TripId = id, Order = order++, FromHarbourId = l.FromHarbourId, ToHarbourId = l.ToHarbourId, PlannedDate = l.PlannedDate,
+                    DistanceNm = route?.DistanceNm ?? Math.Round((decimal)meters / 1852m, 1), RouteGeometry = route?.Geometry });
             }
             await db.SaveChangesAsync(ct);
             return Results.Ok(await LegDtos(trip, db, ct));
@@ -247,8 +250,11 @@ public static class TripEndpoints
             var legs = entries.Select(l => new
             {
                 l.Id, Day = DayIn(l.DepartedAt, trip.TimeZone), From = l.StartHarbour.Name, To = l.EndHarbour.Name,
-                Coordinates = new[] { new[] { l.StartHarbour.Location.X, l.StartHarbour.Location.Y }, new[] { l.EndHarbour.Location.X, l.EndHarbour.Location.Y } },
-                DistanceNm = l.SailedDistanceNm ?? ((l.LogEnd ?? 0) - (l.LogStart ?? 0)), Source = "straight-line",
+                Coordinates = l.CalculatedRoute is not null
+                    ? l.CalculatedRoute.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray()
+                    : [[l.StartHarbour.Location.X, l.StartHarbour.Location.Y], [l.EndHarbour.Location.X, l.EndHarbour.Location.Y]],
+                DistanceNm = l.SailedDistanceNm ?? ((l.LogEnd ?? 0) - (l.LogStart ?? 0)), CalculatedDistanceNm = l.CalculatedDistanceNm,
+                Source = l.CalculatedRoute is not null ? "calculated" : "straight-line",
             }).ToList();
             var photos = (await db.Media.AsNoTracking().Where(m => m.TripId == id && m.Location != null && m.Kind == MediaKind.Photo).Where(viewer.Media(trip, trip.Ship))
                 .Select(m => new { m.Id, m.Location, m.Caption, m.Day }).ToListAsync(ct))

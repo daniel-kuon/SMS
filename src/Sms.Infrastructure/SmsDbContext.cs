@@ -32,6 +32,8 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
     public DbSet<HarbourWifi> HarbourWifis => Set<HarbourWifi>();
     public DbSet<HarbourReview> HarbourReviews => Set<HarbourReview>();
     public DbSet<ContentPage> ContentPages => Set<ContentPage>();
+    public DbSet<RoutingCorrection> RoutingCorrections => Set<RoutingCorrection>();
+    public DbSet<RouteCache> RouteCaches => Set<RouteCache>();
 
     protected override void ConfigureConventions(ModelConfigurationBuilder b)
     {
@@ -50,6 +52,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
         base.OnModelCreating(m);
         m.HasPostgresExtension("postgis");
         m.HasPostgresExtension("pg_trgm");
+        m.HasPostgresExtension("pgrouting");
 
         m.Entity<UserProfile>(e =>
         {
@@ -158,6 +161,12 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
         {
             e.HasIndex(t => t.TripId);
             e.HasIndex(t => t.ShipId);
+        });
+        m.Entity<RoutingCorrection>(e => e.Property(c => c.Geometry).HasColumnType("geometry(Geometry,4326)"));
+        m.Entity<RouteCache>(e =>
+        {
+            e.HasKey(r => new { r.FromHarbourId, r.ToHarbourId, r.GraphVersion });
+            e.Property(r => r.Geometry).HasColumnType("geometry(LineString,4326)");
         });
         m.Entity<ContentPage>(e =>
         {

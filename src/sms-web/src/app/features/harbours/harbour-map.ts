@@ -47,7 +47,7 @@ const Legacy = { lat: 54.40774166820069, lng: 10.523529052734373, zoom: 9 };
                 <ng-container matColumnDef="etaHours"><th mat-header-cell *matHeaderCellDef>{{ 'harbour.eta' | translate }}</th><td mat-cell *matCellDef="let p">{{ p.etaHours }} h</td></ng-container>
                 <ng-container matColumnDef="route"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let p"><button mat-button (click)="pinRoute(p)">{{ 'harbour.showRoute' | translate }}</button></td></ng-container>
                 <tr mat-header-row *matHeaderRowDef="['name','distanceNm','etaHours','route']"></tr>
-                <tr mat-row *matRowDef="let p; columns: ['name','distanceNm','etaHours','route']" (mouseenter)="showRoute(p)" (mouseleave)="hideRoute()"></tr>
+                <tr mat-row *matRowDef="let p; columns: ['name','distanceNm','etaHours','route']" (mouseenter)="hovered = p.harbourId; showRoute(p)" (mouseleave)="hovered = null; hideRoute()"></tr>
               </table>
             </mat-tab>
             <mat-tab [label]="'harbour.wifi' | translate">
@@ -140,25 +140,36 @@ export class HarbourMapPage {
 
   private hoverHarbour(id: string): void {
     const p = this.nearby().find(n => n.harbourId === id);
-    if (p) this.showRoute(p);
+    if (p) { this.hovered = id; this.showRoute(p); }
   }
 
   /** Legacy behaviour (05 §5.2): hover draws the route with a "<n> sm" label and fits the map if needed. */
   showRoute(p: NearbyPort): void {
     const h = this.harbour();
     if (!h || this.pinned) return;
+    this.draw([[h.lat, h.lng], [p.lat, p.lng]], p.distanceNm, p.method === 'straight-line');
+    if (p.method !== 'straight-line') {
+      const params = h.id ? { fromHarbour: h.id, toHarbour: p.harbourId } : { from: `${h.lat},${h.lng}`, to: `${p.lat},${p.lng}` };
+      this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] }; method: string }>('/api/routing/route', params).subscribe(r => {
+        if (this.route && this.hovered === p.harbourId) this.draw(r.geometry.coordinates.map(c => [c[1], c[0]] as [number, number]), r.distanceNm, r.method === 'straight-line');
+      });
+    }
+  }
+  hovered: string | null = null;
+  private draw(latLngs: [number, number][], nm: number, dashed: boolean): void {
     this.route?.remove();
-    this.route = L.polyline([[h.lat, h.lng], [p.lat, p.lng]], { color: '#1e88e5', weight: 4, dashArray: '8 6' })
-      .bindTooltip(textNode(`${p.distanceNm} sm`), { permanent: true, direction: 'center', className: 'harbour-label' }).addTo(this.map);
+    this.route = L.polyline(latLngs, { color: '#1e88e5', weight: 4, dashArray: dashed ? '8 6' : undefined })
+      .bindTooltip(textNode(`${nm} sm`), { permanent: true, direction: 'center', className: 'harbour-label' }).addTo(this.map);
     const bounds = this.route.getBounds();
     if (!this.map.getBounds().contains(bounds)) { this.prevBounds ??= this.map.getBounds(); this.map.fitBounds(bounds.pad(0.3)); }
   }
   hideRoute(force = false): void {
     if (this.pinned && !force) return;
+    this.hovered = null;
     this.route?.remove(); this.route = undefined;
     if (this.prevBounds) { const b = this.prevBounds; this.prevBounds = undefined; setTimeout(() => this.map.fitBounds(b), 100); }
   }
-  pinRoute(p: NearbyPort): void { this.pinned = false; this.showRoute(p); this.pinned = true; this.prevBounds = undefined; }
+  pinRoute(p: NearbyPort): void { this.pinned = false; this.hovered = p.harbourId; this.showRoute(p); this.pinned = true; this.prevBounds = undefined; }
 
   private contextMenu(e: L.LeafletMouseEvent): void {
     const items: [string, () => void][] = [['harbour.nearbyHere', () => this.nearbyFrom(e.latlng)]];

@@ -22,6 +22,7 @@ namespace Sms.Infrastructure.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "pg_trgm");
+            NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "pgrouting");
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "postgis");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
@@ -958,6 +959,80 @@ namespace Sms.Infrastructure.Migrations
                     b.HasIndex("TripId", "Day");
 
                     b.ToTable("Posts");
+                });
+
+            modelBuilder.Entity("Sms.Domain.RouteCache", b =>
+                {
+                    b.Property<Guid>("FromHarbourId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ToHarbourId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("GraphVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal>("DistanceNm")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<LineString>("Geometry")
+                        .IsRequired()
+                        .HasColumnType("geometry(LineString,4326)");
+
+                    b.HasKey("FromHarbourId", "ToHarbourId", "GraphVersion");
+
+                    b.ToTable("RouteCaches");
+                });
+
+            modelBuilder.Entity("Sms.Domain.RoutingCorrection", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Active")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedById")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Geometry>("Geometry")
+                        .IsRequired()
+                        .HasColumnType("geometry(Geometry,4326)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedById")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("RoutingCorrections");
                 });
 
             modelBuilder.Entity("Sms.Domain.Settlement", b =>

@@ -17,6 +17,8 @@ public enum LocationSource { Manual, Exif, Device, Track, Harbour }
 public enum HarbourSource { Osm, User, Legacy }
 public enum TaskScope { Trip, Ship }
 public enum ProfileVisibility { Public, Registered }
+public enum CorrectionKind { Block, Passage }
+public enum CorrectionSource { Manual, Derived }
 
 /// <summary>16 compass points (spec 08).</summary>
 public enum WindDirection { N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW }

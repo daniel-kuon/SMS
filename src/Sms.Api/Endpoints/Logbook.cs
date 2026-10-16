@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Sms.Domain;
 using Sms.Infrastructure;
+using Sms.Infrastructure.Routing;
 using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
@@ -62,7 +63,7 @@ public static class LogbookEndpoints
             return Results.Ok(new LogbookDefaults(last?.EndHarbourId, last?.EndHarbour.Name, last?.EngineHoursEnd, last?.LogEnd, crew));
         }).RequireAuthorization();
 
-        ships.MapPost("", async (Guid shipId, LogbookEntryUpsert req, SmsDbContext db, CurrentUser current, Access access, HtmlSanitizerService html, CancellationToken ct) =>
+        ships.MapPost("", async (Guid shipId, LogbookEntryUpsert req, SmsDbContext db, CurrentUser current, Access access, HtmlSanitizerService html, SeaRouter router, CancellationToken ct) =>
         {
             if (req.TripId is { } t)
             {
@@ -73,6 +74,7 @@ public static class LogbookEndpoints
             if (Validate(req) is { } problem) return problem;
             var entry = new LogbookEntry { ShipId = shipId, AuthorId = current.RequiredId, CreatedById = current.Id };
             Apply(entry, req, html);
+            await CalculateRouteAsync(entry, router, ct);
             db.LogbookEntries.Add(entry);
             await db.SaveChangesAsync(ct);
             return Results.Created($"/api/logbook/{entry.Id}", new { entry.Id });
@@ -94,13 +96,14 @@ public static class LogbookEndpoints
             return Results.Ok(new { entry = dto, days });
         });
 
-        g.MapPut("/{id:guid}", async (Guid id, LogbookEntryUpsert req, SmsDbContext db, CurrentUser current, Access access, HtmlSanitizerService html, CancellationToken ct) =>
+        g.MapPut("/{id:guid}", async (Guid id, LogbookEntryUpsert req, SmsDbContext db, CurrentUser current, Access access, HtmlSanitizerService html, SeaRouter router, CancellationToken ct) =>
         {
             var e = await db.LogbookEntries.Include(l => l.Crew).FirstOrDefaultAsync(l => l.Id == id, ct);
             if (e is null) return Results.NotFound();
             if (!await CanEditAsync(e, current, access, ct)) return Results.Forbid();
             if (Validate(req) is { } problem) return problem;
             Apply(e, req with { TripId = e.TripId }, html);
+            await CalculateRouteAsync(e, router, ct);
             e.UpdatedById = current.Id;
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
@@ -115,6 +118,17 @@ public static class LogbookEndpoints
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).RequireAuthorization();
+    }
+
+    /// <summary>Spec 12 §12.1 A: cache the sea route between start and end harbour on the entry (null while no graph exists).</summary>
+    private static async Task CalculateRouteAsync(LogbookEntry e, SeaRouter router, CancellationToken ct)
+    {
+        try
+        {
+            var route = e.StartHarbourId == e.EndHarbourId ? null : await router.RouteAsync(e.StartHarbourId, e.EndHarbourId, ct);
+            e.CalculatedRoute = route?.Geometry; e.CalculatedDistanceNm = route?.DistanceNm;
+        }
+        catch (Exception) { e.CalculatedRoute = null; e.CalculatedDistanceNm = null; }
     }
 
     internal static async Task<Dictionary<Guid, string>> CrewNames(SmsDbContext db, Guid tripId, CancellationToken ct) => await CrewNames(db, [tripId], ct);

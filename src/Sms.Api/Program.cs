@@ -5,6 +5,7 @@ using Scalar.AspNetCore;
 using Sms.Api;
 using Sms.Api.Endpoints;
 using Sms.Infrastructure;
+using Sms.Infrastructure.Routing;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -60,6 +61,9 @@ builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<Access>();
 builder.Services.AddSingleton<FeedTokens>();
 builder.Services.AddHttpClient("overpass");
+builder.Services.AddHttpClient("routing");
+builder.Services.AddSingleton<RoutingGraphBuilder>();
+builder.Services.AddScoped<SeaRouter>();
 builder.Services.AddHttpClient<EcbRates>();
 builder.Services.AddHostedService<EcbRateJob>();
 builder.Services.ConfigureHttpJsonOptions(o =>
@@ -103,6 +107,7 @@ api.MapAuth();
 api.MapProfiles();
 api.MapShips();
 api.MapHarbours();
+api.MapRouting();
 api.MapTrips();
 api.MapLogbook();
 api.MapPosts();

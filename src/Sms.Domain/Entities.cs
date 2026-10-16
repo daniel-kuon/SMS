@@ -339,6 +339,27 @@ public class HarbourReview : Entity
     public DateOnly? VisitedOn { get; set; }
 }
 
+/// <summary>Manual routing fixes (spec 10): blocked areas (polygon) or passages (line) applied at graph build.</summary>
+public class RoutingCorrection : Entity
+{
+    public CorrectionKind Kind { get; set; }
+    public CorrectionSource Source { get; set; } = CorrectionSource.Manual;
+    public Geometry Geometry { get; set; } = null!;
+    public string? Note { get; set; }
+    public bool Active { get; set; } = true;
+}
+
+/// <summary>Cache of computed harbour-to-harbour sea routes per graph version (spec 10 §10.2).</summary>
+public class RouteCache
+{
+    public Guid FromHarbourId { get; set; }
+    public Guid ToHarbourId { get; set; }
+    public int GraphVersion { get; set; }
+    public decimal DistanceNm { get; set; }
+    public LineString Geometry { get; set; } = null!;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 // ---------------------------------------------------------------- platform
 
 public class ContentPage : Entity
