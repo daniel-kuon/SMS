@@ -68,7 +68,7 @@ sms-web/src/app/
     trips/         trip page (timeline / logbook / photos / costs / tasks tabs), trip edit, crew & invitations, planner
     logbook/       entry edit dialog (legacy fields 04 §4.6), entry detail with day content
     posts/         post editor, post detail with comments/likes
-    costs/         expenses, balances, settlement (09 §9.4)
+    costs/         expenses, balances, settlement (09 §9.5)
     tracking/      trip overview map (12 §12.3), track import, tracking devices setup, AIS settings, privacy zones
     harbours/      harbour guide map, harbour detail panel, edit, WiFi, reviews, nearby ports
     admin/         content pages, moderation, harbour merge, routing corrections & rebuild
@@ -92,7 +92,7 @@ Main routes: `/` (public explore map + feed), `/feed`, `/ships/:id`,
 | Logbook | `GET /api/ships/{id}/logbook?trip&year&page&sort`, `GET /api/logbook/{id}` (incl. day content), `GET /api/ships/{id}/logbook/new-defaults?trip=`, `POST /api/ships/{id}/logbook`, `PUT/DELETE /api/logbook/{id}` |
 | Posts | `POST /api/trips/{id}/posts`, `GET/PUT/DELETE /api/posts/{id}` |
 | Media | `POST /api/trips/{id}/media` (multipart, multiple), `PUT/DELETE /api/media/{id}`, `GET /api/media/{id}/{variant}` (authorized) |
-| Costs | `09` §9.5 |
+| Costs | `09` §9.6 |
 | Harbours | `GET /api/harbours?bbox=&q=`, `GET/POST/PUT /api/harbours/{id}`, `GET /api/harbours/{id}/revisions`, WiFi `POST /api/harbours/{id}/wifis`, `PUT/DELETE /api/wifis/{id}`, reviews `GET/POST /api/harbours/{id}/reviews` |
 | Routing | `10` §10.4 |
 | Trip overview & tracking | `12` §12.7 (overview, track GeoJSON, map items, tracking devices, ingest endpoints, AIS config, privacy zones) |
@@ -132,7 +132,7 @@ distances as temporary fallback.
 loads only harbours inside the visible bbox.
 
 **Phase 4 – Trips and crew** (`07` C1, C2, C4 basic, C5)
-Trip CRUD, crew with roles, guest crew, invitations/accept/decline, trip page
+Trip CRUD, crew with roles and the "Logbuch schreiben" permission, guest crew, invitations/accept/decline, trip page
 header and crew list, iCal feeds.
 ✅ Invited-but-not-accepted users see no crew-only data; guest crew can be
 linked to a registered user later.
@@ -141,7 +141,8 @@ linked to a registered user later.
 Ship logbook list (server paging/sorting, legacy columns + column chooser),
 entry dialog with all legacy fields + new ones, defaults from previous entry
 of the ship and crew from the trip, entries without trip.
-✅ Defaults test; logbook list sorted by date desc by default.
+✅ Defaults test; logbook list sorted by date desc by default; only the skipper
+and crew with "Logbuch schreiben" can write; non-crew owners see public entries only.
 
 **Phase 6 – Posts, photos, timeline, visibility** (`07` E1–E3, `08` §8.3)
 Media upload pipeline (variants, EXIF day/location, EXIF stripping), photo
@@ -153,9 +154,10 @@ private/crew/public × anonymous/registered/crew/owner/author; public items of
 a crew-only trip are not visible publicly.
 
 **Phase 7 – Costs** (`07` F1–F4, `09`)
-Expenses with split modes and currencies, balances, suggested transfers,
+Expenses with split modes and currencies (ECB rate of the payment date, `09` §9.2), balances, suggested transfers,
 settlement report/confirm, lock, CSV/PDF export, cost tab UI.
-✅ Property-based tests of `09` §9.6; worked example of `09` §9.3 as a test.
+✅ Property-based tests of `09` §9.7; worked example of `09` §9.4 as a test;
+ECB rate import job + historical bootstrap.
 
 **Phase 8 – Sea routing** (`07` G4–G5, C3; `10`)
 Graph builder writing to PostgreSQL (`10` §10.2) for a small test region

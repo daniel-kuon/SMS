@@ -30,7 +30,7 @@ deletions can be reverted by moderators for 30 days.
 | Entity | Key fields | Notes |
 |--------|-----------|-------|
 | `Trip` | Id, ShipId, Name, Description, StartDate, EndDate (dates), TimeZone (IANA, default `Europe/Berlin`), PlannedStartHarbourId?, PlannedEndHarbourId?, SkipperId (CrewMember), Visibility (`Crew`/`Public`), Status (`Planned`/`Active`/`Completed`/`Cancelled`), Currency (ISO 4217), CostsLockedAt?, TrackVisibility, PublicPositionDelayMinutes (default 120) | |
-| `CrewMember` | Id, TripId, UserId? (null = guest), GuestName?, Role (`Skipper`/`CoSkipper`/`Crew`), Status (`Invited`/`Accepted`/`Declined`/`Left`), FromDate?, ToDate? | separate Id so guests can be referenced by logbook and costs; a guest can later be linked to a user (set UserId) |
+| `CrewMember` | Id, TripId, UserId? (null = guest), GuestName?, Role (`Skipper`/`Crew`), CanWriteLogbook (bool, granted by the skipper; always true for the skipper), Status (`Invited`/`Accepted`/`Declined`/`Left`), FromDate?, ToDate? | separate Id so guests can be referenced by logbook and costs; a guest can later be linked to a user (set UserId) |
 | `TripInvitation` | Id, TripId, Email?, Token, Role, ExpiresAt, Status | invite link / mail |
 | `PlannedLeg` | Id, TripId, Order, FromHarbourId, ToHarbourId, PlannedDate?, DistanceNm (cached), RouteGeometry (cached LineString) | trip planner (legacy Trip/Tack idea) |
 | `TaskItem` | Id, Scope (`Trip`/`Ship`), TripId?/ShipId?, ParentId?, Title, Content, DueDate?, AssigneeCrewMemberId? / AssigneeUserId?, Done | legacy `Job` |
@@ -55,8 +55,9 @@ may change it.
 ### Costs (details in `09`)
 | Entity | Key fields |
 |--------|-----------|
-| `Expense` | Id, TripId, PaidByCrewMemberId, Amount (decimal), Currency, ExchangeRate (to trip currency, decimal 18,8), AmountInTripCurrency (computed & stored, minor-unit rounded), Date, Category, Description, ReceiptMediaId?, SplitMode (`Equal`/`Weights`/`Exact`), CreatedById |
+| `Expense` | Id, TripId, PaidByCrewMemberId, Amount (decimal), Currency, PaidOn (date), ExchangeRate (to trip currency, decimal 18,8), RateDate (date of the rate actually used), RateSource (`Ecb`/`Manual`/`Same`), AmountInTripCurrency (computed & stored, minor-unit rounded), Category, Description, ReceiptMediaId?, SplitMode (`Equal`/`Weights`/`Exact`), CreatedById |
 | `ExpenseShare` | ExpenseId, CrewMemberId, Weight? / ExactAmount?, ComputedShare (trip currency) |
+| `ExchangeRate` | Date, Currency, PerEur (decimal 18,8; units of currency per 1 EUR), Source (`Ecb`/…) — PK (Date, Currency, Source); filled daily + historical bootstrap (`09` §9.2) |
 | `Settlement` | Id, TripId, FromCrewMemberId, ToCrewMemberId, Amount (trip currency), PaidAt, Status (`Reported`/`Confirmed`), Note |
 
 ### Harbours and routing (details in `10`)
@@ -135,7 +136,7 @@ Who may **view** an item with effective visibility:
 | Effective | Viewer allowed if … |
 |-----------|---------------------|
 | `Private` | viewer is the author (and platform admins for moderation) |
-| `Crew` | viewer is an **accepted** crew member of the trip (any role), or the author; for logbook entries and the cost summary also ship owners/skippers |
+| `Crew` | viewer is an **accepted** crew member of the trip (any role), or the author. Ship owners/skippers who are not crew of the trip are **not** included |
 | `Public` | anyone, including anonymous |
 
 Additional rules:
@@ -145,7 +146,13 @@ Additional rules:
   the whole trip (simpler; revisit if needed).
 - Comments/likes inherit the visibility of their target; you can only comment
   on what you can see.
-- Costs are never public: visible to accepted crew + ship owners.
+- Costs are never public: visible to accepted crew of the trip only.
+- Ship owners who are not crew of a trip see only its public items — also in
+  the ship logbook, on the trip map and in tracks. Their extra rights are
+  administrative (ship data, members, creating trips and assigning the
+  skipper, tracking/AIS configuration, privacy zones), not content access.
+- Logbook defaults (`07` D2) may read end harbour, engine hours and log of the
+  ship's previous entry regardless of visibility; nothing else is exposed.
 - Harbour WiFi passwords: registered users only.
 - Every list/query endpoint must apply these rules in the database query
   (central `IVisibilityFilter` / EF query extension) — add authorization tests
@@ -153,28 +160,35 @@ Additional rules:
 
 ## 8.4 Permission matrix
 
-| Action | Anonymous | Registered | Ship owner | Ship skipper | Trip skipper / co-skipper | Crew member | Author |
-|--------|-----------|-----------|-----------|--------------|---------------------------|-------------|--------|
-| View public content | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
-| Create ship | | ✔ | | | | | |
-| Edit ship, manage ship members | | | ✔ | | | | |
-| Create trip for ship | | | ✔ | ✔ | | | |
-| Edit trip, manage crew, lock costs | | | ✔ | | ✔ (skipper only for crew/lock) | | |
-| Write logbook entry | | | ✔ | ✔ | ✔ | | |
-| Edit/delete logbook entry | | | ✔ | | ✔ | | ✔ |
-| Write post / upload photo in trip | | | | | ✔ | ✔ | |
-| Edit/delete post or photo | | | | | delete only (moderation within trip) | | ✔ |
-| Add expense | | | | | ✔ | ✔ | |
-| Edit/delete expense | | | | | ✔ (until locked) | | ✔ (until locked) |
-| Report settlement payment | | | | | ✔ | ✔ (as payer) | |
-| Confirm settlement | | | | | | ✔ (as receiver) | |
-| Comment / like visible item | | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
-| Create/edit harbour, WiFi, review | | ✔ | | | | | |
-| Delete/merge harbour, routing corrections, content pages, moderation | admin only | | | | | | |
+Columns: **Owner\*** = ship owner who is *not* crew of the trip in question
+(an owner who is crew has the crew/skipper rights of their trip role);
+**Crew + LB** = crew member with the "Logbuch schreiben" permission.
+
+| Action | Anonymous | Registered | Owner\* | Ship skipper | Trip skipper | Crew + LB | Crew member | Author |
+|--------|-----------|-----------|---------|--------------|--------------|-----------|-------------|--------|
+| View public content | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| View crew-only content and costs of a trip | | | | | ✔ | ✔ | ✔ | own items |
+| Create ship | | ✔ | | | | | | |
+| Edit ship, manage ship members, tracking/AIS settings, privacy zones | | | ✔ | | | | | |
+| Create trip for ship (and assign trip skipper) | | | ✔ | ✔ | | | | |
+| Edit trip, manage crew, grant/revoke "Logbuch schreiben", lock costs | | | | | ✔ | | | |
+| Cancel/delete a trip | | | only if the trip has no content yet | | ✔ | | | |
+| Write logbook entry in trip | | | | | ✔ | ✔ | | |
+| Edit/delete logbook entry in trip | | | | | ✔ | ✔ | | ✔ |
+| Write logbook entry without trip | | | ✔ | ✔ | | | | |
+| Write post / upload photo in trip | | | | | ✔ | ✔ | ✔ | |
+| Edit/delete post or photo | | | | | delete only (moderation within trip) | | | ✔ |
+| Add expense | | | | | ✔ | ✔ | ✔ | |
+| Edit/delete expense | | | | | ✔ (until locked) | | | ✔ (until locked) |
+| Report settlement payment | | | | | ✔ (as payer) | ✔ (as payer) | ✔ (as payer) | |
+| Confirm settlement | | | | | ✔ (as receiver) | ✔ (as receiver) | ✔ (as receiver) | |
+| Comment / like visible item | | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Create/edit harbour, WiFi, review | | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Delete/merge harbour, routing corrections, content pages, moderation | platform admin only | | | | | | | |
 
 Implement with ASP.NET Core policy-based authorization + resource handlers
 (`IAuthorizationHandler<TRequirement, TResource>`), e.g. `CanEditTrip`,
-`CanPostInTrip`, `CanViewItem`.
+`CanWriteLogbook`, `CanPostInTrip`, `CanViewItem`.
 
 ## 8.5 Mapping from legacy model
 

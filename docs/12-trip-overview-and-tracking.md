@@ -28,7 +28,9 @@ phases `11`.
 
 ### B. GPS tracking (app or file)
 **Live upload from tracking apps** – one `TrackingDevice` per phone/boat
-computer, created by a ship member; each device has a secret token (shown
+computer, created either by a ship member (ship-wide device, e.g. boat
+computer) or by a crew member for one trip (trip-scoped, e.g. a guest's phone);
+each device has a secret token (shown
 once, stored hashed). Supported protocols (all over HTTPS):
 
 | Protocol | Typical apps | Endpoint |
@@ -89,7 +91,7 @@ priority: GpsLive / GpsFile  >  Ais  >  Calculated (from logbook entries)
 - Days without logbook entries but with GPS/AIS points (e.g. day trips not
   logged) are still shown; the UI may suggest creating a logbook entry
   (§12.3 stop detection).
-- Ship owners/trip skipper can override the source per segment
+- The trip skipper and crew with "Logbuch schreiben" can override the source per segment
   ("GPS-Track verwenden" / "Berechnete Route verwenden") and hide points
   (privacy, e.g. home address).
 
@@ -164,7 +166,10 @@ order (first that applies):
   120, options 0 / 60 / 120 / 360 / "nur nach Ende"): public viewers see the
   track and boat position only up to now − delay; crew sees live.
 - **Privacy zones**: ship owners can define circles (e.g. home address,
-  private moorings) where points are hidden from everyone except ship members.
+  private moorings) where points are hidden from everyone except the crew of
+  the trip (and ship members for unassigned points).
+- Ship owners who are not crew of a trip see its track only as far as it is
+  public (same rules as the public, incl. the delay).
 - Photo/post location precision for public viewers can be reduced
   ("ungefähr", rounded to ~1 km) per user setting.
 - Track points are personal data of the crew: included in data export, deleted

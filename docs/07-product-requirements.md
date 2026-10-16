@@ -28,10 +28,10 @@ are.
 |------|-------|-------------|
 | Anonymous visitor | platform | sees public content only (public ships, trips, posts, photos, logbook entries, harbour guide) |
 | Registered user | platform | has a profile; can follow, comment, like; can create ships; can edit the harbour guide |
-| Ship owner | ship | created the ship or was made owner; manages ship data and ship members; full rights on everything of the ship |
-| Ship skipper | ship | may create trips for the ship and write the ship's logbook (granted by an owner) |
-| Trip skipper | trip | the person leading a trip (normally its creator); manages crew, logbook entries and settings of the trip |
-| Crew member | trip | accepted participant of a trip; can post, upload photos, add costs, see crew-only content |
+| Ship owner | ship | created the ship or was made owner; manages ship data, ship members, tracking/AIS settings; creates trips and assigns their skipper. **Inside trips they are not crew of, owners see public items only** (no crew-only content, no costs) |
+| Ship skipper | ship | may create trips for the ship (and becomes their trip skipper) and write logbook entries outside trips (granted by an owner) |
+| Trip skipper | trip | the person leading a trip; manages crew, settings and the trip's logbook; writes logbook entries and can grant crew members permission to write them |
+| Crew member | trip | accepted participant of a trip; can post, upload photos, add costs, see crew-only content; writes logbook entries only with the skipper's permission ("Logbuch schreiben") |
 | Guest crew | trip | crew member **without an account** (name only), managed by the skipper; appears in crew lists, logbook and cost splitting; can be linked to an account later |
 | Platform admin | platform | moderation, content pages (Impressum, Datenschutz, help), harbour data import, user management |
 
@@ -76,9 +76,11 @@ exist in the old app (see the referenced doc).
   visibility (crew / public), currency for costs (default EUR), status
   (Geplant, Aktiv, Abgeschlossen, Abgesagt).
 - **C2 Crew.** Skipper invites users (e-mail / search / invite link) or adds
-  guest crew by name. Invitees accept or decline. Crew roles: Skipper,
-  Co-Skipper (may also write logbook entries), Crew. A member may join for
-  only part of the trip (from/to date).
+  guest crew by name. Invitees accept or decline. Roles: Skipper, Crew.
+  The skipper can grant individual crew members the permission
+  **"Logbuch schreiben"** (write and edit logbook entries of this trip) and
+  revoke it at any time. A member may join for only part of the trip (from/to
+  date).
   AC: an invited but not accepted user sees nothing crew-only.
 - **C3 Trip planning** (legacy `05` §5.6, unfinished there). Skipper plans legs
   as an ordered list of harbours; distances and ETA (at ship cruising speed)
@@ -99,14 +101,22 @@ exist in the old app (see the referenced doc).
   wind direction, crew (default = trip crew aboard that day), notes. New:
   weather (free text), sea state, sailed distance (from log or computed),
   sails/reef notes (free text). The leg's route comes from the ship track
-  or is calculated (section I). Written by trip
-  skipper/co-skippers or ship skippers/owners.
+  or is calculated (section I). Written by the **trip skipper** or by crew
+  members the skipper has given the "Logbuch schreiben" permission.
+  AC: crew without the permission and ship owners who are not crew cannot
+  create or edit entries of the trip.
 - **D2 Defaults** (legacy `05` §5.4): start harbour, engine hours and log are
-  taken from the ship's previous entry; crew from the trip.
+  taken from the ship's previous entry; crew from the trip. (These three
+  values are taken even if the previous entry belongs to another trip the
+  writer cannot see — they are needed for continuity; nothing else of that
+  entry is exposed.)
 - **D3 Visibility.** Each entry is crew or public (set by its author; private
   allowed for drafts).
 - **D4 Entries without trip.** Allowed (e.g. delivery trips, legacy data);
-  they appear only in the ship logbook.
+  written by ship owners/ship skippers; they appear only in the ship logbook.
+- **D5 Ship logbook view.** Shows each viewer only the entries they may see:
+  public entries for everyone (including ship owners), plus crew entries of
+  trips the viewer was crew on, plus entries without trip for ship members.
 
 ### E. Posts, photos and the day timeline (social core)
 - **E1 Blog post.** Any crew member can write a post during or after the trip:
@@ -153,12 +163,17 @@ exist in the old app (see the referenced doc).
   viewers; suggestions for logbook entries from detected harbour stops.
 
 ### F. Costs (see `09`)
-- **F1 Add expense.** Any crew member: amount, currency, date, category
+- **F1 Add expense.** Any crew member: amount, **currency (any ISO 4217
+  currency)**, payment date, category
   (Hafengeld, Diesel, Proviant, Restaurant, Charter, Sonstiges, …),
   description, paid by (default me; skipper may enter for others), split
   between (default all crew aboard that day, equal shares; option weights or
-  exact amounts), optional receipt photo.
-- **F2 Balances.** Every crew member sees the balance of everybody (paid,
+  exact amounts), optional receipt photo. Foreign-currency amounts are
+  converted into the trip currency with the **exchange rate of the payment
+  date** (ECB reference rate, `09` §9.2); the rate is shown and can be
+  overridden (e.g. with the card statement rate).
+- **F2 Balances.** Every crew member (only crew — costs are never visible to
+  non-crew ship owners or the public) sees the balance of everybody (paid,
   share, net) and a **suggested list of transfers** to become even.
 - **F3 Settle up.** Mark a transfer as paid; receiver confirms. Skipper can
   close the cost account ("Abrechnung abschließen"), which locks it.
@@ -215,13 +230,13 @@ exist in the old app (see the referenced doc).
 |-------|----------|
 | Database | PostgreSQL + PostGIS (+ pgRouting for routing) |
 | Routing coverage | Europe, sea areas only at start; canals/rivers later via OpenSeaMap buoys and OSM waterways (`10` §10.5) |
+| Logbook writing | Trip skipper, plus crew members the skipper grants "Logbuch schreiben"; entries outside trips by ship owners/skippers |
+| Currencies | Any currency per expense; converted to the trip currency with the exchange rate of the payment date (ECB), overridable |
+| Ship owners' visibility | Owners who are not crew of a trip see only its public items (no crew-only content, no costs) |
 
 ## 7.6 Open questions (defaults assumed in these docs)
 | # | Question | Default assumed |
 |---|----------|-----------------|
-| 1 | Do ship owners who are not on a trip see that trip's crew-only content? | Yes for logbook entries and costs summary; **no** for crew-only posts/photos |
-| 2 | Can a public post exist inside a crew-only trip? | No — effective visibility = the most restrictive of item, trip and ship (`08` §8.3) |
-| 3 | Who may write logbook entries? | Trip skipper, co-skippers, ship skippers/owners |
-| 4 | Multi-currency costs? | Yes; exchange rate entered per expense (prefilled from an ECB rate feed later) |
-| 5 | Are harbour edits moderated? | No pre-moderation; history + revert + report |
-| 6 | Monetisation / limits (storage quotas)? | Not in scope; configurable per-user storage quota |
+| 1 | Can a public post exist inside a crew-only trip? | No — effective visibility = the most restrictive of item, trip and ship (`08` §8.3) |
+| 2 | Are harbour edits moderated? | No pre-moderation; history + revert + report |
+| 3 | Monetisation / limits (storage quotas)? | Not in scope; configurable per-user storage quota |

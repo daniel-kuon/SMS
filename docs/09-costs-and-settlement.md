@@ -6,9 +6,13 @@ everybody even. Entities: `Expense`, `ExpenseShare`, `Settlement` (`08` §8.1).
 
 ## 9.1 Rules
 
-- **Trip currency** (`Trip.Currency`, default EUR). Expenses may be in another
-  currency; the user enters (or accepts a prefilled) exchange rate. The amount
-  is converted once when saved and stored as `AmountInTripCurrency`.
+- **Trip currency** (`Trip.Currency`, default EUR). Expenses may be in **any
+  currency**; they are converted into the trip currency with the exchange rate
+  **of the payment date** (`Expense.PaidOn`), see §9.2. The converted amount is
+  stored as `AmountInTripCurrency` together with the rate, the rate date and
+  its source, so later rate updates never change existing expenses.
+- **Visibility**: costs are visible to accepted crew of the trip only (not to
+  ship owners who are not crew, never public).
 - **Participants** are `CrewMember`s (including guest crew). Default split =
   all accepted crew aboard on the expense date (respecting `FromDate`/`ToDate`).
 - **Split modes**
@@ -25,7 +29,35 @@ everybody even. Entities: `Expense`, `ExpenseShare`, `Settlement` (`08` §8.1).
 - **Audit**: keep who created/changed each expense; deleted expenses are
   soft-deleted and listed as "gelöscht" in the history.
 
-## 9.2 Balance calculation
+## 9.2 Currency conversion (rate of the payment date)
+
+- **Source**: ECB euro foreign exchange reference rates (published on TARGET
+  working days around 16:00 CET, ~30 currencies, EUR base). A daily job stores
+  them in `ExchangeRate`; a one-off bootstrap loads the full history (ECB
+  publishes a historical file / SDMX data API — verify current URLs).
+- **Rate for a date**: use the rate published for `PaidOn`; if none exists
+  (weekend, holiday, today before publication) use the **latest earlier**
+  published rate and store that date as `RateDate`.
+- **Cross rates** (neither side EUR): `rate(from→to) = PerEur(to) / PerEur(from)`
+  using the same `RateDate`. EUR→X = `PerEur(X)`, X→EUR = `1 / PerEur(X)`.
+- **Conversion**: `AmountInTripCurrency = round(Amount × rate, minor units of
+  trip currency)` using half-away-from-zero rounding (not banker's rounding).
+  Respect currency minor units (ISO 4217: e.g. JPY 0, EUR 2).
+- **Same currency**: rate 1, `RateSource = Same`.
+- **Unsupported currency** (not in the ECB list, e.g. some non-EU currencies):
+  the user must enter the rate manually (`RateSource = Manual`); a second rate
+  provider can be added later behind `IExchangeRateProvider`.
+- **Manual override**: the user may replace the suggested rate (e.g. with the
+  rate from the card statement); the dialog shows the ECB rate for comparison.
+- **Changing `PaidOn` or currency** re-fetches the rate unless it was manual
+  (then ask "Kurs neu berechnen?").
+- **Changing the trip currency** recomputes all `AmountInTripCurrency` values
+  with each expense's own `PaidOn` rate (not allowed after the account is locked).
+- Example: 1 000 SEK paid on Sat 2026-07-11, trip currency EUR → no ECB rate on
+  Saturday → use Friday 2026-07-10 rate, e.g. 11.25 SEK/EUR →
+  88.89 EUR (`RateDate` = 2026-07-10).
+
+## 9.3 Balance calculation
 
 For each crew member *i* (all amounts in trip currency):
 
@@ -42,7 +74,7 @@ balance_i   = paid_i − share_i + sent_i − received_i
 decide whether they already count (default: count only `Confirmed`, show
 pending separately).
 
-## 9.3 Suggested transfers ("Wer zahlt wem?")
+## 9.4 Suggested transfers ("Wer zahlt wem?")
 
 Greedy algorithm (at most *n − 1* transfers, usually optimal enough; finding
 the true minimum number of transfers is NP-hard):
@@ -79,7 +111,7 @@ Suggested transfers: Anna → Ben 23.00, Anna → Carla 8.00.
 Rounding example: 10.00 split equally by 3 → 3.34, 3.33, 3.33 (the extra cent
 goes to the member with the lowest id among equal remainders).
 
-## 9.4 UI ("Kosten" tab of a trip, crew only)
+## 9.5 UI ("Kosten" tab of a trip, crew only)
 
 1. Summary cards: total trip costs, my paid, my share, my balance
    ("Du bekommst 23,00 €" / "Du schuldest 31,00 €").
@@ -87,12 +119,14 @@ goes to the member with the lowest id among equal remainders).
 3. "Ausgleich" list of suggested transfers with buttons "Als bezahlt
    markieren" (payer) and "Erhalt bestätigen" (receiver).
 4. Expense list (filter by category, member, day) with receipt thumbnails;
-   "Neue Ausgabe" dialog: Betrag, Währung (+ Kurs), Datum, Kategorie,
+   "Neue Ausgabe" dialog: Betrag, Währung, Bezahlt am (date), Kurs (prefilled
+   with the ECB rate of that date, shown as "1 EUR = 11,25 SEK (EZB, 10.07.2026)",
+   editable), converted amount preview, Kategorie,
    Beschreibung, Bezahlt von, Aufteilen auf (checkbox list + mode), Beleg (photo).
 5. Statistics: costs per category, per day, per person (simple charts).
 6. Export CSV / PDF.
 
-## 9.5 API (suggested)
+## 9.6 API (suggested)
 
 | Method & route | Purpose |
 |----------------|---------|
@@ -103,11 +137,16 @@ goes to the member with the lowest id among equal remainders).
 | `POST /api/trips/{id}/settlements` | report a payment |
 | `POST /api/settlements/{id}/confirm` | receiver confirms |
 | `POST /api/trips/{id}/costs/lock` / `unlock` | skipper |
-| `GET /api/trips/{id}/costs/export?format=csv|pdf` | export |
+| `GET /api/trips/{id}/costs/export?format=csv|pdf` | export (includes original amount, currency, rate, rate date) |
+| `GET /api/exchange-rates?from=SEK&to=EUR&date=2026-07-11` | suggested rate `{ rate, rateDate, source }` for the dialog |
 
-## 9.6 Tests to write
+## 9.7 Tests to write
 - Rounding: shares always sum to the amount for random amounts/participant counts/weights.
 - Balances always sum to zero.
 - Greedy transfers: after applying them every balance is 0; ≤ n − 1 transfers.
-- Exact split validation; currency conversion rounding; lock prevents changes;
+- Currency: rate of the payment date; weekend/holiday falls back to the latest
+  earlier rate; cross rates via EUR; minor units (JPY); manual override kept
+  when the date changes only after confirmation; ECB updates never change
+  saved expenses.
+- Exact split validation; lock prevents changes;
   guest crew included; member leaving the trip keeps historic shares.
