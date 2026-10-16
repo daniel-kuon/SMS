@@ -3,12 +3,14 @@ import { inject, Injectable, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { catchError, firstValueFrom, Observable, throwError } from 'rxjs';
+import { tenantPreview } from './site';
 
 /** Adds the CSRF marker header the API requires on state-changing requests. */
 export const apiInterceptor: HttpInterceptorFn = (req, next) => {
   const snack = inject(MatSnackBar);
   const auth = inject(AuthService);
-  const withHeader = req.url.startsWith('/api') ? req.clone({ setHeaders: { 'X-Requested-With': 'XMLHttpRequest' } }) : req;
+  const preview = tenantPreview.get();
+  const withHeader = req.url.startsWith('/api') ? req.clone({ setHeaders: { 'X-Requested-With': 'XMLHttpRequest', ...(preview ? { 'X-Tenant-Host': preview } : {}) } }) : req;
   return next(withHeader).pipe(
     catchError((err: HttpErrorResponse) => {
       if (err.status === 401 && auth.me() !== null) auth.me.set(null);

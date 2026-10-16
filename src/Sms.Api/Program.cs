@@ -65,7 +65,7 @@ builder.Services.AddSingleton<MailSender>();
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<Access>();
 builder.Services.AddSingleton<FeedTokens>();
-builder.Services.AddHttpClient("overpass");
+builder.Services.AddHttpClient("overpass", c => c.DefaultRequestHeaders.UserAgent.ParseAdd("sailing-portal/0.1 (+https://github.com/daniel-kuon/SMS)"));
 builder.Services.AddHttpClient("routing");
 builder.Services.AddSingleton<RoutingGraphBuilder>();
 builder.Services.AddScoped<SeaRouter>();
@@ -110,10 +110,19 @@ if (app.Environment.IsDevelopment())
 
 var api = app.MapGroup("/api");
 api.MapGet("/ping", () => Results.Ok(new { ok = true, time = DateTimeOffset.UtcNow })).WithName("Ping");
+// Public client configuration (map style/tiles); only non-secret values belong here.
+api.MapGet("/config", (IConfiguration cfg) => Results.Ok(new
+{
+    mapStyleUrl = cfg["Map:StyleUrl"] ?? "https://tiles.openfreemap.org/styles/liberty",
+    seamarkTilesUrl = cfg["Map:SeamarkTilesUrl"] ?? "/tiles/seamark/{z}/{x}/{y}.mvt",
+    attribution = cfg["Map:Attribution"] ?? "© OpenStreetMap-Mitwirkende · OpenSeaMap · OpenFreeMap",
+})).WithName("Config");
 api.MapAuth();
 api.MapProfiles();
 api.MapShips();
 api.MapHarbours();
+api.MapSeamarks();
+api.MapCms();
 api.MapRouting();
 api.MapTracking();
 api.MapSocial();

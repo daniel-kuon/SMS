@@ -14,6 +14,7 @@ import { provideTranslateHttpLoader } from '@ngx-translate/http-loader';
 
 import { routes } from './app.routes';
 import { apiInterceptor, AuthService } from './core/api';
+import { SiteService } from './core/site';
 import { initTelemetry } from './core/telemetry';
 import { provideServiceWorker } from '@angular/service-worker';
 
@@ -39,6 +40,7 @@ export const appConfig: ApplicationConfig = {
     provideAppInitializer(async () => {
       const auth = inject(AuthService);
       const translate = inject(TranslateService);
+      await inject(SiteService).load();
       const me = await auth.load();
       const lang = me?.language ?? localStorage.getItem('lang') ?? 'de';
       translate.use(lang);

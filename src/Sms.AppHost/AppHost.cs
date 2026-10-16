@@ -24,8 +24,17 @@ var api = builder.AddProject<Projects.Sms_Api>("api")
     .WithHttpHealthCheck("/health")
     .WithExternalHttpEndpoints();
 
+// Vector tile server for the OpenSeaMap sea-mark overlay (reads the Seamarks table filled by the API).
+var tiles = builder.AddProject<Projects.Sms_Tiles>("tiles")
+    .WithReference(db).WaitFor(api)
+    .WithEnvironment("SIGNOZ_OTLP_ENDPOINT", signoz.OtlpGrpc)
+    .WithEnvironment("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=development")
+    .WithHttpHealthCheck("/health")
+    .WithExternalHttpEndpoints();
+
 var web = builder.AddViteApp("web", "../sms-web")
     .WithReference(api).WaitFor(api)
+    .WithReference(tiles)
     .WithEnvironment("OTLP_HTTP", signoz.OtlpHttp)
     .WithExternalHttpEndpoints()
     .WithUrlForEndpoint("http", u => u.DisplayText = "Sailing portal");

@@ -167,6 +167,100 @@ namespace Sms.Infrastructure.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("Sms.Domain.Cms.ShipDomain", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Host")
+                        .IsRequired()
+                        .HasMaxLength(253)
+                        .HasColumnType("character varying(253)");
+
+                    b.Property<bool>("IsPrimary")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid>("ShipId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Host")
+                        .IsUnique();
+
+                    b.HasIndex("ShipId");
+
+                    b.ToTable("ShipDomains");
+                });
+
+            modelBuilder.Entity("Sms.Domain.Cms.ShipPage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasMaxLength(200000)
+                        .HasColumnType("character varying(200000)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedById")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<int>("Order")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("ParentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Published")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid>("ShipId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("ShowInNav")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedById")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ShipId", "ParentId", "Slug")
+                        .IsUnique();
+
+                    b.ToTable("ShipPages");
+                });
+
             modelBuilder.Entity("Sms.Domain.ContentPage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -192,7 +286,16 @@ namespace Sms.Infrastructure.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
 
+                    b.Property<int>("Order")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("ParentId")
+                        .HasColumnType("uuid");
+
                     b.Property<bool>("ShowInFooter")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("ShowInNav")
                         .HasColumnType("boolean");
 
                     b.Property<string>("Slug")
@@ -1033,6 +1136,73 @@ namespace Sms.Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("RoutingCorrections");
+                });
+
+            modelBuilder.Entity("Sms.Domain.Seamark", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Category")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("Colour")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<DateTimeOffset>("ImportedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Light")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<Point>("Location")
+                        .IsRequired()
+                        .HasColumnType("geometry(Point,3857)");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<long>("OsmId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OsmType")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("Shape")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("TagsJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Location");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Location"), "gist");
+
+                    b.HasIndex("Type");
+
+                    b.HasIndex("OsmType", "OsmId")
+                        .IsUnique();
+
+                    b.ToTable("Seamarks");
                 });
 
             modelBuilder.Entity("Sms.Domain.Settlement", b =>
@@ -2124,6 +2294,24 @@ namespace Sms.Infrastructure.Migrations
                     b.HasOne("Sms.Infrastructure.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Sms.Domain.Cms.ShipDomain", b =>
+                {
+                    b.HasOne("Sms.Domain.Ship", null)
+                        .WithMany()
+                        .HasForeignKey("ShipId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Sms.Domain.Cms.ShipPage", b =>
+                {
+                    b.HasOne("Sms.Domain.Ship", null)
+                        .WithMany()
+                        .HasForeignKey("ShipId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

@@ -5,9 +5,11 @@ if (!api) {
   throw new Error('API_HTTP(S) is not set. Start the app through the Aspire AppHost (src/Sms.AppHost).');
 }
 const otlp = process.env.OTLP_HTTP;
+const tiles = process.env.TILES_HTTPS || process.env.TILES_HTTP;
 
 module.exports = {
   '/api': { target: api, secure: false, changeOrigin: true },
   '/health': { target: api, secure: false, changeOrigin: true },
+  ...(tiles ? { '/tiles': { target: tiles, secure: false, changeOrigin: true } } : {}),
   ...(otlp ? { '/otlp': { target: otlp, changeOrigin: true, pathRewrite: { '^/otlp': '' } } } : {}),
 };

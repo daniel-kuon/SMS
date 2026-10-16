@@ -1,7 +1,5 @@
 @use '@angular/material' as mat;
-@use 'leaflet/dist/leaflet.css';
-@use 'leaflet.markercluster/dist/MarkerCluster.css' as mc;
-@use 'leaflet.markercluster/dist/MarkerCluster.Default.css' as mc-default;
+@use 'maplibre-gl/dist/maplibre-gl.css';
 @use 'photoswipe/dist/photoswipe.css';
 
 html { @include mat.theme((color: (primary: mat.$azure-palette, tertiary: mat.$cyan-palette), typography: Roboto, density: 0)); }
@@ -31,6 +29,5 @@ html, body { height: 100%; margin: 0; font-family: Roboto, sans-serif; backgroun
 .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
 .photo-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: pointer; }
 .disclaimer { font-size: 11px; color: #777; }
-.leaflet-container { font: inherit; }
-.harbour-label { background: rgba(255,255,255,.85); border: none; box-shadow: none; font-size: 11px; padding: 1px 4px; }
+.maplibregl-popup-content { font: inherit; padding: 8px 10px; }
 .photo-marker { border-radius: 50%; border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,.4); object-fit: cover; }

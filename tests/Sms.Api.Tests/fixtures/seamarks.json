@@ -1,0 +1,13 @@
+{
+  "version": 0.6,
+  "generator": "fixture",
+  "elements": [
+    { "type": "node", "id": 1001, "lat": 54.3733, "lon": 10.1497, "tags": { "seamark:type": "light_minor", "seamark:name": "Kiel Holtenau Mole", "seamark:light:character": "Oc", "seamark:light:colour": "red", "seamark:light:period": "6" } },
+    { "type": "node", "id": 1002, "lat": 54.3900, "lon": 10.1800, "tags": { "seamark:type": "buoy_lateral", "seamark:buoy_lateral:category": "port", "seamark:buoy_lateral:colour": "red", "seamark:buoy_lateral:shape": "can", "seamark:name": "Kiel 1" } },
+    { "type": "node", "id": 1003, "lat": 54.3950, "lon": 10.1850, "tags": { "seamark:type": "buoy_lateral", "seamark:buoy_lateral:category": "starboard", "seamark:buoy_lateral:colour": "green", "seamark:buoy_lateral:shape": "conical", "seamark:name": "Kiel 2" } },
+    { "type": "node", "id": 1004, "lat": 54.4300, "lon": 10.2100, "tags": { "seamark:type": "buoy_cardinal", "seamark:buoy_cardinal:category": "north", "seamark:buoy_cardinal:colour": "black;yellow" } },
+    { "type": "node", "id": 1005, "lat": 54.4450, "lon": 10.1750, "tags": { "seamark:type": "light_major", "seamark:name": "Bülk", "seamark:light:character": "Fl", "seamark:light:colour": "white", "seamark:light:period": "6" } },
+    { "type": "way", "id": 2001, "center": { "lat": 54.3400, "lon": 10.1530 }, "tags": { "seamark:type": "harbour", "seamark:harbour:category": "marina", "name": "Düsternbrook" } },
+    { "type": "node", "id": 1006, "lat": 54.4100, "lon": 10.2200, "tags": { "name": "no seamark tag" } }
+  ]
+}

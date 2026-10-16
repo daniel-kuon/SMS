@@ -1,6 +1,7 @@
 import { inject } from '@angular/core';
 import { CanActivateFn, Router, Routes } from '@angular/router';
 import { AuthService } from './core/api';
+import { SiteService } from './core/site';
 
 const authGuard: CanActivateFn = (_, state) => {
   const auth = inject(AuthService);
@@ -8,8 +9,19 @@ const authGuard: CanActivateFn = (_, state) => {
   return auth.me() ? true : router.createUrlTree(['/auth/login'], { queryParams: { returnUrl: state.url } });
 };
 
+const shipMode = () => inject(SiteService).site().mode === 'ship';
+
 export const routes: Routes = [
+  // a ship domain shows the ship's website instead of the portal start page
+  { path: '', canMatch: [shipMode], loadComponent: () => import('./features/cms/ship-site').then(m => m.ShipSiteHome) },
+  { path: 'pages/:path', canMatch: [shipMode], loadComponent: () => import('./features/cms/ship-site').then(m => m.ShipSitePage) },
+  { path: 'pages/:path/:p2', canMatch: [shipMode], loadComponent: () => import('./features/cms/ship-site').then(m => m.ShipSitePage) },
+  { path: 'pages/:path/:p2/:p3', canMatch: [shipMode], loadComponent: () => import('./features/cms/ship-site').then(m => m.ShipSitePage) },
   { path: '', loadComponent: () => import('./features/harbours/harbour-map').then(m => m.HarbourMapPage), title: 'Hafenkarte' },
+  { path: 'ships/:shipId/site', loadComponent: () => import('./features/cms/ship-site').then(m => m.ShipSiteHome) },
+  { path: 'ships/:shipId/site/pages/:path', loadComponent: () => import('./features/cms/ship-site').then(m => m.ShipSitePage) },
+  { path: 'ships/:shipId/site/pages/:path/:p2', loadComponent: () => import('./features/cms/ship-site').then(m => m.ShipSitePage) },
+  { path: 'ships/:shipId/site/pages/:path/:p2/:p3', loadComponent: () => import('./features/cms/ship-site').then(m => m.ShipSitePage) },
   { path: 'harbours', redirectTo: '' },
   { path: 'harbours/:id', loadComponent: () => import('./features/harbours/harbour-map').then(m => m.HarbourMapPage) },
   { path: 'auth/login', loadComponent: () => import('./features/auth/auth-pages').then(m => m.LoginPage), title: 'Anmelden' },

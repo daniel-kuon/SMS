@@ -10,16 +10,23 @@ import { Api, AuthService } from './core/api';
 import { ContentPage } from './core/models';
 import { NotificationBell } from './features/social/social';
 import { OfflineQueue } from './core/offline';
+import { SiteService } from './core/site';
 
 @Component({
   selector: 'app-root',
   imports: [UpperCasePipe, RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatButtonModule, MatIconModule, MatMenuModule, TranslatePipe, NotificationBell],
   template: `
     <mat-toolbar color="primary" class="nav">
+      @if (siteService.shipSite; as s) {
+        <a routerLink="/" class="brand"><mat-icon>sailing</mat-icon><span>{{ s.ship.name }}</span></a>
+        @for (p of s.pages; track p.id) { <a mat-button [routerLink]="'/pages/' + p.path" routerLinkActive="active">{{ p.title }}</a> }
+        <a mat-button [routerLink]="['/ships', s.ship.id, 'logbook']" routerLinkActive="active"><mat-icon>menu_book</mat-icon> {{ 'ship.logbook' | translate }}</a>
+      } @else {
       <a routerLink="/" class="brand"><mat-icon>sailing</mat-icon><span>{{ 'app.title' | translate }}</span></a>
       <a mat-button routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }"><mat-icon>map</mat-icon> {{ 'nav.harbours' | translate }}</a>
       <a mat-button routerLink="/explore" routerLinkActive="active"><mat-icon>explore</mat-icon> {{ 'nav.explore' | translate }}</a>
-      @if (auth.me()) {
+      }
+      @if (auth.me() && !siteService.shipSite) {
         <a mat-button routerLink="/feed" routerLinkActive="active"><mat-icon>dynamic_feed</mat-icon> {{ 'nav.feed' | translate }}</a>
         <a mat-button routerLink="/ships" routerLinkActive="active"><mat-icon>directions_boat</mat-icon> {{ 'nav.ships' | translate }}</a>
         <a mat-button routerLink="/trips" routerLinkActive="active"><mat-icon>route</mat-icon> {{ 'nav.trips' | translate }}</a>
@@ -49,6 +56,7 @@ import { OfflineQueue } from './core/offline';
     <main class="content"><router-outlet /></main>
     <footer class="footer">
       @for (p of pages(); track p.slug) { <a [routerLink]="['/p', p.slug]">{{ p.title }}</a> }
+      @if (siteService.shipSite) { <a routerLink="/explore" class="muted">{{ 'site.poweredBy' | translate }}</a> }
       <span class="attribution">© OpenStreetMap-Mitwirkende · OpenSeaMap</span>
     </footer>
   `,
@@ -69,6 +77,7 @@ export class App {
   readonly auth = inject(AuthService);
   readonly translate = inject(TranslateService);
   readonly offline = inject(OfflineQueue);
+  readonly siteService = inject(SiteService);
   private api = inject(Api);
   readonly pages = signal<Pick<ContentPage, 'slug' | 'title'>[]>([]);
 
@@ -83,7 +92,7 @@ export class App {
   }
 
   private loadPages(): void {
-    this.api.get<Pick<ContentPage, 'slug' | 'title' | 'showInFooter'>[]>('/api/pages', { lang: this.translate.getCurrentLang() ?? 'de' })
+    this.api.get<(Pick<ContentPage, 'slug' | 'title' | 'showInFooter'> & { children: unknown[] })[]>('/api/pages', { lang: this.translate.getCurrentLang() ?? 'de' })
       .subscribe(p => this.pages.set(p.filter(x => x.showInFooter)));
   }
 }

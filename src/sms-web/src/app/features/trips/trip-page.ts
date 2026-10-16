@@ -8,11 +8,11 @@ import { MatListModule } from '@angular/material/list';
 import { MatDialog } from '@angular/material/dialog';
 import { MatCardModule } from '@angular/material/card';
 import { TranslatePipe } from '@ngx-translate/core';
-import * as L from 'leaflet';
-import { baseLayers, markerCluster } from '../../core/leaflet-setup';
+import type { GeoJSONSource, MapLayerMouseEvent } from 'maplibre-gl';
+import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Day, Leg, Media, Trip } from '../../core/models';
-import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, textNode, UploadZone } from '../../shared/shared';
+import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, UploadZone } from '../../shared/shared';
 import { CrewDialog, TripEditDialog } from './trip-dialogs';
 import { TaskList } from './task-list';
 import { EntryDialog, LogbookTable } from '../logbook/logbook-page';
@@ -129,7 +129,7 @@ export class TripPage {
   overview = signal<{ stats: { distanceNm: number; underwayHours: number; engineHours: number; harbours: number; nights: number; photos: number; posts: number; costsTotal: number | null }; legs: { id: string; day: string; from: string; to: string; coordinates: number[][]; distanceNm: number; source: string }[]; stops: { name: string; lat: number; lng: number; nights: number }[]; items: { type: string; id: string; lat: number; lng: number; thumbUrl: string | null; title: string | null }[]; attribution: string } | null>(null);
   tabIndex = signal(0);
   fmt = fmtDate; fmtTime = fmtDateTime;
-  private map?: L.Map; private legLayers: L.Polyline[] = [];
+  private map?: MlMap;
   color = (i: number) => DAY_COLORS[i % DAY_COLORS.length];
 
   constructor() { effect(() => { this.id(); this.reload(); }); effect(() => { const i = TABS.indexOf(this.tab() ?? 'overview'); this.tabIndex.set(i < 0 ? 0 : i); }); }
@@ -143,38 +143,55 @@ export class TripPage {
     this.api.get<NonNullable<ReturnType<TripPage['position']>>>(`/api/trips/${id}/position`).subscribe(p => this.position.set(p ?? null));
   }
 
-  private drawMap(): void {
+  private async drawMap(): Promise<void> {
     const el = this.mapEl()?.nativeElement; const o = this.overview();
     if (!el || !o) return;
     if (!this.map) {
-      this.map = L.map(el).setView([54.4, 10.5], 8);
-      baseLayers(this.map);
+      this.map = await createMap(el, { zoom: 8 });
+      const map = this.map;
+      map.addSource('legs', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({ id: 'legs-dashed', type: 'line', source: 'legs', filter: ['==', ['get', 'recorded'], false], paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['boolean', ['feature-state', 'hl'], false], 8, 4], 'line-dasharray': [2, 1.5], 'line-opacity': ['case', ['boolean', ['feature-state', 'dim'], false], 0.35, 1] } });
+      map.addLayer({ id: 'legs-solid', type: 'line', source: 'legs', filter: ['==', ['get', 'recorded'], true], paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['boolean', ['feature-state', 'hl'], false], 8, 4], 'line-opacity': ['case', ['boolean', ['feature-state', 'dim'], false], 0.35, 1] } });
+      map.addSource('stops', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({ id: 'stops', type: 'circle', source: 'stops', paint: { 'circle-color': '#1976d2', 'circle-radius': 6, 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
+      map.addLayer({ id: 'stop-labels', type: 'symbol', source: 'stops', layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-anchor': 'left', 'text-offset': [0.8, 0], 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#1b4d7a', 'text-halo-color': '#fff', 'text-halo-width': 1.5 } });
+      map.on('mouseenter', 'legs-solid', e => this.showLegTooltip(e)); map.on('mouseenter', 'legs-dashed', e => this.showLegTooltip(e));
+      map.on('mouseleave', 'legs-solid', () => this.legPopup?.remove()); map.on('mouseleave', 'legs-dashed', () => this.legPopup?.remove());
     }
     const map = this.map;
-    map.eachLayer(l => { if (!(l instanceof L.TileLayer)) map.removeLayer(l); });
-    // solid = recorded (GPS/AIS), dashed = calculated / straight line (spec 12 §12.3)
-    this.legLayers = o.legs.map((l, i) => L.polyline(l.coordinates.map(c => [c[1], c[0]] as [number, number]), { color: this.color(i), weight: 4, dashArray: l.source === 'GpsLive' || l.source === 'GpsFile' || l.source === 'Ais' || l.source === 'Mixed' ? undefined : '8 6' })
-      .bindTooltip(textNode(`${l.from ? l.from + ' → ' + l.to + ': ' : ''}${l.distanceNm} sm (${l.source})`)).addTo(map));
-    const pos = this.position();
-    if (pos) L.marker([pos.lat, pos.lng], { icon: L.divIcon({ html: '<span class="material-symbols-outlined" style="font-size:30px;color:#d32f2f">sailing</span>', iconSize: [30, 30], className: '' }) }).bindTooltip(textNode(`${fmtDateTime(pos.time)}`)).addTo(map);
-    for (const s of o.stops) L.marker([s.lat, s.lng]).bindTooltip(textNode(`${s.name} (${s.nights}×)`), { permanent: true, direction: 'right', className: 'harbour-label' }).addTo(map);
-    const cluster = markerCluster({ maxClusterRadius: 40 });
+    const recorded = (src: string) => src === 'GpsLive' || src === 'GpsFile' || src === 'Ais' || src === 'Mixed';
+    (map.getSource('legs') as GeoJSONSource).setData({ type: 'FeatureCollection', features: o.legs.map((l, i) => ({ type: 'Feature', id: i, properties: { color: this.color(i), recorded: recorded(l.source), label: `${l.from ? l.from + ' → ' + l.to + ': ' : ''}${l.distanceNm} sm (${l.source})` }, geometry: { type: 'LineString', coordinates: l.coordinates } })) });
+    (map.getSource('stops') as GeoJSONSource).setData({ type: 'FeatureCollection', features: o.stops.map(s => ({ type: 'Feature', properties: { label: `${s.name} (${s.nights}×)` }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } })) });
+    for (const m of this.markers) m.remove(); this.markers = [];
     for (const it of o.items) {
-      const img = document.createElement('img'); img.src = it.thumbUrl ?? ''; img.className = 'photo-marker'; img.width = 40; img.height = 40;
-      const icon = it.type === 'photo' && it.thumbUrl ? L.divIcon({ html: img, iconSize: [40, 40], className: '' })
-        : L.divIcon({ html: '<span class="material-symbols-outlined" style="font-size:28px;color:#1b4d7a">chat_bubble</span>', iconSize: [28, 28], className: '' });
-      const m = L.marker([it.lat, it.lng], { icon });
-      if (it.type === 'post') m.on('click', () => this.router.navigate(['/posts', it.id]));
-      else { const div = document.createElement('div'); const big = document.createElement('img'); big.src = it.thumbUrl ?? ''; big.style.maxWidth = '200px'; div.append(big, document.createElement('br'), document.createTextNode(it.title ?? '')); m.bindPopup(div); }
-      cluster.addLayer(m);
+      let el: HTMLElement;
+      if (it.type === 'photo' && it.thumbUrl) { const img = document.createElement('img'); img.src = it.thumbUrl; img.className = 'photo-marker'; img.width = 40; img.height = 40; el = img; }
+      else { el = document.createElement('span'); el.className = 'material-symbols-outlined'; el.style.cssText = 'font-size:28px;color:#1b4d7a;cursor:pointer'; el.textContent = 'chat_bubble'; }
+      const marker = new maplibregl.Marker({ element: el }).setLngLat([it.lng, it.lat]).addTo(map);
+      if (it.type === 'post') el.onclick = () => this.router.navigate(['/posts', it.id]);
+      else { const div = document.createElement('div'); const big = document.createElement('img'); big.src = it.thumbUrl ?? ''; big.style.maxWidth = '200px'; div.append(big, document.createElement('br'), document.createTextNode(it.title ?? '')); marker.setPopup(new maplibregl.Popup({ offset: 24 }).setDOMContent(div)); }
+      this.markers.push(marker);
     }
-    map.addLayer(cluster);
-    const all = [...o.legs.flatMap(l => l.coordinates.map(c => [c[1], c[0]] as [number, number])), ...o.items.map(i => [i.lat, i.lng] as [number, number])];
+    const pos = this.position();
+    if (pos) { const el = document.createElement('span'); el.className = 'material-symbols-outlined'; el.style.cssText = 'font-size:30px;color:#d32f2f'; el.textContent = 'sailing'; this.markers.push(new maplibregl.Marker({ element: el }).setLngLat([pos.lng, pos.lat]).setPopup(new maplibregl.Popup({ offset: 20 }).setDOMContent(textEl(fmtDateTime(pos.time)))).addTo(map)); }
+    const all = [...o.legs.flatMap(l => l.coordinates.map(c => [c[0], c[1]] as [number, number])), ...o.items.map(i => [i.lng, i.lat] as [number, number])];
     // the tab body may still be collapsed: let the container get its size before fitting the bounds
-    setTimeout(() => { map.invalidateSize(); if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.3), { maxZoom: 12 }); }, 150);
+    setTimeout(() => { map.resize(); if (all.length) map.fitBounds(bounds(all), { padding: 40, maxZoom: 12, duration: 0 }); }, 150);
+  }
+  private markers: maplibregl.Marker[] = [];
+  private legPopup?: maplibregl.Popup;
+  private showLegTooltip(e: MapLayerMouseEvent): void {
+    const label = e.features?.[0]?.properties?.['label'];
+    if (!label || !this.map) return;
+    this.legPopup?.remove();
+    this.legPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false }).setLngLat(e.lngLat).setDOMContent(textEl(label)).addTo(this.map);
   }
 
-  highlight(i: number): void { this.legLayers.forEach((l, j) => l.setStyle({ weight: j === i ? 8 : 4, opacity: i < 0 || j === i ? 1 : 0.4 })); if (i >= 0) this.map?.fitBounds(this.legLayers[i].getBounds().pad(0.5)); }
+  highlight(i: number): void {
+    const map = this.map; const o = this.overview(); if (!map || !o) return;
+    o.legs.forEach((_, j) => map.setFeatureState({ source: 'legs', id: j }, { hl: j === i, dim: i >= 0 && j !== i }));
+    if (i >= 0 && o.legs[i].coordinates.length) map.fitBounds(bounds(o.legs[i].coordinates.map(c => [c[0], c[1]] as [number, number])), { padding: 80, maxZoom: 13 });
+  }
   go(i: number): void { this.router.navigate(['/trips', this.id(), TABS[i]], { replaceUrl: true }); if (i === 0) setTimeout(() => this.drawMap(), 100); }
   totalNm(): number { return this.legs().reduce((s, l) => s + (l.distanceNm ?? 0), 0); }
 

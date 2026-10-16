@@ -342,6 +342,23 @@ public class HarbourReview : Entity
     public DateOnly? VisitedOn { get; set; }
 }
 
+/// <summary>OpenSeaMap sea mark (OSM seamark:* tags) rendered by the tile server; Location in EPSG:3857.</summary>
+public class Seamark
+{
+    public long Id { get; set; }
+    public string OsmType { get; set; } = "node";
+    public long OsmId { get; set; }
+    public string Type { get; set; } = "";
+    public string? Category { get; set; }
+    public string? Name { get; set; }
+    public string? Colour { get; set; }
+    public string? Shape { get; set; }
+    public string? Light { get; set; }
+    public string TagsJson { get; set; } = "{}";
+    public Point Location { get; set; } = null!;
+    public DateTimeOffset ImportedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 /// <summary>Manual routing fixes (spec 10): blocked areas (polygon) or passages (line) applied at graph build.</summary>
 public class RoutingCorrection : Entity
 {
@@ -372,4 +389,7 @@ public class ContentPage : Entity
     public string Content { get; set; } = "";
     public string Language { get; set; } = "de";
     public bool ShowInFooter { get; set; } = true;
+    public Guid? ParentId { get; set; }
+    public int Order { get; set; }
+    public bool ShowInNav { get; set; }
 }

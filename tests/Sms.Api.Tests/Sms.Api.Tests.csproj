@@ -14,8 +14,12 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Sms.Api\Sms.Api.csproj" />
+    <ProjectReference Include="..\..\src\Sms.Tiles\Sms.Tiles.csproj" Aliases="Tiles" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="fixtures\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

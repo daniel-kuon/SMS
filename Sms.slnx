@@ -5,6 +5,7 @@
     <Project Path="src/Sms.Domain/Sms.Domain.csproj" />
     <Project Path="src/Sms.Infrastructure/Sms.Infrastructure.csproj" />
     <Project Path="src/Sms.ServiceDefaults/Sms.ServiceDefaults.csproj" />
+    <Project Path="src/Sms.Tiles/Sms.Tiles.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Sms.Api.Tests/Sms.Api.Tests.csproj" />

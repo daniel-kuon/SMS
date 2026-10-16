@@ -11,7 +11,8 @@ namespace Sms.Api.Endpoints;
 
 public record TaskUpsert(string Title, string? Content, DateOnly? DueDate, Guid? ParentId, Guid? AssigneeCrewMemberId, Guid? AssigneeUserId, bool Done);
 public record TaskDto(Guid Id, TaskScope Scope, Guid? TripId, Guid? ShipId, Guid? ParentId, string Title, string? Content, DateOnly? DueDate, Guid? AssigneeCrewMemberId, Guid? AssigneeUserId, string? Assignee, bool Done);
-public record PageUpsert(string Slug, string Title, string Content, string Language, bool ShowInFooter);
+public record PageUpsert(string Slug, string Title, string Content, string Language, bool ShowInFooter, Guid? ParentId = null, int Order = 0, bool ShowInNav = false);
+public record PageNode(Guid Id, string Slug, string Path, string Title, string Language, bool ShowInFooter, bool ShowInNav, int Order, Guid? ParentId, List<PageNode> Children);
 
 public static class TaskEndpoints
 {
@@ -81,7 +82,11 @@ public static class PageEndpoints
     {
         var g = api.MapGroup("/pages").WithTags("Pages");
         g.MapGet("", async (string? lang, SmsDbContext db, CancellationToken ct) =>
-            Results.Ok(await db.ContentPages.AsNoTracking().Where(p => p.Language == (lang ?? "de")).OrderBy(p => p.Title).Select(p => new { p.Slug, p.Title, p.ShowInFooter, p.Language }).ToListAsync(ct)));
+        {
+            var pages = await db.ContentPages.AsNoTracking().Where(p => p.Language == (lang ?? "de")).ToListAsync(ct);
+            List<PageNode> Map(List<Sms.Domain.Cms.PageTree.Node<ContentPage>> nodes) => nodes.Select(n => new PageNode(n.Page.Id, n.Page.Slug, n.Path, n.Page.Title, n.Page.Language, n.Page.ShowInFooter, n.Page.ShowInNav, n.Page.Order, n.Page.ParentId, Map(n.Children))).ToList();
+            return Results.Ok(Map(Sms.Domain.Cms.PageTree.Build(pages, p => p.Id, p => p.ParentId, p => p.Slug, p => p.Order)));
+        });
         g.MapGet("/{slug}", async (string slug, string? lang, SmsDbContext db, CancellationToken ct) =>
         {
             var p = await db.ContentPages.AsNoTracking().FirstOrDefaultAsync(x => x.Slug == slug && x.Language == (lang ?? "de"), ct)
@@ -91,8 +96,14 @@ public static class PageEndpoints
         g.MapPut("/{slug}", async (string slug, PageUpsert req, SmsDbContext db, CurrentUser current, HtmlSanitizerService html, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (!Sms.Domain.Cms.Slugs.IsValid(slug)) return Invalid("slug", "Ungültiger Slug.");
             var p = await db.ContentPages.FirstOrDefaultAsync(x => x.Slug == slug && x.Language == req.Language, ct) ?? db.ContentPages.Add(new ContentPage { Slug = slug, Language = req.Language }).Entity;
-            p.Title = req.Title; p.Content = html.Sanitize(req.Content); p.ShowInFooter = req.ShowInFooter; p.UpdatedById = current.Id;
+            if (req.ParentId is { } parent)
+            {
+                var parents = await db.ContentPages.Select(x => new { x.Id, x.ParentId }).ToDictionaryAsync(x => x.Id, x => x.ParentId, ct);
+                if (!parents.ContainsKey(parent) || Sms.Domain.Cms.PageTree.WouldCycle(p.Id, parent, id => parents.GetValueOrDefault(id))) return Invalid("parentId", "Ungültige übergeordnete Seite.");
+            }
+            p.Title = req.Title; p.Content = html.Sanitize(req.Content); p.ShowInFooter = req.ShowInFooter; p.ParentId = req.ParentId; p.Order = req.Order; p.ShowInNav = req.ShowInNav; p.UpdatedById = current.Id;
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).RequireAuthorization();

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Sms.Domain;
+using Sms.Domain.Cms;
 using Sms.Domain.Social;
 using Sms.Domain.Tracking;
 
@@ -36,6 +37,9 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
     public DbSet<ContentPage> ContentPages => Set<ContentPage>();
     public DbSet<RoutingCorrection> RoutingCorrections => Set<RoutingCorrection>();
     public DbSet<RouteCache> RouteCaches => Set<RouteCache>();
+    public DbSet<Seamark> Seamarks => Set<Seamark>();
+    public DbSet<ShipPage> ShipPages => Set<ShipPage>();
+    public DbSet<ShipDomain> ShipDomains => Set<ShipDomain>();
     public DbSet<TrackingDevice> TrackingDevices => Set<TrackingDevice>();
     public DbSet<TrackPoint> TrackPoints => Set<TrackPoint>();
     public DbSet<TrackImport> TrackImports => Set<TrackImport>();
@@ -175,6 +179,14 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.HasIndex(t => t.TripId);
             e.HasIndex(t => t.ShipId);
         });
+        m.Entity<Seamark>(e =>
+        {
+            e.Property(s => s.Location).HasColumnType("geometry(Point,3857)");
+            e.HasIndex(s => s.Location).HasMethod("gist");
+            e.HasIndex(s => new { s.OsmType, s.OsmId }).IsUnique();
+            e.HasIndex(s => s.Type);
+            e.Property(s => s.TagsJson).HasColumnType("jsonb");
+        });
         m.Entity<RoutingCorrection>(e => e.Property(c => c.Geometry).HasColumnType("geometry(Geometry,4326)"));
         m.Entity<RouteCache>(e =>
         {
@@ -202,6 +214,19 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
         m.Entity<Notification>(e => e.HasIndex(n => new { n.UserId, n.ReadAt }));
         m.Entity<Report>(e => e.HasIndex(r => r.Status));
         m.Entity<UserBlock>(e => e.HasKey(b => b.UserId));
+        m.Entity<ShipPage>(e =>
+        {
+            e.Property(p => p.Slug).HasMaxLength(80);
+            e.Property(p => p.Content).HasMaxLength(200_000);
+            e.HasIndex(p => new { p.ShipId, p.ParentId, p.Slug }).IsUnique();
+            e.HasOne<Ship>().WithMany().HasForeignKey(p => p.ShipId).OnDelete(DeleteBehavior.Cascade);
+        });
+        m.Entity<ShipDomain>(e =>
+        {
+            e.Property(d => d.Host).HasMaxLength(253);
+            e.HasIndex(d => d.Host).IsUnique();
+            e.HasOne<Ship>().WithMany().HasForeignKey(d => d.ShipId).OnDelete(DeleteBehavior.Cascade);
+        });
         m.Entity<ContentPage>(e =>
         {
             e.HasIndex(p => new { p.Slug, p.Language }).IsUnique();

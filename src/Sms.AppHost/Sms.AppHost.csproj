@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Sms.Api\Sms.Api.csproj" />
+    <ProjectReference Include="..\Sms.Tiles\Sms.Tiles.csproj" />
   </ItemGroup>
 
   <ItemGroup>

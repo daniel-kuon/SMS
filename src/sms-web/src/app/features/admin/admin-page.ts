@@ -10,6 +10,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, errorMessage } from '../../core/api';
 import { ContentPage } from '../../core/models';
+import { tenantPreview } from '../../core/site';
 
 interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
 
@@ -29,9 +30,24 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
         <div class="row"><mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Slug</mat-label><input matInput [(ngModel)]="page.slug" (change)="loadPage()" /></mat-form-field>
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Sprache</mat-label><mat-select [(ngModel)]="page.language" (selectionChange)="loadPage()"><mat-option value="de">de</mat-option><mat-option value="en">en</mat-option></mat-select></mat-form-field>
           <mat-checkbox [(ngModel)]="page.showInFooter">Footer</mat-checkbox></div>
+        <div class="row"><mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'site.parent' | translate }}</mat-label><mat-select [(ngModel)]="page.parentId"><mat-option [value]="null">–</mat-option>@for (p of allPages(); track p.id) { @if (p.id !== page.id) { <mat-option [value]="p.id">{{ p.path }}</mat-option> } }</mat-select></mat-form-field>
+          <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'site.order' | translate }}</mat-label><input matInput type="number" [(ngModel)]="page.order" /></mat-form-field>
+          <mat-checkbox [(ngModel)]="page.showInNav">{{ 'site.showInNav' | translate }}</mat-checkbox></div>
         <mat-form-field appearance="outline" class="full-width"><mat-label>Titel</mat-label><input matInput [(ngModel)]="page.title" /></mat-form-field>
         <mat-form-field appearance="outline" class="full-width"><mat-label>Inhalt (HTML)</mat-label><textarea matInput rows="10" [(ngModel)]="page.content"></textarea></mat-form-field>
         <button mat-flat-button (click)="savePage()">{{ 'common.save' | translate }}</button>
+      </mat-card-content></mat-card>
+      <mat-card appearance="outlined"><mat-card-content>
+        <h3>{{ 'admin.seamarks' | translate }}</h3>
+        <p class="muted">{{ 'admin.seamarksHint' | translate }} @if (seamarks(); as s) { · {{ s.count }} {{ 'admin.seamarksCount' | translate }} }</p>
+        <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="seamarkBbox" /></mat-form-field>
+          <button mat-flat-button (click)="importSeamarks()" [disabled]="busy()">{{ 'admin.import' | translate }}</button></div>
+      </mat-card-content></mat-card>
+      <mat-card appearance="outlined"><mat-card-content>
+        <h3>{{ 'admin.tenantPreview' | translate }}</h3>
+        <p class="muted">{{ 'admin.tenantPreviewHint' | translate }}</p>
+        <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Host</mat-label><input matInput [(ngModel)]="tenantHost" placeholder="kairos.example.com" /></mat-form-field>
+          <button mat-flat-button (click)="setTenant()">OK</button><button mat-button (click)="tenantHost = ''; setTenant()">{{ 'admin.tenantReset' | translate }}</button></div>
       </mat-card-content></mat-card>
       <mat-card appearance="outlined"><mat-card-content>
         <h3>{{ 'admin.routing' | translate }}</h3>
@@ -59,10 +75,25 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
 export class AdminPage {
   private api = inject(Api);
   bbox = '54.2,9.8,54.7,10.9'; busy = signal(false); result = signal('');
-  page: ContentPage = { slug: 'impressum', title: '', content: '', language: 'de', showInFooter: true };
+  page: ContentPage & { id?: string; parentId: string | null; order: number; showInNav: boolean } = { slug: 'impressum', title: '', content: '', language: 'de', showInFooter: true, parentId: null, order: 0, showInNav: false };
+  allPages = signal<{ id: string; path: string }[]>([]);
+  seamarks = signal<{ count: number } | null>(null); seamarkBbox = '54.2,9.8,54.7,10.9'; tenantHost = tenantPreview.get() ?? '';
+  loadAllPages(): void {
+    this.api.get<{ id: string; path: string; children: unknown[] }[]>('/api/pages', { lang: this.page.language }).subscribe(tree => {
+      const flat = (nodes: { id: string; path: string; children: unknown[] }[]): { id: string; path: string }[] => nodes.flatMap(n => [{ id: n.id, path: n.path }, ...flat(n.children as typeof nodes)]);
+      this.allPages.set(flat(tree));
+    });
+  }
+  importSeamarks(): void {
+    this.busy.set(true);
+    this.api.post<{ created: number; updated: number; skipped: number }>(`/api/admin/seamarks/import-osm?bbox=${encodeURIComponent(this.seamarkBbox)}`, {}).subscribe({
+      next: r => { this.busy.set(false); this.result.set(`Seezeichen: ${r.created} neu, ${r.updated} aktualisiert, ${r.skipped} übersprungen`); this.loadSeamarks(); }, error: e => { this.busy.set(false); this.result.set(errorMessage(e)); } });
+  }
+  loadSeamarks(): void { this.api.get<{ count: number }>('/api/seamarks/status').subscribe(s => this.seamarks.set(s)); }
+  setTenant(): void { tenantPreview.set(this.tenantHost.trim() || null); location.href = '/'; }
   routing = signal<RoutingStatus | null>(null);
   private timer?: ReturnType<typeof setInterval>;
-  constructor() { this.loadPage(); this.loadRouting(); this.loadReports(); this.timer = setInterval(() => { if (this.routing()?.building) this.loadRouting(); }, 5000); }
+  constructor() { this.loadPage(); this.loadAllPages(); this.loadSeamarks(); this.loadRouting(); this.loadReports(); this.timer = setInterval(() => { if (this.routing()?.building) this.loadRouting(); }, 5000); }
   ngOnDestroy(): void { clearInterval(this.timer); }
   reports = signal<{ id: string; targetType: string; targetId: string; reporter: string; reason: string; status: string }[]>([]);
   loadReports(): void { this.api.get<typeof this.reports extends () => infer T ? T : never>('/api/admin/reports').subscribe(r => this.reports.set(r)); }
@@ -74,6 +105,6 @@ export class AdminPage {
     this.api.post<{ created: number; updated: number; skipped: number }>(`/api/admin/harbours/import-osm?bbox=${encodeURIComponent(this.bbox)}`, {}).subscribe({
       next: r => { this.busy.set(false); this.result.set(`${r.created} neu, ${r.updated} aktualisiert, ${r.skipped} übersprungen`); }, error: e => { this.busy.set(false); this.result.set(errorMessage(e)); } });
   }
-  loadPage(): void { this.api.get<ContentPage>(`/api/pages/${this.page.slug}`, { lang: this.page.language }).subscribe({ next: p => this.page = { ...p, slug: this.page.slug, language: this.page.language }, error: () => { this.page.title = ''; this.page.content = ''; } }); }
+  loadPage(): void { this.api.get<typeof this.page>(`/api/pages/${this.page.slug}`, { lang: this.page.language }).subscribe({ next: p => this.page = { ...this.page, ...p, slug: this.page.slug, language: this.page.language }, error: () => { this.page.title = ''; this.page.content = ''; } }); this.loadAllPages(); }
   savePage(): void { this.api.put(`/api/pages/${this.page.slug}`, this.page).subscribe(() => this.result.set('Seite gespeichert.')); }
 }
