@@ -84,10 +84,9 @@ exist in the old app (see the referenced doc).
   as an ordered list of harbours; distances and ETA (at ship cruising speed)
   come from sea routing (`10`). Reorder/remove legs. Plan is a proposal; actual
   legs are logbook entries.
-- **C4 Trip page.** Header (ship, crew avatars, dates, total nm), map with
-  planned route (dashed) and sailed legs (solid), and the **day timeline**
-  (see E2). Tabs: Timeline, Logbuch, Fotos, Kosten (crew only), Aufgaben
-  (crew only).
+- **C4 Trip page.** Header (ship, crew avatars, dates, total nm) and tabs:
+  **Übersicht** (trip overview map, see section I), Timeline (E2), Logbuch,
+  Fotos, Kosten (crew only), Aufgaben (crew only).
 - **C5 Calendar.** iCal feed per user (all my trips) and per ship (legacy
   `03` §3.6, done correctly).
 - **C6 Tasks** (legacy jobs): hierarchical to-dos per trip (packing list,
@@ -99,7 +98,8 @@ exist in the old app (see the referenced doc).
   cast off / moored times, engine hours start/end, log start/end, wind speed,
   wind direction, crew (default = trip crew aboard that day), notes. New:
   weather (free text), sea state, sailed distance (from log or computed),
-  sails/reef notes (free text), optional GPX track upload. Written by trip
+  sails/reef notes (free text). The leg's route comes from the ship track
+  or is calculated (section I). Written by trip
   skipper/co-skippers or ship skippers/owners.
 - **D2 Defaults** (legacy `05` §5.4): start harbour, engine hours and log are
   taken from the ship's previous entry; crew from the trip.
@@ -110,7 +110,8 @@ exist in the old app (see the referenced doc).
 
 ### E. Posts, photos and the day timeline (social core)
 - **E1 Blog post.** Any crew member can write a post during or after the trip:
-  title (optional), rich text, optional location (harbour or map point),
+  title (optional), rich text, location (device position on creation,
+  picked harbour/map point, or derived from the ship track – `12` §12.4),
   photos, visibility (privat / crew / öffentlich). The post's **day** defaults
   to today (local time of the trip) and can be changed within the trip dates.
 - **E2 Day timeline.** For every trip day the trip page shows: the logbook
@@ -120,7 +121,8 @@ exist in the old app (see the referenced doc).
   this day").
 - **E3 Photos.** Crew members upload photos (multi-file, drag and drop, mobile
   camera); each photo gets a day (from EXIF capture time if inside the trip,
-  else upload day), caption, visibility, optional post. Gallery with lightbox
+  else upload day), location (EXIF GPS, device, ship track or harbour –
+  `12` §12.4), caption, visibility, optional post. Gallery with lightbox
   (legacy `05` §5.5). Thumbnails and preview sizes generated server-side.
 - **E4 Social interactions.** Comments and likes on posts, photos, logbook
   entries, trips (only by users who can see the item). Follow users and
@@ -129,6 +131,26 @@ exist in the old app (see the referenced doc).
   new costs, settlement requests.
 - **E5 Moderation.** Report content; platform admin can hide items and block
   users.
+
+### I. Trip overview and ship track (see `12`)
+- **I1 Trip overview map.** Shows the ship's track coloured per day, overnight
+  harbours, and **photos and posts at the location where they were created**
+  (clustered thumbnails / post markers opening lightbox or post popup), plus
+  stats and a day list that highlights segments on hover. Optional playback.
+- **I2 Track sources.** Best available per leg/day: GPS track from a tracking
+  app (live) or imported file (GPX/KML/NMEA) > AIS track from the
+  MarineTraffic API > sea route calculated from the logbook entries' harbours.
+  Planned legs shown separately. Skipper/owner can override the source.
+- **I3 GPS tracking apps.** Ship members register tracking devices and get a
+  token + setup instructions for Traccar Client/OsmAnd/GPSLogger (OsmAnd
+  protocol), OwnTracks, or the JSON endpoint (PWA, Signal K, integrations).
+- **I4 MarineTraffic / AIS.** Ship owners can configure an AIS provider
+  (MarineTraffic first) with their own API key and the ship's MMSI/IMO; live
+  polling during active trips and historical track at the end.
+- **I5 Ship page map.** All trips' tracks of a ship on one map.
+- **I6 Track privacy.** Separate track visibility, delayed public live
+  position (default 2 h), privacy zones, reduced location precision for public
+  viewers; suggestions for logbook entries from detected harbour stops.
 
 ### F. Costs (see `09`)
 - **F1 Add expense.** Any crew member: amount, currency, date, category

@@ -7,11 +7,13 @@ ASP.NET Core (current .NET) and Angular**. It has two parts:
   `SMS/src/SMS/` does (2016, ASP.NET Core 1.0 RC2 + Knockout.js). None of its
   tooling builds on a current SDK; treat it as a specification, not as code to
   upgrade.
-- **Part B – New product (07–11):** the multi-ship portal / social network
+- **Part B – New product (07–12):** the multi-ship portal / social network
   for sailors that replaces it. It keeps all legacy functions and adds ships
   per user, trips with crew, posts and photos per trip day with visibility
-  levels, shared costs with settlement, and automatic sea routing from
-  OpenStreetMap/OpenSeaMap data.
+  levels, shared costs with settlement, automatic sea routing from
+  OpenStreetMap/OpenSeaMap data, and a trip overview map with the ship's track
+  (GPS app, file, MarineTraffic AIS or calculated) and photos/posts placed
+  where they were created.
 
 ## The legacy app in short
 
@@ -47,14 +49,15 @@ only, not for navigation).
 | 8 | [08-domain-model-v2.md](08-domain-model-v2.md) | New entities, visibility rules, permission matrix, mapping from legacy |
 | 9 | [09-costs-and-settlement.md](09-costs-and-settlement.md) | Expense splitting, rounding, balances, "who pays whom" algorithm, UI, API, tests |
 | 10 | [10-sea-routing.md](10-sea-routing.md) | Automatic sea routing from OSM/OpenSeaMap data, harbour import, API, validation |
-| 11 | [11-architecture-and-plan.md](11-architecture-and-plan.md) | Solution structure, technology decisions, Angular structure, API overview, 15 implementation phases with acceptance criteria |
+| 11 | [11-architecture-and-plan.md](11-architecture-and-plan.md) | Solution structure, technology decisions, Angular structure, API overview, implementation phases (0–14, incl. 8a/8b) with acceptance criteria |
+| 12 | [12-trip-overview-and-tracking.md](12-trip-overview-and-tracking.md) | Trip overview map, ship tracks from GPS apps / files / MarineTraffic AIS / calculated legs, photos and posts on the map, track privacy |
 
 ## Instructions for the session implementing the new version
 
-1. Read `07`–`11` fully; read `01`–`05` for the details of features that are
+1. Read `07`–`12` fully; read `01`–`05` for the details of features that are
    carried over (they are referenced from `07` as "legacy").
 2. `07` is the functional contract, `08` the data and permission contract,
-   `09` and `10` specify the two algorithmic features, `11` gives the
+   `09`, `10` and `12` specify costs, sea routing and tracking, `11` gives the
    architecture and the order of work.
 3. Implement phase by phase (`11` §11.5); each phase lists acceptance
    criteria. Visibility and permission rules (`08` §8.3–8.4) must be enforced

@@ -69,6 +69,7 @@ sms-web/src/app/
     logbook/       entry edit dialog (legacy fields 04 §4.6), entry detail with day content
     posts/         post editor, post detail with comments/likes
     costs/         expenses, balances, settlement (09 §9.4)
+    tracking/      trip overview map (12 §12.3), track import, tracking devices setup, AIS settings, privacy zones
     harbours/      harbour guide map, harbour detail panel, edit, WiFi, reviews, nearby ports
     admin/         content pages, moderation, harbour merge, routing corrections & rebuild
     pages/         content page viewer (Impressum, Datenschutz, …)
@@ -94,6 +95,7 @@ Main routes: `/` (public explore map + feed), `/feed`, `/ships/:id`,
 | Costs | `09` §9.5 |
 | Harbours | `GET /api/harbours?bbox=&q=`, `GET/POST/PUT /api/harbours/{id}`, `GET /api/harbours/{id}/revisions`, WiFi `POST /api/harbours/{id}/wifis`, `PUT/DELETE /api/wifis/{id}`, reviews `GET/POST /api/harbours/{id}/reviews` |
 | Routing | `10` §10.4 |
+| Trip overview & tracking | `12` §12.7 (overview, track GeoJSON, map items, tracking devices, ingest endpoints, AIS config, privacy zones) |
 | Tasks | `GET/POST /api/trips/{id}/tasks`, `GET/POST /api/ships/{id}/tasks`, `PUT/DELETE /api/tasks/{id}` |
 | Calendar | `GET /api/calendar/users/{token}.ics`, `GET /api/calendar/ships/{token}.ics` (secret token per feed) |
 | Content pages | `GET /api/pages`, `GET /api/pages/{slug}`, admin CRUD |
@@ -101,7 +103,7 @@ Main routes: `/` (public explore map + feed), `/feed`, `/ships/:id`,
 
 ## 11.5 Implementation phases
 
-Each phase ends with working, tested software. Phases 1–8 form the MVP;
+Each phase ends with working, tested software. Phases 1–8a form the MVP;
 the order can change, but visibility rules (phase 6) must be in place before
 any content is shown publicly.
 
@@ -138,9 +140,8 @@ linked to a registered user later.
 **Phase 5 – Logbook** (`07` D1–D4; legacy `04` §4.6, `05` §5.4)
 Ship logbook list (server paging/sorting, legacy columns + column chooser),
 entry dialog with all legacy fields + new ones, defaults from previous entry
-of the ship and crew from the trip, GPX upload (parse length/track), entries
-without trip.
-✅ Defaults test; logbook list sorted by date desc by default; GPX track shown on the trip map.
+of the ship and crew from the trip, entries without trip.
+✅ Defaults test; logbook list sorted by date desc by default.
 
 **Phase 6 – Posts, photos, timeline, visibility** (`07` E1–E3, `08` §8.3)
 Media upload pipeline (variants, EXIF day/location, EXIF stripping), photo
@@ -165,6 +166,26 @@ von hier/meiner Position", trip planner legs with distance/ETA; admin
 corrections and rebuild.
 ✅ Golden distance tests (`10` §10.6) within ±10 %; performance targets met
 on the Europe graph.
+
+**Phase 8a – Trip overview map with calculated legs and media locations**
+(`07` I1, I5; `12` §12.1 A, §12.3, §12.4)
+Calculated routes per logbook entry, `TrackSegment` building (calculated
+source only), trip overview tab (day-coloured track, harbour stops, stats, day
+list, hover highlighting), photo/post markers with clustering and popups,
+location determination for media/posts (manual, EXIF, device, harbour),
+ship page map.
+✅ A trip with logbook entries and geotagged photos shows the route and photos
+at their positions; anonymous viewers see only public items.
+
+**Phase 8b – GPS tracking, file import and AIS** (`07` I2–I4, I6; `12`)
+Tracking devices + ingest endpoints (OsmAnd, OwnTracks, JSON), GPX/KML/NMEA
+import, track processing job (cleaning, segments with source priority, gap
+bridging, stats, stop detection → logbook suggestions), track-interpolated
+media locations, live position with public delay, privacy zones, source
+override, MarineTraffic provider (`IAisPositionProvider`) with encrypted key,
+live polling during active trips and history fetch.
+✅ Tests of `12` §12.8; Traccar Client and OwnTracks send positions that appear
+on the trip map; public viewers see positions only after the delay.
 
 **Phase 9 – Social layer** (`07` E4–E5)
 Follows, personal feed and public explore page, comments, likes,

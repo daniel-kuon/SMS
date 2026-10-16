@@ -29,7 +29,7 @@ deletions can be reverted by moderators for 30 days.
 ### Trips
 | Entity | Key fields | Notes |
 |--------|-----------|-------|
-| `Trip` | Id, ShipId, Name, Description, StartDate, EndDate (dates), TimeZone (IANA, default `Europe/Berlin`), PlannedStartHarbourId?, PlannedEndHarbourId?, SkipperId (CrewMember), Visibility (`Crew`/`Public`), Status (`Planned`/`Active`/`Completed`/`Cancelled`), Currency (ISO 4217), CostsLockedAt? | |
+| `Trip` | Id, ShipId, Name, Description, StartDate, EndDate (dates), TimeZone (IANA, default `Europe/Berlin`), PlannedStartHarbourId?, PlannedEndHarbourId?, SkipperId (CrewMember), Visibility (`Crew`/`Public`), Status (`Planned`/`Active`/`Completed`/`Cancelled`), Currency (ISO 4217), CostsLockedAt?, TrackVisibility, PublicPositionDelayMinutes (default 120) | |
 | `CrewMember` | Id, TripId, UserId? (null = guest), GuestName?, Role (`Skipper`/`CoSkipper`/`Crew`), Status (`Invited`/`Accepted`/`Declined`/`Left`), FromDate?, ToDate? | separate Id so guests can be referenced by logbook and costs; a guest can later be linked to a user (set UserId) |
 | `TripInvitation` | Id, TripId, Email?, Token, Role, ExpiresAt, Status | invite link / mail |
 | `PlannedLeg` | Id, TripId, Order, FromHarbourId, ToHarbourId, PlannedDate?, DistanceNm (cached), RouteGeometry (cached LineString) | trip planner (legacy Trip/Tack idea) |
@@ -38,14 +38,14 @@ deletions can be reverted by moderators for 30 days.
 ### Logbook
 | Entity | Key fields | Notes |
 |--------|-----------|-------|
-| `LogbookEntry` | Id, ShipId, TripId?, StartHarbourId, EndHarbourId, DepartedAt, ArrivedAt, EngineHoursStart/End (decimal), LogStart/End (decimal nm), WindSpeed (string, e.g. "4 Bft"), WindDirection (enum 16 compass points: N, NNE/NNO, …), Weather, SeaState, SailedDistanceNm?, Notes (sanitised HTML), TrackMediaId? (GPX), Visibility (`Private`/`Crew`/`Public`), AuthorId | legacy LogBookEntry; private = draft |
+| `LogbookEntry` | Id, ShipId, TripId?, StartHarbourId, EndHarbourId, DepartedAt, ArrivedAt, EngineHoursStart/End (decimal), LogStart/End (decimal nm), WindSpeed (string, e.g. "4 Bft"), WindDirection (enum 16 compass points: N, NNE/NNO, …), Weather, SeaState, SailedDistanceNm?, Notes (sanitised HTML), CalculatedRoute (LineString)?, CalculatedDistanceNm?, Visibility (`Private`/`Crew`/`Public`), AuthorId | legacy LogBookEntry; private = draft |
 | `LogbookEntryCrew` | LogbookEntryId, CrewMemberId? or UserId?/GuestName | who was aboard; for entries without trip use ship members/guest names |
 
 ### Content and media
 | Entity | Key fields | Notes |
 |--------|-----------|-------|
-| `Post` | Id, TripId, AuthorId, Day (date in trip time zone), Title?, Content (sanitised HTML), HarbourId?, Location (Point)?, Visibility, PublishedAt | blog post |
-| `Media` | Id, OwnerId, TripId?, ShipId?, PostId?, LogbookEntryId?, HarbourId?, Kind (`Photo`/`Gpx`/`Receipt`/`Avatar`), StorageKey, OriginalFileName, ContentType, SizeBytes, Width, Height, TakenAt?, Day?, Location (Point)?, Caption, Visibility, ProcessingStatus | variants (thumb 400 px, preview 1600 px, original) derived from StorageKey |
+| `Post` | Id, TripId, AuthorId, Day (date in trip time zone), Title?, Content (sanitised HTML), HarbourId?, Location (Point)?, LocationSource (`Manual`/`Device`/`Track`/`Harbour`)?, Visibility, PublishedAt | blog post |
+| `Media` | Id, OwnerId, TripId?, ShipId?, PostId?, LogbookEntryId?, HarbourId?, Kind (`Photo`/`Gpx`/`Receipt`/`Avatar`), StorageKey, OriginalFileName, ContentType, SizeBytes, Width, Height, TakenAt?, Day?, Location (Point)?, LocationSource (`Manual`/`Exif`/`Device`/`Track`/`Harbour`)?, Caption, Visibility, ProcessingStatus | variants (thumb 400 px, preview 1600 px, original) derived from StorageKey |
 
 `Day` is the trip-local calendar date that groups items into the timeline.
 For photos it is taken from EXIF `DateTimeOriginal` (converted with the trip
@@ -68,6 +68,16 @@ may change it.
 | `HarbourReview` | Id, HarbourId, AuthorId, Rating (1–5), Text, VisitedOn? | |
 | `RoutingCorrection` | Id, Kind (`Block`/`Passage`), Source (`Manual`/`Derived`), Geometry (Polygon or LineString), Note, CreatedById, Active | manual fixes; `Derived` = canal/fairway lines generated from OpenSeaMap/OSM data and reviewed by admins (`10` §10.5) |
 | `RouteCache` | FromHarbourId, ToHarbourId, GraphVersion, DistanceNm, Geometry | cache of computed sea routes |
+
+### Tracking (details in `12` §12.6)
+| Entity | Key fields |
+|--------|-----------|
+| `TrackingDevice` | Id, ShipId, UserId, Name, Protocol (`OsmAnd`/`OwnTracks`/`Json`), TokenHash, Active, LastSeenAt |
+| `ShipAisConfig` | ShipId, Provider (`MarineTraffic`/…), ApiKeyEncrypted, Mmsi, Imo, PollIntervalMinutes, Enabled, LastPolledAt |
+| `TrackPoint` | Id, ShipId, TripId?, Source (`GpsLive`/`GpsFile`/`Ais`), DeviceId?, ImportId?, Time, Location, SogKn?, CogDeg?, AccuracyM?, IsOutlier, IsHidden |
+| `TrackImport` | Id, ShipId, TripId?, UploadedById, FileName, Format (`Gpx`/`Kml`/`Nmea`), PointCount |
+| `TrackSegment` | Id, TripId, LogbookEntryId?, Day, Source, SourceOverride?, StartTime, EndTime, DistanceNm, Geometry, GeometryCoarse, stats |
+| `PrivacyZone` | Id, ShipId, Center, RadiusM, Name |
 
 ### Platform
 | Entity | Key fields |
