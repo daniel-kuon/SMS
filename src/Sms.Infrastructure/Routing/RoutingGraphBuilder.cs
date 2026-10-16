@@ -201,7 +201,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             {
                 var sql = $"""
                     INSERT INTO routing_meta (key, value) VALUES ('active_version', '{version}'), ('built_at', '{DateTimeOffset.UtcNow:O}'),
-                      ('region', '{o.Region.MinLng},{o.Region.MinLat},{o.Region.MaxLng},{o.Region.MaxLat}'), ('nodes', '{nodes.Count}'), ('edges', '{edges.Count}')
+                      ('region', '{string.Join(',', new[] { o.Region.MinLng, o.Region.MinLat, o.Region.MaxLng, o.Region.MaxLat }.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)))}'), ('nodes', '{nodes.Count}'), ('edges', '{edges.Count}')
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
                     DELETE FROM routing_edge WHERE graph_version < {version};
                     DELETE FROM routing_node WHERE graph_version < {version};

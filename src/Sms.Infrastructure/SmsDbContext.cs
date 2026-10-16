@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Sms.Domain;
+using Sms.Domain.Tracking;
 
 namespace Sms.Infrastructure;
 
@@ -34,6 +35,11 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
     public DbSet<ContentPage> ContentPages => Set<ContentPage>();
     public DbSet<RoutingCorrection> RoutingCorrections => Set<RoutingCorrection>();
     public DbSet<RouteCache> RouteCaches => Set<RouteCache>();
+    public DbSet<TrackingDevice> TrackingDevices => Set<TrackingDevice>();
+    public DbSet<TrackPoint> TrackPoints => Set<TrackPoint>();
+    public DbSet<TrackImport> TrackImports => Set<TrackImport>();
+    public DbSet<TrackSegment> TrackSegments => Set<TrackSegment>();
+    public DbSet<PrivacyZone> PrivacyZones => Set<PrivacyZone>();
 
     protected override void ConfigureConventions(ModelConfigurationBuilder b)
     {
@@ -168,6 +174,21 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.HasKey(r => new { r.FromHarbourId, r.ToHarbourId, r.GraphVersion });
             e.Property(r => r.Geometry).HasColumnType("geometry(LineString,4326)");
         });
+        m.Entity<TrackingDevice>(e => { e.HasIndex(d => d.TokenHash).IsUnique(); e.HasIndex(d => d.ShipId); });
+        m.Entity<TrackPoint>(e =>
+        {
+            e.Property(p => p.Location).HasColumnType("geography (point, 4326)");
+            e.HasIndex(p => new { p.ShipId, p.Time });
+            e.HasIndex(p => new { p.TripId, p.Time });
+            e.HasIndex(p => new { p.DeviceId, p.Time });
+        });
+        m.Entity<TrackSegment>(e =>
+        {
+            e.Property(s => s.Geometry).HasColumnType("geography (linestring, 4326)");
+            e.Property(s => s.GeometryCoarse).HasColumnType("geography (linestring, 4326)");
+            e.HasIndex(s => new { s.TripId, s.Day });
+        });
+        m.Entity<PrivacyZone>(e => { e.Property(z => z.Center).HasColumnType("geography (point, 4326)"); e.HasIndex(z => z.ShipId); });
         m.Entity<ContentPage>(e =>
         {
             e.HasIndex(p => new { p.Slug, p.Language }).IsUnique();

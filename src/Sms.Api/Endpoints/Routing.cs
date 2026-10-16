@@ -125,7 +125,7 @@ public static class RoutingEndpoints
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             var version = await router.ActiveVersionAsync(ct);
             var reachable = await db.Database.SqlQueryRaw<Guid>("SELECT harbour_id AS \"Value\" FROM routing_harbour_access WHERE graph_version = {0}", version).ToListAsync(ct);
-            var region = router.StatusAsync(ct).Result.Region?.Split(',').Select(double.Parse).ToArray();
+            var region = (await router.StatusAsync(ct)).Region?.Split(',').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
             var q = db.Harbours.AsNoTracking().Where(h => h.IsActive && h.MergedIntoId == null && !reachable.Contains(h.Id));
             if (region is { Length: 4 }) { var env = Geo.Factory.ToGeometry(new Envelope(region[0], region[2], region[1], region[3])); q = q.Where(h => h.Location.Intersects(env)); }
             return Results.Ok(await q.Select(h => new { h.Id, h.Name }).ToListAsync(ct));

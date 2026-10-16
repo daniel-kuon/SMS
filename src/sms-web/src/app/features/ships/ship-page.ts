@@ -13,14 +13,14 @@ import { MatListModule } from '@angular/material/list';
 import { MatAutocompleteModule } from '@angular/material/autocomplete';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
-import { Ship, ShipStats, TaskItem, TripSummary } from '../../core/models';
-import { confirm, fmtDate, UploadZone } from '../../shared/shared';
+import { DeviceCreated, PrivacyZone, Ship, ShipStats, TrackingDevice, TripSummary } from '../../core/models';
+import { confirm, fmtDate, fmtDateTime, UploadZone } from '../../shared/shared';
 import { ShipEditDialog } from './ship-list';
 import { TripEditDialog } from '../trips/trip-dialogs';
 import { TaskList } from '../trips/task-list';
 
 @Component({
-  imports: [DecimalPipe, RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatListModule, TranslatePipe, UploadZone, TaskList],
+  imports: [DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatListModule, MatFormFieldModule, MatInputModule, MatSelectModule, TranslatePipe, UploadZone, TaskList],
   template: `
     @if (ship(); as s) {
     <div class="page">
@@ -70,12 +70,38 @@ import { TaskList } from '../trips/task-list';
         </mat-card-content></mat-card>
 
         @if (s.myRole) { <mat-card appearance="outlined" class="span2"><mat-card-content><h3>{{ 'ship.tasks' | translate }}</h3><app-task-list [url]="'/api/ships/' + s.id + '/tasks'" /></mat-card-content></mat-card> }
+
+        @if (s.myRole) { <mat-card appearance="outlined" class="span2"><mat-card-content>
+          <h3>{{ 'tracking.devices' | translate }}</h3>
+          <p class="muted">{{ 'tracking.hint' | translate }}</p>
+          <mat-list>@for (d of devices(); track d.id) {
+            <mat-list-item><span matListItemTitle>{{ d.name }} <span class="chip">{{ d.protocol }}</span> @if (!d.active) { <span class="chip private">revoked</span> }</span>
+              <span matListItemLine>{{ d.owner }} @if (d.lastSeenAt) { · {{ 'tracking.lastSeen' | translate }} {{ fmtTime(d.lastSeenAt) }} }</span>
+              @if (d.active) { <button matListItemMeta mat-icon-button (click)="revokeDevice(s, d)"><mat-icon>delete</mat-icon></button> }</mat-list-item> }</mat-list>
+          <form class="row" (ngSubmit)="addDevice(s)">
+            <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'common.name' | translate }}</mat-label><input matInput name="deviceName" [(ngModel)]="deviceName" /></mat-form-field>
+            <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'tracking.protocol' | translate }}</mat-label><mat-select name="protocol" [(ngModel)]="deviceProtocol"><mat-option value="OsmAnd">OsmAnd / Traccar Client / GPSLogger</mat-option><mat-option value="OwnTracks">OwnTracks</mat-option><mat-option value="Json">JSON / Signal K</mat-option></mat-select></mat-form-field>
+            <button mat-flat-button type="submit" [disabled]="!deviceName">{{ 'tracking.addDevice' | translate }}</button></form>
+          @if (created(); as c) { <div class="token"><b>{{ 'tracking.token' | translate }}:</b> <code>{{ c.token }}</code><br><b>OsmAnd:</b> <code>{{ c.osmAndUrl }}</code><br><b>OwnTracks:</b> <code>{{ c.ownTracksUrl }}</code><br><b>JSON:</b> <code>{{ c.jsonUrl }}</code><p class="muted">{{ c.hint }}</p></div> }
+
+          @if (s.myRole === 'Owner') {
+            <h3>{{ 'tracking.privacyZones' | translate }}</h3>
+            <mat-list>@for (z of zones(); track z.id) { <mat-list-item><span matListItemTitle>{{ z.name }}</span><span matListItemLine>{{ z.lat }}, {{ z.lng }} · {{ z.radiusM }} m</span><button matListItemMeta mat-icon-button (click)="removeZone(s, z)"><mat-icon>delete</mat-icon></button></mat-list-item> }</mat-list>
+            <form class="row" (ngSubmit)="addZone(s)">
+              <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'common.name' | translate }}</mat-label><input matInput name="zName" [(ngModel)]="zone.name" /></mat-form-field>
+              <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Lat</mat-label><input matInput type="number" step="0.0001" name="zLat" [(ngModel)]="zone.lat" /></mat-form-field>
+              <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Lng</mat-label><input matInput type="number" step="0.0001" name="zLng" [(ngModel)]="zone.lng" /></mat-form-field>
+              <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>m</mat-label><input matInput type="number" name="zR" [(ngModel)]="zone.radiusM" /></mat-form-field>
+              <button mat-flat-button type="submit" [disabled]="!zone.name">{{ 'common.new' | translate }}</button></form>
+          }
+        </mat-card-content></mat-card> }
       </div>
     </div>}`,
   styles: `
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } .span2 { grid-column: 1 / -1; }
     .photo { width: 100%; max-height: 320px; object-fit: cover; border-radius: 8px; }
     .dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; } dt { color: #666; } dd { margin: 0; }
+    .token { background: #f3f3f3; padding: 8px; border-radius: 6px; font-size: 13px; word-break: break-all; }
     .stats { display: flex; gap: 20px; flex-wrap: wrap; } .stats div { display: flex; flex-direction: column; } .stats b { font-size: 22px; } .stats span { font-size: 12px; color: #666; }
     @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }`,
 })
@@ -83,10 +109,21 @@ export class ShipPage {
   private api = inject(Api); private dialog = inject(MatDialog); readonly auth = inject(AuthService);
   id = input.required<string>();
   ship = signal<Ship | null>(null); stats = signal<ShipStats | null>(null); trips = signal<TripSummary[]>([]);
-  fmt = fmtDate;
+  fmt = fmtDate; fmtTime = fmtDateTime;
+  devices = signal<TrackingDevice[]>([]); zones = signal<PrivacyZone[]>([]); created = signal<DeviceCreated | null>(null);
+  deviceName = ''; deviceProtocol: 'OsmAnd' | 'OwnTracks' | 'Json' = 'OsmAnd'; zone = { name: '', lat: 54.4, lng: 10.2, radiusM: 500 };
   ngOnInit(): void { this.load(); }
+  loadTracking(s: Ship): void {
+    if (!s.myRole) return;
+    this.api.get<TrackingDevice[]>(`/api/ships/${s.id}/tracking-devices`).subscribe(d => this.devices.set(d));
+    this.api.get<PrivacyZone[]>(`/api/ships/${s.id}/privacy-zones`).subscribe(z => this.zones.set(z));
+  }
+  addDevice(s: Ship): void { this.api.post<DeviceCreated>(`/api/ships/${s.id}/tracking-devices`, { name: this.deviceName, protocol: this.deviceProtocol }).subscribe(c => { this.created.set(c); this.deviceName = ''; this.loadTracking(s); }); }
+  async revokeDevice(s: Ship, d: TrackingDevice): Promise<void> { if (await confirm(this.dialog, `${d.name} widerrufen?`)) this.api.delete(`/api/ships/${s.id}/tracking-devices/${d.id}`).subscribe(() => this.loadTracking(s)); }
+  addZone(s: Ship): void { this.api.post(`/api/ships/${s.id}/privacy-zones`, this.zone).subscribe(() => { this.zone.name = ''; this.loadTracking(s); }); }
+  removeZone(s: Ship, z: PrivacyZone): void { this.api.delete(`/api/ships/${s.id}/privacy-zones/${z.id}`).subscribe(() => this.loadTracking(s)); }
   load(): void {
-    this.api.get<Ship>(`/api/ships/${this.id()}`).subscribe(s => this.ship.set(s));
+    this.api.get<Ship>(`/api/ships/${this.id()}`).subscribe(s => { this.ship.set(s); this.loadTracking(s); });
     this.api.get<ShipStats>(`/api/ships/${this.id()}/stats`).subscribe(s => this.stats.set(s));
     this.api.get<TripSummary[]>(`/api/ships/${this.id()}/trips`).subscribe(t => this.trips.set(t));
   }

@@ -27,7 +27,7 @@ export interface Crew { id: string; userId: string | null; name: string; role: C
 export interface TripSummary { id: string; shipId: string; shipName: string; name: string; startDate: string; endDate: string; status: TripStatus; visibility: Visibility; crewCount: number; }
 export interface Trip extends TripSummary {
   description: string | null; timeZone: string; plannedStartHarbourId: string | null; plannedEndHarbourId: string | null; currency: string; costsLockedAt: string | null;
-  crew: Crew[]; me: Crew | null; canEdit: boolean; canWriteLogbook: boolean; isCrew: boolean; costsVisible: boolean;
+  crew: Crew[]; me: Crew | null; canEdit: boolean; canWriteLogbook: boolean; isCrew: boolean; costsVisible: boolean; trackVisibility: Visibility; publicPositionDelayMinutes: number;
 }
 export interface Leg { id: string; order: number; fromHarbourId: string; fromName: string; toHarbourId: string; toName: string; plannedDate: string | null; distanceNm: number | null; etaHours: number | null; }
 
@@ -61,5 +61,8 @@ export interface Transfer { fromCrewMemberId: string; from: string; toCrewMember
 export interface Settlement { id: string; fromCrewMemberId: string; from: string; toCrewMemberId: string; to: string; amount: number; paidAt: string; status: 'Reported' | 'Confirmed'; note: string | null; }
 export interface Balances { currency: string; total: number; myCrewMemberId: string | null; balances: Balance[]; suggestedTransfers: Transfer[]; settlements: Settlement[]; lockedAt: string | null; }
 
+export interface TrackingDevice { id: string; name: string; protocol: 'OsmAnd' | 'OwnTracks' | 'Json'; tripId: string | null; active: boolean; lastSeenAt: string | null; owner: string; }
+export interface DeviceCreated { id: string; token: string; osmAndUrl: string; ownTracksUrl: string; jsonUrl: string; hint: string; }
+export interface PrivacyZone { id: string; name: string; lat: number; lng: number; radiusM: number; }
 export interface TaskItem { id: string; scope: 'Trip' | 'Ship'; tripId: string | null; shipId: string | null; parentId: string | null; title: string; content: string | null; dueDate: string | null; assigneeCrewMemberId: string | null; assigneeUserId: string | null; assignee: string | null; done: boolean; }
 export interface ContentPage { slug: string; title: string; content: string; language: string; showInFooter: boolean; }

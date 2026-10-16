@@ -8,7 +8,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatAutocompleteModule } from '@angular/material/autocomplete';
 import { TranslatePipe } from '@ngx-translate/core';
-import { Api, errorMessage } from '../../core/api';
+import { Api, errorMessage, Visibility } from '../../core/api';
 import { Crew, Trip, TripStatus } from '../../core/models';
 import { HarbourSelect, VisibilityPicker } from '../../shared/shared';
 
@@ -29,6 +29,8 @@ const CURRENCIES = ['EUR', 'DKK', 'SEK', 'NOK', 'GBP', 'PLN', 'CHF', 'USD', 'HRK
       <app-visibility [(value)]="m.visibility" [options]="['Crew', 'Public']" />
       <mat-form-field appearance="outline"><mat-label>{{ 'trip.currency' | translate }}</mat-label><mat-select [(ngModel)]="m.currency">@for (c of currencies; track c) { <mat-option [value]="c">{{ c }}</mat-option> }</mat-select></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'trip.timeZone' | translate }}</mat-label><input matInput [(ngModel)]="m.timeZone" /></mat-form-field>
+      <app-visibility [(value)]="m.trackVisibility" [options]="['Private', 'Crew', 'Public']" />
+      <mat-form-field appearance="outline"><mat-label>{{ 'tracking.delay' | translate }}</mat-label><mat-select [(ngModel)]="m.publicPositionDelayMinutes">@for (d of [0, 60, 120, 360, 100000]; track d) { <mat-option [value]="d">{{ d === 100000 ? ('tracking.afterEnd' | translate) : d + ' min' }}</mat-option> }</mat-select></mat-form-field>
       <mat-form-field appearance="outline" class="full"><mat-label>{{ 'common.description' | translate }}</mat-label><textarea matInput rows="3" [(ngModel)]="m.description"></textarea></mat-form-field>
       @if (error()) { <div class="error full">{{ error() }}</div> }
     </mat-dialog-content>
@@ -40,7 +42,8 @@ export class TripEditDialog {
   private t = this.data.trip;
   m = { name: this.t?.name ?? '', description: this.t?.description ?? '', startDate: this.t?.startDate ?? new Date().toISOString().slice(0, 10), endDate: this.t?.endDate ?? new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10),
     timeZone: this.t?.timeZone ?? 'Europe/Berlin', plannedStartHarbourId: this.t?.plannedStartHarbourId ?? null, plannedEndHarbourId: this.t?.plannedEndHarbourId ?? null,
-    visibility: this.t?.visibility ?? 'Crew' as const, status: this.t?.status ?? 'Planned' as TripStatus, currency: this.t?.currency ?? 'EUR' };
+    visibility: this.t?.visibility ?? 'Crew' as const, status: this.t?.status ?? 'Planned' as TripStatus, currency: this.t?.currency ?? 'EUR',
+    trackVisibility: this.t?.trackVisibility ?? 'Crew' as Visibility, publicPositionDelayMinutes: this.t?.publicPositionDelayMinutes ?? 120 };
   error = signal('');
   save(): void {
     const req = this.t ? this.api.put(`/api/trips/${this.t.id}`, this.m) : this.api.post<{ id: string }>(`/api/ships/${this.data.shipId}/trips`, this.m);

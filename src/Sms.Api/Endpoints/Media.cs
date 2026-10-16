@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using NetTopologySuite.Geometries;
 using Sms.Domain;
+using Sms.Domain.Tracking;
 using Sms.Infrastructure;
 using static Sms.Api.ApiHelpers;
 
@@ -50,6 +52,7 @@ public static class MediaEndpoints
                 var exifDay = media.TakenAt is { } ta ? DayIn(ta, trip.TimeZone) : (DateOnly?)null;
                 media.Day = dayOverride ?? (exifDay is { } ed && ed >= trip.StartDate && ed <= trip.EndDate ? ed : TodayIn(trip.TimeZone));
                 if (processed.Location is not null) { media.Location = processed.Location; media.LocationSource = LocationSource.Exif; }
+                else if (media.TakenAt is { } takenAt && await TrackLocationAsync(db, tripId, takenAt, ct) is { } onTrack) { media.Location = onTrack; media.LocationSource = LocationSource.Track; }
                 else
                 {
                     var entry = await db.LogbookEntries.AsNoTracking().Include(l => l.EndHarbour).Where(l => l.TripId == tripId).OrderByDescending(l => l.ArrivedAt).FirstOrDefaultAsync(ct);
@@ -145,6 +148,15 @@ public static class MediaEndpoints
             storage.Delete(m.StorageKey);
             return Results.NoContent();
         }).RequireAuthorization();
+    }
+
+    private static async Task<Point?> TrackLocationAsync(SmsDbContext db, Guid tripId, DateTimeOffset at, CancellationToken ct)
+    {
+        var from = at.AddMinutes(-30); var to = at.AddMinutes(30);
+        var points = await db.TrackPoints.AsNoTracking().Where(p => p.TripId == tripId && !p.IsOutlier && !p.IsHidden && p.Time >= from && p.Time <= to).OrderBy(p => p.Time)
+            .Select(p => new { p.Time, p.Location }).ToListAsync(ct);
+        var fixes = points.Select(p => new TrackFix(p.Time, p.Location.Y, p.Location.X)).ToList();
+        return TrackMath.Interpolate(fixes, at, TimeSpan.FromMinutes(30)) is { } r ? Geo.Point(r.lat, r.lng) : null;
     }
 
     private static async Task<bool> CanViewAsync(Media m, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct)

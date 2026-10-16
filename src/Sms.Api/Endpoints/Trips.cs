@@ -7,13 +7,13 @@ using static Sms.Api.ApiHelpers;
 namespace Sms.Api.Endpoints;
 
 public record TripUpsert(string Name, string? Description, DateOnly StartDate, DateOnly EndDate, string? TimeZone, Guid? PlannedStartHarbourId, Guid? PlannedEndHarbourId,
-    Visibility Visibility, TripStatus Status, string? Currency, Guid? SkipperUserId);
+    Visibility Visibility, TripStatus Status, string? Currency, Guid? SkipperUserId, Visibility? TrackVisibility = null, int? PublicPositionDelayMinutes = null);
 public record CrewDto(Guid Id, Guid? UserId, string Name, CrewRole Role, bool CanWriteLogbook, CrewStatus Status, DateOnly? FromDate, DateOnly? ToDate, bool IsGuest);
 public record CrewUpsert(Guid? UserId, string? GuestName, CrewRole Role = CrewRole.Crew, bool CanWriteLogbook = false, DateOnly? FromDate = null, DateOnly? ToDate = null);
 public record TripSummary(Guid Id, Guid ShipId, string ShipName, string Name, DateOnly StartDate, DateOnly EndDate, TripStatus Status, Visibility Visibility, int CrewCount);
 public record TripDto(Guid Id, Guid ShipId, string ShipName, string Name, string? Description, DateOnly StartDate, DateOnly EndDate, string TimeZone,
     Guid? PlannedStartHarbourId, Guid? PlannedEndHarbourId, Visibility Visibility, TripStatus Status, string Currency, DateTimeOffset? CostsLockedAt,
-    IReadOnlyList<CrewDto> Crew, CrewDto? Me, bool CanEdit, bool CanWriteLogbook, bool IsCrew, bool CostsVisible);
+    IReadOnlyList<CrewDto> Crew, CrewDto? Me, bool CanEdit, bool CanWriteLogbook, bool IsCrew, bool CostsVisible, Visibility TrackVisibility, int PublicPositionDelayMinutes);
 public record LegUpsert(Guid FromHarbourId, Guid ToHarbourId, DateOnly? PlannedDate);
 public record LegDto(Guid Id, int Order, Guid FromHarbourId, string FromName, Guid ToHarbourId, string ToName, DateOnly? PlannedDate, decimal? DistanceNm, decimal? EtaHours);
 public record TripInviteRequest(string? Email, CrewRole Role = CrewRole.Crew);
@@ -247,15 +247,29 @@ public static class TripEndpoints
             if (trip is null) return Results.NotFound();
             var entries = await db.LogbookEntries.AsNoTracking().Include(l => l.StartHarbour).Include(l => l.EndHarbour).Include(l => l.Ship).Include(l => l.Trip)
                 .Where(l => l.TripId == id).Where(viewer.Logbook()).OrderBy(l => l.DepartedAt).ToListAsync(ct);
-            var legs = entries.Select(l => new
+            var isCrewForTrack = viewer.CrewTripIds.Contains(id) || viewer.IsAdmin;
+            var trackVisible = isCrewForTrack || await access.CanViewAsync(trip.TrackVisibility, trip, trip.Ship, null, ct);
+            var cutoff = isCrewForTrack ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow.AddMinutes(-trip.PublicPositionDelayMinutes);
+            var segments = trackVisible ? await db.TrackSegments.AsNoTracking().Where(s => s.TripId == id && s.Source != Sms.Domain.Tracking.TrackSource.Calculated && s.StartTime <= cutoff).ToListAsync(ct) : [];
+            var legs = entries.Select(l =>
             {
-                l.Id, Day = DayIn(l.DepartedAt, trip.TimeZone), From = l.StartHarbour.Name, To = l.EndHarbour.Name,
-                Coordinates = l.CalculatedRoute is not null
-                    ? l.CalculatedRoute.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray()
-                    : [[l.StartHarbour.Location.X, l.StartHarbour.Location.Y], [l.EndHarbour.Location.X, l.EndHarbour.Location.Y]],
-                DistanceNm = l.SailedDistanceNm ?? ((l.LogEnd ?? 0) - (l.LogStart ?? 0)), CalculatedDistanceNm = l.CalculatedDistanceNm,
-                Source = l.CalculatedRoute is not null ? "calculated" : "straight-line",
+                var seg = segments.FirstOrDefault(s => s.LogbookEntryId == l.Id && (s.SourceOverride ?? s.Source) != Sms.Domain.Tracking.TrackSource.Calculated);
+                return new
+                {
+                    l.Id, Day = DayIn(l.DepartedAt, trip.TimeZone), From = l.StartHarbour.Name, To = l.EndHarbour.Name,
+                    Coordinates = seg is not null ? seg.GeometryCoarse.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray()
+                        : l.CalculatedRoute is not null ? l.CalculatedRoute.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray()
+                        : [[l.StartHarbour.Location.X, l.StartHarbour.Location.Y], [l.EndHarbour.Location.X, l.EndHarbour.Location.Y]],
+                    DistanceNm = seg?.DistanceNm ?? l.SailedDistanceNm ?? ((l.LogEnd ?? 0) - (l.LogStart ?? 0)), CalculatedDistanceNm = l.CalculatedDistanceNm,
+                    Source = seg is not null ? (seg.SourceOverride ?? seg.Source).ToString() : l.CalculatedRoute is not null ? "calculated" : "straight-line",
+                };
             }).ToList();
+            // days with recorded track but no logbook entry (spec 12 §12.2)
+            legs.AddRange(segments.Where(s => s.LogbookEntryId == null || entries.All(e => e.Id != s.LogbookEntryId)).Select(s => new
+            {
+                Id = s.Id, Day = s.Day, From = "", To = "", Coordinates = s.GeometryCoarse.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray(),
+                DistanceNm = s.DistanceNm, CalculatedDistanceNm = (decimal?)null, Source = (s.SourceOverride ?? s.Source).ToString(),
+            }));
             var photos = (await db.Media.AsNoTracking().Where(m => m.TripId == id && m.Location != null && m.Kind == MediaKind.Photo).Where(viewer.Media(trip, trip.Ship))
                 .Select(m => new { m.Id, m.Location, m.Caption, m.Day }).ToListAsync(ct))
                 .Select(m => new { type = "photo", m.Id, lat = m.Location!.Y, lng = m.Location.X, thumbUrl = (string?)$"/api/media/{m.Id}/thumb", title = m.Caption, m.Day }).ToList();
@@ -331,7 +345,7 @@ public static class TripEndpoints
         var isOwner = current.Id is { } o && await db.ShipMembers.AnyAsync(m => m.ShipId == t.ShipId && m.UserId == o && m.Role == ShipRole.Owner, ct);
         return new TripDto(t.Id, t.ShipId, t.Ship.Name, t.Name, t.Description, t.StartDate, t.EndDate, t.TimeZone, t.PlannedStartHarbourId, t.PlannedEndHarbourId,
             t.Visibility, t.Status, t.Currency, t.CostsLockedAt, crew, me, me is { Role: CrewRole.Skipper, Status: CrewStatus.Accepted } || isOwner,
-            isCrew && (me!.Role == CrewRole.Skipper || me.CanWriteLogbook), isCrew, isCrew);
+            isCrew && (me!.Role == CrewRole.Skipper || me.CanWriteLogbook), isCrew, isCrew, t.TrackVisibility, t.PublicPositionDelayMinutes);
     }
 
     private static IResult? Validate(TripUpsert r)
@@ -348,5 +362,6 @@ public static class TripEndpoints
         t.Name = r.Name.Trim(); t.Description = html.Sanitize(r.Description); t.StartDate = r.StartDate; t.EndDate = r.EndDate;
         t.TimeZone = string.IsNullOrWhiteSpace(r.TimeZone) ? "Europe/Berlin" : r.TimeZone; t.PlannedStartHarbourId = r.PlannedStartHarbourId; t.PlannedEndHarbourId = r.PlannedEndHarbourId;
         t.Visibility = r.Visibility == Visibility.Public ? Visibility.Public : Visibility.Crew; t.Status = r.Status; t.Currency = (r.Currency ?? "EUR").ToUpperInvariant();
+        t.TrackVisibility = r.TrackVisibility ?? t.Visibility; t.PublicPositionDelayMinutes = Math.Clamp(r.PublicPositionDelayMinutes ?? 120, 0, 100_000);
     }
 }

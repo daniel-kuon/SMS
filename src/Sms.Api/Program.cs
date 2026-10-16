@@ -6,6 +6,7 @@ using Sms.Api;
 using Sms.Api.Endpoints;
 using Sms.Infrastructure;
 using Sms.Infrastructure.Routing;
+using Sms.Infrastructure.Tracking;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -52,6 +53,9 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1) }));
+    o.AddPolicy("ingest", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 600, Window = TimeSpan.FromMinutes(1) }));
 });
 
 builder.Services.AddSingleton<HtmlSanitizerService>();
@@ -64,6 +68,7 @@ builder.Services.AddHttpClient("overpass");
 builder.Services.AddHttpClient("routing");
 builder.Services.AddSingleton<RoutingGraphBuilder>();
 builder.Services.AddScoped<SeaRouter>();
+builder.Services.AddSingleton<TrackProcessor>();
 builder.Services.AddHttpClient<EcbRates>();
 builder.Services.AddHostedService<EcbRateJob>();
 builder.Services.ConfigureHttpJsonOptions(o =>
@@ -108,6 +113,7 @@ api.MapProfiles();
 api.MapShips();
 api.MapHarbours();
 api.MapRouting();
+api.MapTracking();
 api.MapTrips();
 api.MapLogbook();
 api.MapPosts();

@@ -92,6 +92,9 @@ public class Trip : Entity
     public TripStatus Status { get; set; } = TripStatus.Planned;
     public string Currency { get; set; } = "EUR";
     public DateTimeOffset? CostsLockedAt { get; set; }
+    /// <summary>Spec 12 §12.5: track visibility may be lower than the trip's.</summary>
+    public Visibility TrackVisibility { get; set; } = Visibility.Crew;
+    public int PublicPositionDelayMinutes { get; set; } = 120;
     public List<CrewMember> Crew { get; set; } = [];
     public List<PlannedLeg> PlannedLegs { get; set; } = [];
 }
