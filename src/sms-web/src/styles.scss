@@ -1,1 +1,36 @@
-/* You can add global styles to this file, and also import other style files */
+@use '@angular/material' as mat;
+@use 'leaflet/dist/leaflet.css';
+@use 'leaflet.markercluster/dist/MarkerCluster.css' as mc;
+@use 'leaflet.markercluster/dist/MarkerCluster.Default.css' as mc-default;
+@use 'photoswipe/dist/photoswipe.css';
+
+html { @include mat.theme((color: (primary: mat.$azure-palette, tertiary: mat.$cyan-palette), typography: Roboto, density: 0)); }
+html, body { height: 100%; margin: 0; font-family: Roboto, sans-serif; background: #fafafa; }
+
+.mat-icon, mat-icon {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal; font-style: normal; font-size: 24px; line-height: 1; letter-spacing: normal; text-transform: none;
+  display: inline-block; white-space: nowrap; word-wrap: normal; direction: ltr; vertical-align: middle;
+  -webkit-font-feature-settings: 'liga'; font-feature-settings: 'liga';
+}
+
+.page { padding: 16px; max-width: 1200px; width: 100%; box-sizing: border-box; margin: 0 auto; }
+.page-narrow { max-width: 720px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.grow { flex: 1; }
+.muted { color: #666; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #e3eef9; color: #1b4d7a; }
+.chip.private { background: #fde8e8; color: #8a1c1c; }
+.chip.crew { background: #fff3cd; color: #7a5a00; }
+.chip.public { background: #e4f4e8; color: #1c5b2e; }
+.error { color: #b00020; }
+.rich img { max-width: 100%; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 12px; }
+.full { grid-column: 1 / -1; }
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+.photo-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: pointer; }
+.disclaimer { font-size: 11px; color: #777; }
+.leaflet-container { font: inherit; }
+.harbour-label { background: rgba(255,255,255,.85); border: none; box-shadow: none; font-size: 11px; padding: 1px 4px; }
+.photo-marker { border-radius: 50%; border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,.4); object-fit: cover; }

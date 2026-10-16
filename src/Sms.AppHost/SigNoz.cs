@@ -15,6 +15,10 @@ public static class SigNozResources
     private const string UserScriptsVolume = "sms-signoz-clickhouse-user-scripts";
     private const string ClickHouseDsn = "tcp://clickhouse:9000";
 
+    /// <summary>Login for the local SigNoz UI (created automatically on first start).</summary>
+    public const string AdminEmail = "admin@localhost.dev";
+    public const string AdminPassword = "SailingPortal2026!";
+
     public sealed record SigNozStack(
         IResourceBuilder<ContainerResource> Ui,
         IResourceBuilder<ContainerResource> Collector)
@@ -88,6 +92,20 @@ public static class SigNozResources
             .WaitFor(clickhouse)
             .WaitForCompletion(migrator);
 
+        // First-run setup: SigNoz needs an organisation + admin user before the OTel collector can register
+        // via OpAMP; without it the collector silently replaces all pipelines with "nop" and drops telemetry.
+        // Idempotent: a 4xx from /register (org exists) is fine.
+        var setup = builder.AddContainer("signoz-setup", "curlimages/curl", "8.11.1")
+            .WithEntrypoint("sh")
+            .WithArgs("-c", $$"""
+                until curl -sf http://signoz:8080/api/v1/health > /dev/null; do echo "waiting for signoz"; sleep 2; done
+                code=$(curl -s -o /tmp/out -w '%{http_code}' -X POST http://signoz:8080/api/v1/register \
+                  -H 'Content-Type: application/json' \
+                  -d '{"name":"Admin","orgName":"Sailing Portal","email":"{{AdminEmail}}","password":"{{AdminPassword}}"}')
+                echo "register admin ({{AdminEmail}}): HTTP $code"; cat /tmp/out; echo
+                """)
+            .WaitFor(signoz);
+
         var collector = builder.AddContainer("signoz-otel-collector", "signoz/signoz-otel-collector", CollectorTag)
             .WithEntrypoint("/bin/sh")
             .WithArgs("-c", "/signoz-otel-collector migrate sync check && /signoz-otel-collector --config=/etc/otel-collector-config.yaml --manager-config=/etc/manager-config.yaml --copy-path=/var/tmp/collector-config.yaml")
@@ -99,7 +117,8 @@ public static class SigNozResources
             .WithEndpoint(targetPort: 4317, scheme: "http", name: "otlp-grpc")
             .WithHttpEndpoint(targetPort: 4318, name: "otlp-http")
             .WaitFor(signoz)
-            .WaitForCompletion(migrator);
+            .WaitForCompletion(migrator)
+            .WaitForCompletion(setup);
 
         return new SigNozStack(signoz, collector);
     }
