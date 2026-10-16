@@ -1,57 +1,65 @@
-# SMS / "Kairos" – Documentation of the Legacy Application
+# Sailing Portal – Documentation
 
-This folder documents the **existing** application in this repository so that a
-new implementation can be built with **ASP.NET Core (current .NET)** and
-**Angular** without having to reverse-engineer the old code again.
+This folder is the specification for a **new sailing portal built with
+ASP.NET Core (current .NET) and Angular**. It has two parts:
 
-The legacy code lives in `SMS/src/SMS/` and was written in 2016 against
-ASP.NET Core **1.0 RC2** (`project.json`/`.xproj`), Entity Framework Core RC2,
-SQL Server, Razor views + BootstrapTagHelpers, and a TypeScript/Knockout.js
-single-page front end built around a Leaflet/Mapbox map. None of that tooling
-builds on a current SDK; treat the old code as a **specification**, not as a
-base to upgrade.
+- **Part A – Legacy app (01–06):** what the existing single-ship application in
+  `SMS/src/SMS/` does (2016, ASP.NET Core 1.0 RC2 + Knockout.js). None of its
+  tooling builds on a current SDK; treat it as a specification, not as code to
+  upgrade.
+- **Part B – New product (07–11):** the multi-ship portal / social network
+  for sailors that replaces it. It keeps all legacy functions and adds ships
+  per user, trips with crew, posts and photos per trip day with visibility
+  levels, shared costs with settlement, and automatic sea routing from
+  OpenStreetMap/OpenSeaMap data.
 
-## What the app is
+## The legacy app in short
 
-A private web app for the crew of a sailing yacht (brand name in the navbar:
-**"Kairos"**, site title **"Lady-Helmsman.de"**, sailing area: western Baltic /
-Kiel Bay). The UI is entirely **German**. It provides:
+A private web app for the crew of the sailing yacht **"Kairos"**
+(site "Lady-Helmsman.de", western Baltic). German UI. Interactive nautical map
+with harbours and a hand-drawn waypoint graph for distance calculation,
+electronic logbook, photo albums, harbour WiFi info, people, tasks, content
+pages, iCal feed. Anonymous users read everything; logged-in users edit.
 
-- An interactive nautical map (Mapbox streets + OpenSeaMap seamarks) with
-  **harbours** and a graph of **waypoints/connections** (navigable routes).
-- **Distance calculation** (shortest path over the waypoint graph, in nautical
-  miles) from a selected harbour to all other harbours, and route highlighting.
-- An electronic **logbook** (log book entries: from/to harbour, times, engine
-  hours, log reading, wind, crew, notes, photos).
-- **Photo albums** per harbour / logbook entry with drag-and-drop upload,
-  thumbnails and a PhotoSwipe gallery.
-- **WiFi** information per harbour.
-- **People** (crew members), hierarchical **tasks/jobs**, free **content pages**.
-- An admin mode for editing the waypoint graph directly on the map.
-- An iCal feed of "dummy" trips (calendar of planned trips).
-- Login via ASP.NET Identity; anonymous users can read everything, logged-in
-  users can edit.
+## The new product in short
+
+Anyone registers, adds ships and keeps the ship logbook online. Skippers plan
+trips and invite crew (also guests without account). During a trip every crew
+member posts photos and blog posts that are grouped into the trip's days and
+shown with that day's logbook entries; each item is private, crew-only or
+public. The crew tracks shared costs and sees who owes whom. A global harbour
+guide shows sea distances to the next ports, computed automatically (estimate
+only, not for navigation).
 
 ## Reading order
 
 | # | File | Content |
 |---|------|---------|
+| **A** | | **Legacy application** |
 | 1 | [01-overview.md](01-overview.md) | Purpose, features, legacy tech stack, repository layout, runtime config |
-| 2 | [02-domain-model.md](02-domain-model.md) | All entities, fields, types, relations, DB schema (TPH), delete cascades, ER diagram |
-| 3 | [03-backend-api.md](03-backend-api.md) | Every HTTP endpoint, auth rules, save semantics, image upload, iCal, Identity |
-| 4 | [04-frontend.md](04-frontend.md) | Page layout, every screen/modal/sidebar, map modes, interactions, German labels |
-| 5 | [05-business-logic.md](05-business-logic.md) | Algorithms: distance/shortest path, route display, waypoint-graph editing, logbook defaults, album context, upload flow |
-| 6 | [06-known-issues.md](06-known-issues.md) | Bugs, dead code, half-finished features and inconsistencies — do **not** copy these |
-| 7 | [07-rewrite-plan.md](07-rewrite-plan.md) | Recommended target architecture for .NET + Angular and a step-by-step implementation plan with acceptance criteria |
+| 2 | [02-domain-model.md](02-domain-model.md) | Legacy entities, fields, relations, DB schema (TPH), delete cascades |
+| 3 | [03-backend-api.md](03-backend-api.md) | Legacy HTTP endpoints, auth, save semantics, image upload, iCal |
+| 4 | [04-frontend.md](04-frontend.md) | Legacy screens, modals, map modes, interactions, German labels |
+| 5 | [05-business-logic.md](05-business-logic.md) | Legacy algorithms: distances, route display, graph editing, logbook defaults, albums |
+| 6 | [06-known-issues.md](06-known-issues.md) | Legacy bugs and dead code — do **not** copy these |
+| **B** | | **New product** |
+| 7 | [07-product-requirements.md](07-product-requirements.md) | Vision, roles, user stories with acceptance criteria, non-functional requirements, open questions |
+| 8 | [08-domain-model-v2.md](08-domain-model-v2.md) | New entities, visibility rules, permission matrix, mapping from legacy |
+| 9 | [09-costs-and-settlement.md](09-costs-and-settlement.md) | Expense splitting, rounding, balances, "who pays whom" algorithm, UI, API, tests |
+| 10 | [10-sea-routing.md](10-sea-routing.md) | Automatic sea routing from OSM/OpenSeaMap data, harbour import, API, validation |
+| 11 | [11-architecture-and-plan.md](11-architecture-and-plan.md) | Solution structure, technology decisions, Angular structure, API overview, 14 implementation phases with acceptance criteria |
 
 ## Instructions for the session implementing the new version
 
-1. Read all files in this folder first (they are short enough to read fully).
-2. Treat `02` + `03` as the functional contract for the backend and `04` + `05`
-   as the functional contract for the front end.
-3. Follow the phases in `07-rewrite-plan.md`. Each phase lists acceptance
-   criteria that can be checked independently.
-4. When something here is ambiguous, the source of truth is the legacy code;
-   every section names the files it was derived from.
-5. Keep the UI in German (labels are listed in `04-frontend.md`), unless the
-   owner decides otherwise.
+1. Read `07`–`11` fully; read `01`–`05` for the details of features that are
+   carried over (they are referenced from `07` as "legacy").
+2. `07` is the functional contract, `08` the data and permission contract,
+   `09` and `10` specify the two algorithmic features, `11` gives the
+   architecture and the order of work.
+3. Implement phase by phase (`11` §11.5); each phase lists acceptance
+   criteria. Visibility and permission rules (`08` §8.3–8.4) must be enforced
+   server-side and covered by tests before content is shown publicly.
+4. Defaults for open questions are listed in `07` §7.5 — use them unless the
+   owner decides otherwise, and record decisions in these docs.
+5. UI is German first with English as a second language; legacy German labels
+   are in `04`.
