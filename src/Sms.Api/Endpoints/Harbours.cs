@@ -109,7 +109,7 @@ public static class HarbourEndpoints
             var w = await db.HarbourWifis.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (w is null) return Results.NotFound();
             // spec 08 §8.4: every registered user may edit harbour data (wiki-like); the revision keeps it auditable
-            db.HarbourRevisions.Add(new HarbourRevision { HarbourId = w.HarbourId, ChangedById = current.Id, SnapshotJson = JsonSerializer.Serialize(new { wifi = new WifiDto(w.Id, w.Name, w.Password, w.Speed, w.Free) }, JsonOpts) });
+            db.HarbourRevisions.Add(new HarbourRevision { HarbourId = w.HarbourId, ChangedById = current.Id, SnapshotJson = JsonSerializer.Serialize(new { wifi = new WifiDto(w.Id, w.Name, null, w.Speed, w.Free) }, JsonOpts) }); // revisions are public: never snapshot the password
             w.Name = req.Name; w.Password = req.Password; w.Speed = Math.Clamp(req.Speed, 0, 3); w.Free = req.Free; w.UpdatedById = current.Id;
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
@@ -119,7 +119,7 @@ public static class HarbourEndpoints
         {
             var w = await db.HarbourWifis.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (w is null) return Results.NotFound();
-            db.HarbourRevisions.Add(new HarbourRevision { HarbourId = w.HarbourId, ChangedById = current.Id, SnapshotJson = JsonSerializer.Serialize(new { deletedWifi = new WifiDto(w.Id, w.Name, w.Password, w.Speed, w.Free) }, JsonOpts) });
+            db.HarbourRevisions.Add(new HarbourRevision { HarbourId = w.HarbourId, ChangedById = current.Id, SnapshotJson = JsonSerializer.Serialize(new { deletedWifi = new WifiDto(w.Id, w.Name, null, w.Speed, w.Free) }, JsonOpts) });
             db.HarbourWifis.Remove(w);
             await db.SaveChangesAsync(ct);
             return Results.NoContent();

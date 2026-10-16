@@ -24,13 +24,13 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | Vector maps | ✅ | MapLibre GL everywhere (harbour map, trip overview); base style OpenFreeMap *Liberty* (vector, no API key); own sea-mark overlay from `Sms.Tiles` |
 | Sea-mark tile server | ✅ | `Sms.Tiles` (separate Aspire resource): `GET /tiles/seamark/{z}/{x}/{y}.mvt` from the `Seamarks` table via `ST_AsMVT`, zoom ≥ 8, memory cache + ETag; admin import of OpenSeaMap data per bounding box (Overpass with mirror fallback) or Overpass-JSON upload |
 | CMS | ✅ | Global content pages as a tree (nav + footer); per-ship websites with sub pages (owner-editable, published/draft, slug paths); domains assigned to ships → the site served on that host shows only the ship's pages and latest logbook (`/api/site`); dev preview via `X-Tenant-Host` |
-| Tests | ✅ | 17 domain tests, 20 API integration tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 24 Angular vitest specs |
+| Tests | ✅ | 17 domain tests, 25 API/infrastructure tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 24 Angular vitest specs |
 
 ## Open (follow-ups)
 
 - **AIS provider** (`12` §12.1 C): `IAisPositionProvider` + MarineTraffic/aisstream polling; the track pipeline already accepts `Ais` points.
 - **Track playback** (`12` §12.3, optional animation).
-- **Europe-wide routing build**: run with `Routing:Region` = −32…45 / 27…72 on a machine with enough RAM (the builder keeps the region's land polygons and cells in memory); tile-wise building is the next step if that is too large.
+- **Europe-wide routing build**: run with `Routing:Region` = −32…45 / 27…72; the build is tile-wise with bounded memory (see decisions), only time (hours) and PostGIS disk are needed. Untested at that scale so far.
 - **13 legacy import** (needs the old SQL Server database), **14 canals**, offline drafts for logbook entries.
 - Europe-wide OSM harbour **and sea-mark** import (osmium pipeline); the Overpass import works for bounding boxes (≈30 s for Kiel Bay, 5 000 marks).
 - Self-host the base map (OpenFreeMap tiles are a free public service; `Map:StyleUrl` points to any MapLibre style, e.g. a Planetiler/Martin stack next to `Sms.Tiles`).
@@ -52,6 +52,7 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | Angular | 21 (Node 22.14 on the dev machine is below Angular 22's minimum) |
 | Calendar tokens | Data-protection-encrypted ids instead of stored secrets |
 | Routing build | In-process background job (admin button) instead of a separate `Sms.Routing.Builder` CLI; same tables as spec 10 §10.2 so a CLI can be split out later |
+| Tile-wise graph build | Land polygons stream from the shapefile straight into `routing_land`; the region is then processed in tiles of `Routing:TileCells`² start cells (`WaterGraphTiler`): each tile loads only its clipped land from PostGIS, builds the quadtree, writes nodes/edges via COPY and stitches to already built neighbours through their retained border cells. Cells fully covered by land are pruned at the top instead of descending to the minimum size. One longitude scale per region (cells widen towards the north); the new version only becomes active at the end |
 | Track segments | Rebuilt per trip after a 20 s debounce (in-process); no separate worker |
 | Maps | Leaflet replaced by MapLibre GL 6. Base style from OpenFreeMap (vector, OpenMapTiles schema); the MapLibre worker is served as a static asset (`/maplibre-gl-worker.mjs`) because Vite's dependency pre-bundling breaks its relative worker URL |
 | Sea marks | Stored as `geometry(Point,3857)` with the raw OSM tags (jsonb) and the few attributes the style needs; tiles cut in SQL (`ST_AsMVT`) by a separate minimal-API project so the tile server can scale/cache independently of the API |
