@@ -57,7 +57,7 @@ export class TripEditDialog {
         <mat-form-field appearance="outline" class="full"><mat-label>Benutzer suchen</mat-label>
           <input matInput [(ngModel)]="query" (ngModelChange)="search($event)" [matAutocomplete]="auto" [disabled]="guest" />
           <mat-autocomplete #auto="matAutocomplete" (optionSelected)="userId = $event.option.value.userId; query = $event.option.value.displayName">
-            @for (u of hits(); track u.userId) { <mat-option [value]="u">{{ u.displayName }} <span class="muted">{{ u.email }}</span></mat-option> }
+            @for (u of hits(); track u.userId) { <mat-option [value]="u">{{ u.displayName }}</mat-option> }
           </mat-autocomplete></mat-form-field>
         <mat-checkbox class="full" [(ngModel)]="guest">{{ 'trip.guest' | translate }}</mat-checkbox>
         @if (guest) { <mat-form-field appearance="outline" class="full"><mat-label>{{ 'trip.guestName' | translate }}</mat-label><input matInput [(ngModel)]="guestName" /></mat-form-field> }
@@ -81,8 +81,8 @@ export class CrewDialog {
   data = inject<{ tripId: string; member?: Crew }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api);
   query = ''; userId = ''; guest = false; guestName = this.data.member?.name ?? ''; canWriteLogbook = this.data.member?.canWriteLogbook ?? false;
   fromDate = this.data.member?.fromDate ?? ''; toDate = this.data.member?.toDate ?? '';
-  hits = signal<{ userId: string; displayName: string; email: string }[]>([]); inviteLink = signal(''); error = signal('');
-  search(q: string): void { if (typeof q === 'string' && q.length >= 2) this.api.get<{ userId: string; displayName: string; email: string }[]>('/api/users', { q }).subscribe(h => this.hits.set(h)); }
+  hits = signal<{ userId: string; displayName: string }[]>([]); inviteLink = signal(''); error = signal('');
+  search(q: string): void { if (typeof q === 'string' && q.length >= 2) this.api.get<{ userId: string; displayName: string }[]>('/api/users', { q }).subscribe(h => this.hits.set(h)); }
   link(): void { this.api.post<{ link: string }>(`/api/trips/${this.data.tripId}/invitations`, {}).subscribe(r => this.inviteLink.set(r.link)); }
   save(): void {
     const body = { userId: this.guest ? null : this.userId || null, guestName: this.guest || this.data.member?.isGuest ? this.guestName : null, role: 'Crew', canWriteLogbook: this.canWriteLogbook, fromDate: this.fromDate || null, toDate: this.toDate || null };

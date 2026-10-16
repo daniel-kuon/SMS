@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 builder.Services.AddProblemDetails();
+builder.Services.Configure<RouteHandlerOptions>(o => o.ThrowOnBadRequest = false); // binding failures -> 400, also in Development
 builder.Services.AddOpenApi();
 builder.Services.AddHttpContextAccessor();
 
@@ -118,7 +119,7 @@ await using (var scope = app.Services.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
     await db.Database.MigrateAsync();
-    await Seed.RunAsync(scope.ServiceProvider);
+    if (app.Environment.IsDevelopment()) await Seed.RunAsync(scope.ServiceProvider); // dev-only demo admin + sample harbours
 }
 
 app.Run();

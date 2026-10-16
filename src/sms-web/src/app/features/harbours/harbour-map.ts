@@ -12,10 +12,10 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatSelectModule } from '@angular/material/select';
 import { TranslatePipe } from '@ngx-translate/core';
 import * as L from 'leaflet';
-import 'leaflet.markercluster';
+import { baseLayers, markerCluster } from '../../core/leaflet-setup';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, NearbyPort, Wifi } from '../../core/models';
-import { UploadZone } from '../../shared/shared';
+import { textNode, UploadZone } from '../../shared/shared';
 
 const Legacy = { lat: 54.40774166820069, lng: 10.523529052734373, zoom: 9 };
 
@@ -92,7 +92,7 @@ export class HarbourMapPage {
   nearby = signal<NearbyPort[]>([]);
   facilities = computed(() => { const f = this.harbour()?.facilities; return f ? Object.keys(f).filter(k => f[k]) : null; });
   private map!: L.Map;
-  private cluster = (L as unknown as { markerClusterGroup: (o?: object) => L.MarkerClusterGroup }).markerClusterGroup({ disableClusteringAtZoom: 11, maxClusterRadius: 40 });
+  private cluster = markerCluster({ disableClusteringAtZoom: 11, maxClusterRadius: 40 });
   private markers = new Map<string, L.Marker>();
   private route?: L.Polyline;
   private pinned = false;
@@ -102,8 +102,7 @@ export class HarbourMapPage {
 
   ngAfterViewInit(): void {
     this.map = L.map(this.mapEl().nativeElement).setView([Legacy.lat, Legacy.lng], Legacy.zoom);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap-Mitwirkende' }).addTo(this.map);
-    L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', { maxZoom: 18, attribution: 'OpenSeaMap' }).addTo(this.map);
+    baseLayers(this.map);
     this.map.addLayer(this.cluster);
     this.map.on('moveend', () => this.refresh());
     this.map.on('contextmenu', e => this.contextMenu(e));
@@ -116,7 +115,7 @@ export class HarbourMapPage {
     this.api.get<HarbourMarker[]>('/api/harbours', { bbox: `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}` }).subscribe(hs => {
       for (const h of hs) {
         if (this.markers.has(h.id)) continue;
-        const m = L.marker([h.lat, h.lng], { title: h.name }).bindTooltip(h.name, { permanent: true, direction: 'right', className: 'harbour-label', offset: [10, -8] });
+        const m = L.marker([h.lat, h.lng], { title: h.name }).bindTooltip(textNode(h.name), { permanent: true, direction: 'right', className: 'harbour-label', offset: [10, -8] });
         m.on('click', () => this.select(h.id));
         m.on('mouseover', () => this.hoverHarbour(h.id));
         m.on('mouseout', () => this.hideRoute());
@@ -150,7 +149,7 @@ export class HarbourMapPage {
     if (!h || this.pinned) return;
     this.route?.remove();
     this.route = L.polyline([[h.lat, h.lng], [p.lat, p.lng]], { color: '#1e88e5', weight: 4, dashArray: '8 6' })
-      .bindTooltip(`${p.distanceNm} sm`, { permanent: true, direction: 'center', className: 'harbour-label' }).addTo(this.map);
+      .bindTooltip(textNode(`${p.distanceNm} sm`), { permanent: true, direction: 'center', className: 'harbour-label' }).addTo(this.map);
     const bounds = this.route.getBounds();
     if (!this.map.getBounds().contains(bounds)) { this.prevBounds ??= this.map.getBounds(); this.map.fitBounds(bounds.pad(0.3)); }
   }

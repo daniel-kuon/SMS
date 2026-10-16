@@ -8,7 +8,7 @@ namespace Sms.Api.Endpoints;
 
 public record ProfileUpdate(string DisplayName, string? Bio, Guid? HomeHarbourId, string? Experience, ProfileVisibility ProfileVisibility, Visibility DefaultContentVisibility, string Language, bool EmailNotifications);
 public record PublicProfile(Guid UserId, string DisplayName, string? Bio, string? Experience, string? HomeHarbour, string? AvatarUrl, IReadOnlyList<TripSummary> Trips);
-public record UserSearchResult(Guid UserId, string DisplayName, string Email);
+public record UserSearchResult(Guid UserId, string DisplayName);
 
 public static class ProfileEndpoints
 {
@@ -34,11 +34,14 @@ public static class ProfileEndpoints
         g.MapGet("/users", async (string q, SmsDbContext db, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(q) || q.Length < 2) return Results.Ok(Array.Empty<UserSearchResult>());
+            // Display-name substring search, or an exact e-mail match; e-mail addresses are never returned.
+            var pattern = "%" + q.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
+            var normalizedEmail = q.Trim().ToUpperInvariant();
             var hits = await db.Profiles.AsNoTracking()
                 .Join(db.Users, p => p.UserId, u => u.Id, (p, u) => new { p, u })
-                .Where(x => EF.Functions.ILike(x.p.DisplayName, $"%{q}%") || EF.Functions.ILike(x.u.Email!, $"{q}%"))
+                .Where(x => EF.Functions.ILike(x.p.DisplayName, pattern, @"\") || x.u.NormalizedEmail == normalizedEmail)
                 .OrderBy(x => x.p.DisplayName).Take(20)
-                .Select(x => new UserSearchResult(x.p.UserId, x.p.DisplayName, x.u.Email!)).ToListAsync(ct);
+                .Select(x => new UserSearchResult(x.p.UserId, x.p.DisplayName)).ToListAsync(ct);
             return Results.Ok(hits);
         }).RequireAuthorization();
 

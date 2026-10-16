@@ -107,7 +107,7 @@ export class ShipPage {
       <mat-form-field appearance="outline" class="full"><mat-label>Benutzer suchen</mat-label>
         <input matInput [(ngModel)]="query" (ngModelChange)="search($event)" [matAutocomplete]="auto" />
         <mat-autocomplete #auto="matAutocomplete" (optionSelected)="userId = $event.option.value.userId; query = $event.option.value.displayName">
-          @for (u of hits(); track u.userId) { <mat-option [value]="u">{{ u.displayName }} <span class="muted">{{ u.email }}</span></mat-option> }
+          @for (u of hits(); track u.userId) { <mat-option [value]="u">{{ u.displayName }}</mat-option> }
         </mat-autocomplete></mat-form-field>
       <mat-form-field appearance="outline" class="full"><mat-label>oder E-Mail einladen</mat-label><input matInput type="email" [(ngModel)]="email" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>Rolle</mat-label><mat-select [(ngModel)]="role"><mat-option value="Skipper">{{ 'ship.skipper' | translate }}</mat-option><mat-option value="Owner">{{ 'ship.owner' | translate }}</mat-option></mat-select></mat-form-field>
@@ -118,8 +118,8 @@ export class ShipPage {
 })
 export class MemberDialog {
   data = inject<Ship>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api);
-  query = ''; userId = ''; email = ''; role: 'Owner' | 'Skipper' = 'Skipper'; hits = signal<{ userId: string; displayName: string; email: string }[]>([]); link = signal(''); error = signal('');
-  search(q: string): void { if (typeof q === 'string' && q.length >= 2) this.api.get<{ userId: string; displayName: string; email: string }[]>('/api/users', { q }).subscribe(h => this.hits.set(h)); }
+  query = ''; userId = ''; email = ''; role: 'Owner' | 'Skipper' = 'Skipper'; hits = signal<{ userId: string; displayName: string }[]>([]); link = signal(''); error = signal('');
+  search(q: string): void { if (typeof q === 'string' && q.length >= 2) this.api.get<{ userId: string; displayName: string }[]>('/api/users', { q }).subscribe(h => this.hits.set(h)); }
   save(): void {
     if (this.userId) this.api.post(`/api/ships/${this.data.id}/members`, { userId: this.userId, role: this.role }).subscribe({ next: () => this.ref.close(true), error: e => this.error.set(errorMessage(e)) });
     else if (this.email) this.api.post<{ link: string }>(`/api/ships/${this.data.id}/invitations`, { email: this.email, role: this.role }).subscribe({ next: r => this.link.set(r.link), error: e => this.error.set(errorMessage(e)) });

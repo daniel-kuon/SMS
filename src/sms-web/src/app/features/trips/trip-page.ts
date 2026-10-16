@@ -9,10 +9,10 @@ import { MatDialog } from '@angular/material/dialog';
 import { MatCardModule } from '@angular/material/card';
 import { TranslatePipe } from '@ngx-translate/core';
 import * as L from 'leaflet';
-import 'leaflet.markercluster';
+import { baseLayers, markerCluster } from '../../core/leaflet-setup';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Day, Leg, Media, Trip } from '../../core/models';
-import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, UploadZone } from '../../shared/shared';
+import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, textNode, UploadZone } from '../../shared/shared';
 import { CrewDialog, TripEditDialog } from './trip-dialogs';
 import { TaskList } from './task-list';
 import { LogbookTable } from '../logbook/logbook-page';
@@ -137,30 +137,30 @@ export class TripPage {
     if (!el || !o) return;
     if (!this.map) {
       this.map = L.map(el).setView([54.4, 10.5], 8);
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap-Mitwirkende' }).addTo(this.map);
-      L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', { maxZoom: 18, attribution: 'OpenSeaMap' }).addTo(this.map);
+      baseLayers(this.map);
     }
     const map = this.map;
     map.eachLayer(l => { if (!(l instanceof L.TileLayer)) map.removeLayer(l); });
-    this.legLayers = o.legs.map((l, i) => L.polyline(l.coordinates.map(c => [c[1], c[0]] as [number, number]), { color: this.color(i), weight: 4, dashArray: '8 6' }).bindTooltip(`${l.from} → ${l.to}: ${l.distanceNm} sm`).addTo(map));
-    for (const s of o.stops) L.marker([s.lat, s.lng]).bindTooltip(`${s.name} (${s.nights}×)`, { permanent: true, direction: 'right', className: 'harbour-label' }).addTo(map);
-    const cluster = (L as unknown as { markerClusterGroup: (o?: object) => L.MarkerClusterGroup }).markerClusterGroup({ maxClusterRadius: 40 });
+    this.legLayers = o.legs.map((l, i) => L.polyline(l.coordinates.map(c => [c[1], c[0]] as [number, number]), { color: this.color(i), weight: 4, dashArray: '8 6' }).bindTooltip(textNode(`${l.from} → ${l.to}: ${l.distanceNm} sm`)).addTo(map));
+    for (const s of o.stops) L.marker([s.lat, s.lng]).bindTooltip(textNode(`${s.name} (${s.nights}×)`), { permanent: true, direction: 'right', className: 'harbour-label' }).addTo(map);
+    const cluster = markerCluster({ maxClusterRadius: 40 });
     for (const it of o.items) {
-      const icon = it.type === 'photo' && it.thumbUrl ? L.divIcon({ html: `<img src="${it.thumbUrl}" class="photo-marker" width="40" height="40">`, iconSize: [40, 40], className: '' })
+      const img = document.createElement('img'); img.src = it.thumbUrl ?? ''; img.className = 'photo-marker'; img.width = 40; img.height = 40;
+      const icon = it.type === 'photo' && it.thumbUrl ? L.divIcon({ html: img, iconSize: [40, 40], className: '' })
         : L.divIcon({ html: '<span class="material-symbols-outlined" style="font-size:28px;color:#1b4d7a">chat_bubble</span>', iconSize: [28, 28], className: '' });
       const m = L.marker([it.lat, it.lng], { icon });
       if (it.type === 'post') m.on('click', () => this.router.navigate(['/posts', it.id]));
-      else m.bindPopup(`<img src="${it.thumbUrl}" style="max-width:200px"><br>${it.title ?? ''}`);
+      else { const div = document.createElement('div'); const big = document.createElement('img'); big.src = it.thumbUrl ?? ''; big.style.maxWidth = '200px'; div.append(big, document.createElement('br'), document.createTextNode(it.title ?? '')); m.bindPopup(div); }
       cluster.addLayer(m);
     }
     map.addLayer(cluster);
     const all = [...o.legs.flatMap(l => l.coordinates.map(c => [c[1], c[0]] as [number, number])), ...o.items.map(i => [i.lat, i.lng] as [number, number])];
-    if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.2));
-    setTimeout(() => map.invalidateSize(), 100);
+    // the tab body may still be collapsed: let the container get its size before fitting the bounds
+    setTimeout(() => { map.invalidateSize(); if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.3), { maxZoom: 12 }); }, 150);
   }
 
   highlight(i: number): void { this.legLayers.forEach((l, j) => l.setStyle({ weight: j === i ? 8 : 4, opacity: i < 0 || j === i ? 1 : 0.4 })); if (i >= 0) this.map?.fitBounds(this.legLayers[i].getBounds().pad(0.5)); }
-  go(i: number): void { this.router.navigate(['/trips', this.id(), TABS[i]], { replaceUrl: true }); if (i === 0) setTimeout(() => this.map?.invalidateSize(), 100); }
+  go(i: number): void { this.router.navigate(['/trips', this.id(), TABS[i]], { replaceUrl: true }); if (i === 0) setTimeout(() => this.drawMap(), 100); }
   totalNm(): number { return this.legs().reduce((s, l) => s + (l.distanceNm ?? 0), 0); }
 
   edit(t: Trip): void { this.dialog.open(TripEditDialog, { data: { shipId: t.shipId, trip: t }, width: '700px' }).afterClosed().subscribe(ok => ok && this.reload()); }

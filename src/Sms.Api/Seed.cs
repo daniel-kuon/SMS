@@ -5,21 +5,25 @@ using Sms.Infrastructure;
 
 namespace Sms.Api;
 
-/// <summary>Development seed: platform admin, content pages and a few western-Baltic harbours (legacy area) so the map is not empty.</summary>
+/// <summary>
+/// Development-only seed (Program.cs runs it in Development): platform admin, content pages and a few
+/// western-Baltic harbours (legacy area) so the map is not empty. Credentials come from configuration
+/// (Seed:AdminEmail / Seed:AdminPassword); the defaults are for the local developer machine only.
+/// </summary>
 public static class Seed
 {
-    public const string AdminEmail = "admin@localhost.dev";
-    public const string AdminPassword = "SailingPortal2026!";
-
     public static async Task RunAsync(IServiceProvider sp)
     {
         var db = sp.GetRequiredService<SmsDbContext>();
         var users = sp.GetRequiredService<UserManager<ApplicationUser>>();
+        var cfg = sp.GetRequiredService<IConfiguration>();
+        var adminEmail = cfg["Seed:AdminEmail"] ?? "admin@localhost.dev";
+        var adminPassword = cfg["Seed:AdminPassword"] ?? "SailingPortal2026!";
 
-        if (await users.FindByEmailAsync(AdminEmail) is null)
+        if (await users.FindByEmailAsync(adminEmail) is null)
         {
-            var admin = new ApplicationUser { UserName = AdminEmail, Email = AdminEmail, EmailConfirmed = true };
-            var result = await users.CreateAsync(admin, AdminPassword);
+            var admin = new ApplicationUser { UserName = adminEmail, Email = adminEmail, EmailConfirmed = true };
+            var result = await users.CreateAsync(admin, adminPassword);
             if (result.Succeeded)
                 db.Profiles.Add(new UserProfile { UserId = admin.Id, DisplayName = "Admin", IsAdmin = true, Language = "de" });
         }

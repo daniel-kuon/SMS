@@ -16,13 +16,19 @@ public static class ApiHelpers
     public static (int page, int pageSize) Paging(int? page, int? pageSize) =>
         (Math.Max(1, page ?? 1), Math.Clamp(pageSize ?? 25, 1, 200));
 
-    /// <summary>Base URL of the SPA for links in e-mails: configured, else the caller's origin.</summary>
+    /// <summary>
+    /// Base URL of the SPA for links in e-mails. Configured Web:BaseUrl wins; otherwise the request's Origin is
+    /// accepted only when it is on the Web:AllowedOrigins list or a loopback origin (dev server with a random port),
+    /// so a forged Origin/Host header can never poison confirmation or reset links.
+    /// </summary>
     public static string WebBaseUrl(HttpRequest req, IConfiguration cfg)
     {
         if (cfg["Web:BaseUrl"] is { Length: > 0 } configured) return configured.TrimEnd('/');
-        if (req.Headers.Origin.FirstOrDefault() is { Length: > 0 } origin) return origin.TrimEnd('/');
-        if (Uri.TryCreate(req.Headers.Referer.FirstOrDefault(), UriKind.Absolute, out var referer)) return $"{referer.Scheme}://{referer.Authority}";
-        return $"{req.Scheme}://{req.Host}";
+        var allowed = cfg.GetSection("Web:AllowedOrigins").Get<string[]>() ?? [];
+        if (Uri.TryCreate(req.Headers.Origin.FirstOrDefault(), UriKind.Absolute, out var origin)
+            && (origin.IsLoopback || allowed.Contains(origin.GetLeftPart(UriPartial.Authority), StringComparer.OrdinalIgnoreCase)))
+            return origin.GetLeftPart(UriPartial.Authority);
+        throw new InvalidOperationException("Web:BaseUrl is not configured and the request origin is not allowed (Web:AllowedOrigins).");
     }
 
     public static string NewToken() => Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24));

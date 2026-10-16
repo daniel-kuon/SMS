@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Point = NetTopologySuite.Geometries.Point;
 
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
 
@@ -33,6 +34,12 @@ public sealed class MediaStorage(IConfiguration config, ILogger<MediaStorage> lo
     public static readonly string[] Variants = ["original", "preview", "thumb"];
 
     private string Root => Path.GetFullPath(config["Media:RootPath"] ?? "media");
+
+    /// <summary>Decoders limited to the photo formats we accept (no GIF/TIFF/BMP code paths).</summary>
+    private static readonly Configuration PhotoFormats = new(
+        new SixLabors.ImageSharp.Formats.Jpeg.JpegConfigurationModule(),
+        new SixLabors.ImageSharp.Formats.Png.PngConfigurationModule(),
+        new SixLabors.ImageSharp.Formats.Webp.WebpConfigurationModule());
 
     public sealed record ProcessResult(string StorageKey, int Width, int Height, DateTimeOffset? TakenAt, Point? Location);
 
@@ -62,7 +69,7 @@ public sealed class MediaStorage(IConfiguration config, ILogger<MediaStorage> lo
         catch (Exception ex) { logger.LogDebug(ex, "No EXIF metadata"); }
 
         buffer.Position = 0;
-        using var image = await Image.LoadAsync(buffer, ct);
+        using var image = await Image.LoadAsync(new DecoderOptions { Configuration = PhotoFormats, MaxFrames = 1 }, buffer, ct);
         image.Mutate(x => x.AutoOrient());
         image.Metadata.ExifProfile = null;
         image.Metadata.XmpProfile = null;

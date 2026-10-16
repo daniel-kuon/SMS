@@ -111,7 +111,7 @@ export class Gallery {
     this.lightbox = new PhotoSwipeLightbox({ gallery: `#${this.id}`, children: 'a', pswpModule: PhotoSwipe });
     this.lightbox.on('uiRegister', () => this.lightbox!.pswp?.ui?.registerElement({
       name: 'caption', order: 9, isButton: false, appendTo: 'root',
-      onInit: (el, pswp) => pswp.on('change', () => { el.innerHTML = (pswp.currSlide?.data.element as HTMLElement | undefined)?.querySelector('img')?.title ?? ''; }),
+      onInit: (el, pswp) => pswp.on('change', () => { el.textContent = (pswp.currSlide?.data.element as HTMLElement | undefined)?.querySelector('img')?.title ?? ''; }),
     }));
     this.lightbox.init();
   }
@@ -155,6 +155,9 @@ export class UploadZone {
     });
   }
 }
+
+/** Text node for Leaflet tooltips/popups so user-provided names are never parsed as HTML. */
+export function textNode(text: string): HTMLElement { const span = document.createElement('span'); span.textContent = text; return span; }
 
 export function fmtDate(d: string | null | undefined, opts: Intl.DateTimeFormatOptions = { dateStyle: 'medium' }): string {
   if (!d) return '';
