@@ -41,31 +41,6 @@
         "maxAge": "7d",
         "timeout": "3s"
       }
-    },
-    {
-      "name": "my-data",
-      "urls": [
-        "/api/trips/**",
-        "/api/ships/**",
-        "/api/auth/me"
-      ],
-      "cacheConfig": {
-        "strategy": "freshness",
-        "maxSize": 100,
-        "maxAge": "1d",
-        "timeout": "3s"
-      }
-    },
-    {
-      "name": "thumbnails",
-      "urls": [
-        "/api/media/**"
-      ],
-      "cacheConfig": {
-        "strategy": "performance",
-        "maxSize": 300,
-        "maxAge": "7d"
-      }
     }
   ]
 }

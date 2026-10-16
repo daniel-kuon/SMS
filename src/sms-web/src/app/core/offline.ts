@@ -1,9 +1,9 @@
 import { inject, Injectable, signal } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
-import { Api } from './api';
+import { Api, AuthService } from './api';
 import { Media } from './models';
 
-interface QueuedUpload { id: number; url: string; fields: Record<string, string>; files: { name: string; type: string; blob: Blob }[]; createdAt: number; }
+interface QueuedUpload { id: number; userId: string; url: string; fields: Record<string, string>; files: { name: string; type: string; blob: Blob }[]; createdAt: number; }
 
 /**
  * Spec 07 H2: photo uploads survive poor connectivity on board. Failed/offline uploads are stored in
@@ -13,6 +13,7 @@ interface QueuedUpload { id: number; url: string; fields: Record<string, string>
 @Injectable({ providedIn: 'root' })
 export class OfflineQueue {
   private api = inject(Api);
+  private auth = inject(AuthService);
   private snack = inject(MatSnackBar);
   readonly pending = signal(0);
   readonly online = signal(typeof navigator === 'undefined' ? true : navigator.onLine);
@@ -20,6 +21,7 @@ export class OfflineQueue {
 
   constructor() {
     if (typeof window === 'undefined') return;
+    this.auth.onLogout = () => this.clearAll();
     window.addEventListener('online', () => { this.online.set(true); void this.flush(); });
     window.addEventListener('offline', () => this.online.set(false));
     void this.refreshCount();
@@ -27,8 +29,10 @@ export class OfflineQueue {
   }
 
   async enqueue(url: string, files: File[], fields: Record<string, string>): Promise<void> {
+    const userId = this.auth.me()?.id;
+    if (!userId) return;
     const db = await this.db();
-    await tx(db, 'readwrite', store => store.add({ url, fields, files: files.map(f => ({ name: f.name, type: f.type, blob: f })), createdAt: Date.now() } satisfies Omit<QueuedUpload, 'id'>));
+    await tx(db, 'readwrite', store => store.add({ userId, url, fields, files: files.map(f => ({ name: f.name, type: f.type, blob: f })), createdAt: Date.now() } satisfies Omit<QueuedUpload, 'id'>));
     await this.refreshCount();
     this.snack.open('Offline – Upload wird nachgeholt, sobald wieder Verbindung besteht.', 'OK', { duration: 5000 });
   }
@@ -41,7 +45,10 @@ export class OfflineQueue {
     try {
       const db = await this.db();
       const items = await tx<QueuedUpload[]>(db, 'readonly', store => store.getAll());
+      const userId = this.auth.me()?.id;
       for (const item of items) {
+        if (!userId) break;
+        if (item.userId !== userId) { await tx(db, 'readwrite', store => store.delete(item.id)); continue; } // queued by another account on this device
         try {
           const files = item.files.map(f => new File([f.blob], f.name, { type: f.type }));
           const result = await new Promise<Media[]>((res, rej) => this.api.upload<Media[]>(item.url, files, item.fields).subscribe({ next: res, error: rej }));
@@ -59,6 +66,14 @@ export class OfflineQueue {
       await this.refreshCount();
     }
     return created;
+  }
+
+  /** Logout hygiene: service-worker caches, queued uploads and drafts are removed from the device. */
+  async clearAll(): Promise<void> {
+    try { const db = await this.db(); await tx(db, 'readwrite', store => store.clear()); } catch { /* ignore */ }
+    try { for (const k of Object.keys(localStorage)) if (k.startsWith('draft:')) localStorage.removeItem(k); } catch { /* ignore */ }
+    try { if ('caches' in window) for (const k of await caches.keys()) if (k.startsWith('ngsw:')) await caches.delete(k); } catch { /* ignore */ }
+    await this.refreshCount();
   }
 
   private async refreshCount(): Promise<void> {

@@ -47,9 +47,13 @@ export class AuthService {
     await this.load();
   }
 
+  /** Called by OfflineQueue so logout can wipe device-local data without a circular import. */
+  onLogout: (() => Promise<void>) | null = null;
+
   async logout(): Promise<void> {
     await firstValueFrom(this.http.post('/api/auth/logout', {}));
     this.me.set(null);
+    await this.onLogout?.();
     await this.router.navigateByUrl('/');
   }
 }
