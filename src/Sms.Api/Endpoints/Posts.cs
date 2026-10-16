@@ -22,9 +22,10 @@ public static class PostEndpoints
             var trip = await db.Trips.AsNoTracking().FirstAsync(t => t.Id == tripId, ct);
             if (string.IsNullOrWhiteSpace(req.Content) && (req.MediaIds is null || req.MediaIds.Count == 0)) return Invalid("content", "Inhalt fehlt.");
             var post = new Post { TripId = tripId, AuthorId = current.RequiredId, CreatedById = current.Id };
-            await Apply(post, req, trip, db, current.RequiredId, html, ct);
+            await Apply(post, req, trip, db, html, ct);
             db.Posts.Add(post);
             await db.SaveChangesAsync(ct);
+            await AttachMedia(post, req, db, current.RequiredId, ct); // after the insert: the FK needs the post row
             return Results.Created($"/api/posts/{post.Id}", new { post.Id });
         }).RequireAuthorization();
 
@@ -43,8 +44,9 @@ public static class PostEndpoints
             var post = await db.Posts.Include(p => p.Trip).FirstOrDefaultAsync(p => p.Id == id, ct);
             if (post is null) return Results.NotFound();
             if (post.AuthorId != current.Id && !await current.IsAdminAsync(ct)) return Results.Forbid();
-            await Apply(post, req, post.Trip, db, post.AuthorId, html, ct);
+            await Apply(post, req, post.Trip, db, html, ct);
             await db.SaveChangesAsync(ct);
+            await AttachMedia(post, req, db, post.AuthorId, ct);
             return Results.NoContent();
         }).RequireAuthorization();
 
@@ -59,7 +61,7 @@ public static class PostEndpoints
         }).RequireAuthorization();
     }
 
-    private static async Task Apply(Post p, PostUpsert r, Trip trip, SmsDbContext db, Guid owner, HtmlSanitizerService html, CancellationToken ct)
+    private static async Task Apply(Post p, PostUpsert r, Trip trip, SmsDbContext db, HtmlSanitizerService html, CancellationToken ct)
     {
         p.Title = r.Title?.Trim();
         p.Content = html.Sanitize(r.Content);
@@ -72,11 +74,15 @@ public static class PostEndpoints
         else if (await db.LogbookEntries.AsNoTracking().Include(l => l.EndHarbour).Where(l => l.TripId == trip.Id).OrderByDescending(l => l.ArrivedAt)
                      .FirstOrDefaultAsync(l => l.ArrivedAt <= DateTimeOffset.UtcNow, ct) is { } last && DayIn(last.ArrivedAt, trip.TimeZone) <= p.Day)
         { p.Location = last.EndHarbour.Location; p.LocationSource = LocationSource.Harbour; }
-        // attach / detach photos of the author
+    }
+
+    /// <summary>Attach / detach the author's photos; runs after the post row exists.</summary>
+    private static async Task AttachMedia(Post p, PostUpsert r, SmsDbContext db, Guid owner, CancellationToken ct)
+    {
         var ids = r.MediaIds ?? [];
         await db.Media.Where(m => m.PostId == p.Id && !ids.Contains(m.Id)).ExecuteUpdateAsync(s => s.SetProperty(m => m.PostId, (Guid?)null), ct);
         if (ids.Count > 0)
-            await db.Media.Where(m => ids.Contains(m.Id) && m.OwnerId == owner && m.TripId == trip.Id).ExecuteUpdateAsync(s => s.SetProperty(m => m.PostId, p.Id).SetProperty(m => m.Day, p.Day), ct);
+            await db.Media.Where(m => ids.Contains(m.Id) && m.OwnerId == owner && m.TripId == p.TripId).ExecuteUpdateAsync(s => s.SetProperty(m => m.PostId, p.Id).SetProperty(m => m.Day, p.Day), ct);
     }
 
     internal static PostDto ToDto(Post p, Dictionary<Guid, string> names, List<Media> media, Guid? me = null) => new(

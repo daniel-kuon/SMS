@@ -219,15 +219,15 @@ public static class TripEndpoints
         g.MapPut("/{id:guid}/legs", async (Guid id, List<LegUpsert> legs, SmsDbContext db, Access access, SeaRouter router, CancellationToken ct) =>
         {
             if (!await access.IsTripSkipperAsync(id, ct)) return Results.Forbid();
-            var trip = await db.Trips.Include(t => t.Ship).Include(t => t.PlannedLegs).FirstOrDefaultAsync(t => t.Id == id, ct);
+            var trip = await db.Trips.AsNoTracking().Include(t => t.Ship).FirstOrDefaultAsync(t => t.Id == id, ct);
             if (trip is null) return Results.NotFound();
-            db.PlannedLegs.RemoveRange(trip.PlannedLegs);
+            await db.PlannedLegs.Where(l => l.TripId == id).ExecuteDeleteAsync(ct);
             var order = 0;
             foreach (var l in legs)
             {
                 var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct);
                 var meters = route is null ? await db.Harbours.Where(h => h.Id == l.FromHarbourId).Select(h => h.Location.Distance(db.Harbours.First(x => x.Id == l.ToHarbourId).Location)).FirstOrDefaultAsync(ct) : 0;
-                trip.PlannedLegs.Add(new PlannedLeg { TripId = id, Order = order++, FromHarbourId = l.FromHarbourId, ToHarbourId = l.ToHarbourId, PlannedDate = l.PlannedDate,
+                db.PlannedLegs.Add(new PlannedLeg { TripId = id, Order = order++, FromHarbourId = l.FromHarbourId, ToHarbourId = l.ToHarbourId, PlannedDate = l.PlannedDate,
                     DistanceNm = route?.DistanceNm ?? Math.Round((decimal)meters / 1852m, 1), RouteGeometry = route?.Geometry });
             }
             await db.SaveChangesAsync(ct);
