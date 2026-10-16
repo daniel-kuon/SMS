@@ -51,9 +51,20 @@ src/Sms.Domain           entities, enums, cost splitting + settlement, visibilit
 src/Sms.Infrastructure   EF Core (Npgsql + NetTopologySuite), migrations, media, mail, sanitizer
 src/Sms.Api              minimal-API endpoints, Identity cookie auth, ECB rates, seed
 src/sms-web              Angular 21 + Material SPA (de/en)
-tests/Sms.Domain.Tests   xunit (Microsoft.Testing.Platform) – run with `dotnet run --project tests/Sms.Domain.Tests`
+tests/Sms.Domain.Tests   xunit: costs, visibility, track parsers – `dotnet run --project tests/Sms.Domain.Tests`
+tests/Sms.Api.Tests      authorization matrix against a Testcontainers PostGIS DB – `dotnet run --project tests/Sms.Api.Tests` (AppHost stopped)
 infra/signoz             SigNoz / ClickHouse / collector configuration
 docs/                    specification
 ```
 
 Migrations: `dotnet ef migrations add <Name> --project src/Sms.Infrastructure` (applied on API start).
+
+## Sea routing and tracking
+
+* **Routing graph**: Admin page → "Routing-Graph bauen" downloads the OSM land polygons once (≈900 MB into
+  `media/cache`) and builds the pgRouting graph for `Routing:Region` in `appsettings.json` (default: western
+  Baltic, ≈75 s). Until then distances are straight lines (`method: "straight-line"` in the API).
+* **Tracking**: ship page → "Tracking-Geräte" creates a device token with ready-made URLs for Traccar Client /
+  OsmAnd / GPSLogger (OsmAnd protocol), OwnTracks (HTTP mode) and a JSON batch endpoint. GPX/KML/NMEA files can be
+  imported on the trip overview. Public viewers see tracks delayed (`Trip.PublicPositionDelayMinutes`) and never
+  inside privacy zones.

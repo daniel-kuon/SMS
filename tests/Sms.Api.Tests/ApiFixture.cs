@@ -25,6 +25,9 @@ public sealed class ApiFixture : IAsyncLifetime
             b.UseSetting("ConnectionStrings:sms", _db.GetConnectionString());
             b.UseSetting("Media:RootPath", Path.Combine(Path.GetTempPath(), "sms-tests-media"));
             b.UseSetting("Web:BaseUrl", "http://localhost");
+            b.UseSetting("Logging:LogLevel:Default", "Warning");
+            b.UseSetting("RateLimiting:AuthPerMinute", "100000");
+            b.UseSetting("Logging:LogLevel:Microsoft.EntityFrameworkCore", "Error");
         });
         _ = _factory.Server; // boots the app: migrations + seed
     }
