@@ -16,7 +16,8 @@ State of the rewrite on branch `v2` (2026-10-16). Phases refer to `11` §11.5.
 | 7 Costs | ✅ | Split modes, ECB rates of the payment date (daily job + history bootstrap), balances, greedy transfers, settlements report/confirm, lock, CSV export |
 | 8 Sea routing | ✅ (region-configurable) | `RoutingGraphBuilder`: OSM land polygons (downloaded once, ≈900 MB) → adaptive quadtree over water → pgRouting tables; `SeaRouter`: A* routes with string-pulling smoothing, driving-distance nearby ports, cache; admin rebuild/status/corrections. Default region western Baltic (build ≈75 s, 72k nodes); Europe = set `Routing:Region` and wait hours |
 | 8a Trip overview | ✅ | Overview map with recorded (solid) or calculated/straight (dashed) legs, harbour stops, photo/post markers with clustering, stats, day list hover, last position |
-| 8b Tracking | ✅ (no AIS provider yet) | Devices with one-time tokens, OsmAnd/Traccar, OwnTracks and JSON ingest, GPX/KML/NMEA import, cleaning, per-day segments with source priority, media/post placement on the track, public delay, privacy zones, source override |
+| 8b Tracking | ✅ (no AIS provider yet) | Devices with one-time tokens, OsmAnd/Traccar, OwnTracks and JSON ingest, GPX/KML/NMEA import, cleaning, per-day segments with source priority, media/post placement on the track, public delay, privacy zones, source override, stop detection → logbook suggestions |
+| 12 PWA / offline | ✅ (basic) | Installable (service worker + manifest), cached reference data, offline upload queue (IndexedDB, retried when online), autosaved post drafts. No background sync API |
 | 9 Social | ✅ | Comments/likes on posts, photos, logbook entries, trips, reviews (target visibility enforced), follows, personal feed, public explore, in-app notifications (+ e-mail for invitations/comments/settlements), reports, admin hide/dismiss, user blocks |
 | 10 Tasks / pages | ✅ | Trip and ship task trees, admin-editable content pages in footer |
 | 11 Reviews / stats | ✅ | Harbour ratings, ship statistics |
@@ -24,9 +25,9 @@ State of the rewrite on branch `v2` (2026-10-16). Phases refer to `11` §11.5.
 ## Open (follow-ups)
 
 - **AIS provider** (`12` §12.1 C): `IAisPositionProvider` + MarineTraffic/aisstream polling; the track pipeline already accepts `Ais` points.
-- **Stop detection → logbook suggestions** (`12` §12.2 step 4) and track playback.
+- **Track playback** (`12` §12.3, optional animation).
 - **Europe-wide routing build**: run with `Routing:Region` = −32…45 / 27…72 on a machine with enough RAM (the builder keeps the region's land polygons and cells in memory); tile-wise building is the next step if that is too large.
-- **12 PWA/offline**, **13 legacy import**, **14 canals**.
+- **13 legacy import** (needs the old SQL Server database), **14 canals**, offline drafts for logbook entries.
 - Europe-wide OSM harbour import (osmium pipeline); the Overpass import works for bounding boxes.
 - PDF export of costs (CSV exists).
 - Integration/authorization-matrix tests (`08` §8.4) against a Testcontainers database.
