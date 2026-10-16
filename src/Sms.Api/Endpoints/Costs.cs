@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Sms.Domain;
 using Sms.Domain.Costs;
+using Sms.Domain.Social;
 using Sms.Infrastructure;
 using static Sms.Api.ApiHelpers;
 
@@ -39,7 +40,7 @@ public static class CostEndpoints
             return Results.Ok(new { categories = Categories, items = items.Select(e => ToDto(e, names)) });
         });
 
-        trips.MapPost("/expenses", async (Guid tripId, ExpenseUpsert req, SmsDbContext db, CurrentUser current, Access access, EcbRates rates, CancellationToken ct) =>
+        trips.MapPost("/expenses", async (Guid tripId, ExpenseUpsert req, SmsDbContext db, CurrentUser current, Access access, EcbRates rates, Notifier notifier, CancellationToken ct) =>
         {
             var me = await access.CrewAsync(tripId, ct);
             if (me is null) return Results.Forbid();
@@ -49,6 +50,8 @@ public static class CostEndpoints
             var problem = await ApplyAsync(expense, req, trip, me, db, rates, ct);
             if (problem is not null) return problem;
             db.Expenses.Add(expense);
+            var participants = await db.CrewMembers.Where(c => c.TripId == tripId && c.UserId != null && c.UserId != current.Id && c.Status == CrewStatus.Accepted).Select(c => c.UserId!.Value).ToListAsync(ct);
+            foreach (var u in participants) await notifier.NotifyAsync(u, NotificationType.Expense, $"Neue Ausgabe in {trip.Name}: {expense.Category} {expense.AmountInTripCurrency:0.00} {trip.Currency}", $"/trips/{tripId}/costs", ct);
             await db.SaveChangesAsync(ct);
             return Results.Created($"/api/expenses/{expense.Id}", new { expense.Id });
         });
@@ -88,7 +91,7 @@ public static class CostEndpoints
             return Results.Ok(await BalancesAsync(tripId, me.Id, db, ct));
         });
 
-        trips.MapPost("/settlements", async (Guid tripId, SettlementCreate req, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
+        trips.MapPost("/settlements", async (Guid tripId, SettlementCreate req, SmsDbContext db, CurrentUser current, Access access, Notifier notifier, CancellationToken ct) =>
         {
             var me = await access.CrewAsync(tripId, ct);
             if (me is null) return Results.Forbid();
@@ -98,6 +101,8 @@ public static class CostEndpoints
             var trip = await db.Trips.AsNoTracking().FirstAsync(t => t.Id == tripId, ct);
             var s = new Settlement { TripId = tripId, FromCrewMemberId = from, ToCrewMemberId = req.ToCrewMemberId, Amount = Money.Round(req.Amount, trip.Currency), Note = req.Note, CreatedById = current.Id };
             db.Settlements.Add(s);
+            var receiver = await db.CrewMembers.Where(c => c.Id == req.ToCrewMemberId).Select(c => c.UserId).FirstOrDefaultAsync(ct);
+            if (receiver is { } rv && rv != current.Id) await notifier.NotifyAsync(rv, NotificationType.Settlement, $"Zahlung gemeldet: {s.Amount:0.00} {trip.Currency} ({trip.Name}) – bitte bestätigen", $"/trips/{tripId}/costs", ct, email: true);
             await db.SaveChangesAsync(ct);
             return Results.Created($"/api/settlements/{s.Id}", new { s.Id });
         });

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Sms.Domain;
+using Sms.Domain.Social;
 using Sms.Domain.Tracking;
 
 namespace Sms.Infrastructure;
@@ -40,6 +41,12 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
     public DbSet<TrackImport> TrackImports => Set<TrackImport>();
     public DbSet<TrackSegment> TrackSegments => Set<TrackSegment>();
     public DbSet<PrivacyZone> PrivacyZones => Set<PrivacyZone>();
+    public DbSet<Comment> Comments => Set<Comment>();
+    public DbSet<Reaction> Reactions => Set<Reaction>();
+    public DbSet<Follow> Follows => Set<Follow>();
+    public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<Report> Reports => Set<Report>();
+    public DbSet<UserBlock> UserBlocks => Set<UserBlock>();
 
     protected override void ConfigureConventions(ModelConfigurationBuilder b)
     {
@@ -189,6 +196,12 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.HasIndex(s => new { s.TripId, s.Day });
         });
         m.Entity<PrivacyZone>(e => { e.Property(z => z.Center).HasColumnType("geography (point, 4326)"); e.HasIndex(z => z.ShipId); });
+        m.Entity<Comment>(e => e.HasIndex(c => new { c.TargetType, c.TargetId }));
+        m.Entity<Reaction>(e => e.HasKey(r => new { r.TargetType, r.TargetId, r.UserId }));
+        m.Entity<Follow>(e => { e.HasKey(f => new { f.FollowerId, f.TargetType, f.TargetId }); e.HasIndex(f => new { f.TargetType, f.TargetId }); });
+        m.Entity<Notification>(e => e.HasIndex(n => new { n.UserId, n.ReadAt }));
+        m.Entity<Report>(e => e.HasIndex(r => r.Status));
+        m.Entity<UserBlock>(e => e.HasKey(b => b.UserId));
         m.Entity<ContentPage>(e =>
         {
             e.HasIndex(p => new { p.Slug, p.Language }).IsUnique();

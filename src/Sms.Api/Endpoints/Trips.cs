@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Sms.Domain;
+using Sms.Domain.Social;
 using Sms.Infrastructure;
 using Sms.Infrastructure.Routing;
+using Sms.Infrastructure.Tracking;
 using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
@@ -110,7 +112,7 @@ public static class TripEndpoints
             return Results.Ok(await CrewDtos(id, db, ct));
         });
 
-        g.MapPost("/{id:guid}/crew", async (Guid id, CrewUpsert req, SmsDbContext db, Access access, CurrentUser current, MailSender mail, HttpRequest http, IConfiguration cfg, CancellationToken ct) =>
+        g.MapPost("/{id:guid}/crew", async (Guid id, CrewUpsert req, SmsDbContext db, Access access, CurrentUser current, MailSender mail, HttpRequest http, IConfiguration cfg, Notifier notifier, CancellationToken ct) =>
         {
             if (!await access.IsTripSkipperAsync(id, ct)) return Results.Forbid();
             if (req.UserId is null && string.IsNullOrWhiteSpace(req.GuestName)) return Invalid("guestName", "Benutzer oder Gastname angeben.");
@@ -128,6 +130,8 @@ public static class TripEndpoints
                 var email = await db.Users.Where(u => u.Id == invited).Select(u => u.Email).FirstOrDefaultAsync(ct);
                 var trip = await db.Trips.AsNoTracking().Include(t => t.Ship).FirstAsync(t => t.Id == id, ct);
                 if (email is not null) await mail.SendAsync(email, $"Einladung zum Törn {trip.Name}", $"<p>Du bist zum Törn <b>{trip.Name}</b> ({trip.Ship.Name}) eingeladen: <a href=\"{WebBaseUrl(http, cfg)}/trips/{id}\">Einladung ansehen</a></p>", ct);
+                await notifier.NotifyAsync(invited, NotificationType.TripInvitation, $"Einladung zum Törn {trip.Name} ({trip.Ship.Name})", $"/trips/{id}", ct);
+                await db.SaveChangesAsync(ct);
             }
             return Results.Created($"/api/crew/{member.Id}", new { member.Id });
         }).RequireAuthorization();
@@ -250,14 +254,18 @@ public static class TripEndpoints
             var isCrewForTrack = viewer.CrewTripIds.Contains(id) || viewer.IsAdmin;
             var trackVisible = isCrewForTrack || await access.CanViewAsync(trip.TrackVisibility, trip, trip.Ship, null, ct);
             var cutoff = isCrewForTrack ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow.AddMinutes(-trip.PublicPositionDelayMinutes);
-            var segments = trackVisible ? await db.TrackSegments.AsNoTracking().Where(s => s.TripId == id && s.Source != Sms.Domain.Tracking.TrackSource.Calculated && s.StartTime <= cutoff).ToListAsync(ct) : [];
+            var segments = trackVisible ? await db.TrackSegments.AsNoTracking().Where(s => s.TripId == id && s.Source != Sms.Domain.Tracking.TrackSource.Calculated && s.EndTime <= cutoff).ToListAsync(ct) : [];
+            var zones = isCrewForTrack ? [] : await db.PrivacyZones.AsNoTracking().Where(z => z.ShipId == trip.ShipId).ToListAsync(ct);
+            // recorded geometries shown to non-crew viewers have privacy zones removed (spec 12 §12.5)
+            var visibleGeometry = segments.ToDictionary(s => s.Id, s => TrackProcessor.StripZones(s.GeometryCoarse, zones));
+            segments = segments.Where(s => visibleGeometry[s.Id] is not null).ToList();
             var legs = entries.Select(l =>
             {
                 var seg = segments.FirstOrDefault(s => s.LogbookEntryId == l.Id && (s.SourceOverride ?? s.Source) != Sms.Domain.Tracking.TrackSource.Calculated);
                 return new
                 {
                     l.Id, Day = DayIn(l.DepartedAt, trip.TimeZone), From = l.StartHarbour.Name, To = l.EndHarbour.Name,
-                    Coordinates = seg is not null ? seg.GeometryCoarse.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray()
+                    Coordinates = seg is not null ? visibleGeometry[seg.Id]!.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray()
                         : l.CalculatedRoute is not null ? l.CalculatedRoute.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray()
                         : [[l.StartHarbour.Location.X, l.StartHarbour.Location.Y], [l.EndHarbour.Location.X, l.EndHarbour.Location.Y]],
                     DistanceNm = seg?.DistanceNm ?? l.SailedDistanceNm ?? ((l.LogEnd ?? 0) - (l.LogStart ?? 0)), CalculatedDistanceNm = l.CalculatedDistanceNm,
@@ -267,7 +275,7 @@ public static class TripEndpoints
             // days with recorded track but no logbook entry (spec 12 §12.2)
             legs.AddRange(segments.Where(s => s.LogbookEntryId == null || entries.All(e => e.Id != s.LogbookEntryId)).Select(s => new
             {
-                Id = s.Id, Day = s.Day, From = "", To = "", Coordinates = s.GeometryCoarse.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray(),
+                Id = s.Id, Day = s.Day, From = "", To = "", Coordinates = visibleGeometry[s.Id]!.Coordinates.Select(c => new[] { c.X, c.Y }).ToArray(),
                 DistanceNm = s.DistanceNm, CalculatedDistanceNm = (decimal?)null, Source = (s.SourceOverride ?? s.Source).ToString(),
             }));
             var photos = (await db.Media.AsNoTracking().Where(m => m.TripId == id && m.Location != null && m.Kind == MediaKind.Photo).Where(viewer.Media(trip, trip.Ship))

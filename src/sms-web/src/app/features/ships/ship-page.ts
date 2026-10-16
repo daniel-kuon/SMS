@@ -18,13 +18,15 @@ import { confirm, fmtDate, fmtDateTime, UploadZone } from '../../shared/shared';
 import { ShipEditDialog } from './ship-list';
 import { TripEditDialog } from '../trips/trip-dialogs';
 import { TaskList } from '../trips/task-list';
+import { FollowButton } from '../social/social';
 
 @Component({
-  imports: [DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatListModule, MatFormFieldModule, MatInputModule, MatSelectModule, TranslatePipe, UploadZone, TaskList],
+  imports: [DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatListModule, MatFormFieldModule, MatInputModule, MatSelectModule, TranslatePipe, UploadZone, TaskList, FollowButton],
   template: `
     @if (ship(); as s) {
     <div class="page">
       <div class="row"><h1 class="grow">{{ s.name }} <span class="chip" [class]="'chip ' + s.visibility.toLowerCase()">{{ 'visibility.' + s.visibility | translate }}</span></h1>
+        <app-follow targetType="Ship" [id]="s.id" />
         @if (s.myRole === 'Owner') { <button mat-stroked-button (click)="edit(s)"><mat-icon>edit</mat-icon> {{ 'common.edit' | translate }}</button> }
         <a mat-stroked-button [routerLink]="['/ships', s.id, 'logbook']"><mat-icon>menu_book</mat-icon> {{ 'ship.logbook' | translate }}</a>
         @if (s.myRole) { <button mat-flat-button (click)="newTrip(s)"><mat-icon>add</mat-icon> {{ 'trip.new' | translate }}</button> }

@@ -69,6 +69,7 @@ builder.Services.AddHttpClient("routing");
 builder.Services.AddSingleton<RoutingGraphBuilder>();
 builder.Services.AddScoped<SeaRouter>();
 builder.Services.AddSingleton<TrackProcessor>();
+builder.Services.AddScoped<Notifier>();
 builder.Services.AddHttpClient<EcbRates>();
 builder.Services.AddHostedService<EcbRateJob>();
 builder.Services.ConfigureHttpJsonOptions(o =>
@@ -114,6 +115,7 @@ api.MapShips();
 api.MapHarbours();
 api.MapRouting();
 api.MapTracking();
+api.MapSocial();
 api.MapTrips();
 api.MapLogbook();
 api.MapPosts();

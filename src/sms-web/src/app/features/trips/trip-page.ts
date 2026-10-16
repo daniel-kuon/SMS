@@ -18,13 +18,14 @@ import { TaskList } from './task-list';
 import { LogbookTable } from '../logbook/logbook-page';
 import { PostEditorDialog } from '../posts/post-detail';
 import { CostsTab } from '../costs/costs-tab';
+import { SocialBox } from '../social/social';
 import { FormsModule } from '@angular/forms';
 
 const TABS = ['overview', 'timeline', 'logbook', 'photos', 'costs', 'tasks', 'crew', 'planner'];
 const DAY_COLORS = ['#e53935', '#8e24aa', '#3949ab', '#039be5', '#00897b', '#7cb342', '#fdd835', '#fb8c00', '#6d4c41', '#546e7a'];
 
 @Component({
-  imports: [DecimalPipe, RouterLink, FormsModule, MatButtonModule, MatIconModule, MatTabsModule, MatListModule, MatCardModule, TranslatePipe, Gallery, UploadZone, TaskList, LogbookTable, CostsTab, HarbourSelect],
+  imports: [DecimalPipe, RouterLink, FormsModule, MatButtonModule, MatIconModule, MatTabsModule, MatListModule, MatCardModule, TranslatePipe, Gallery, UploadZone, TaskList, LogbookTable, CostsTab, HarbourSelect, SocialBox],
   template: `
     @if (trip(); as t) {
     <div class="page">
@@ -65,7 +66,8 @@ const DAY_COLORS = ['#e53935', '#8e24aa', '#3949ab', '#039be5', '#00897b', '#7cb
                 <div class="row"><b>{{ p.title || ('post.by' | translate) + ' ' + p.author }}</b><span class="muted">{{ p.author }} · {{ fmtTime(p.publishedAt) }}</span><span class="chip" [class]="'chip ' + p.visibility.toLowerCase()">{{ 'visibility.' + p.visibility | translate }}</span><span class="grow"></span>
                   @if (p.canEdit) { <button mat-icon-button (click)="editPost(t, p.id)"><mat-icon>edit</mat-icon></button> }</div>
                 <div class="rich" [innerHTML]="p.content"></div>
-                @if (p.media.length) { <app-gallery [photos]="p.media" /> }</mat-card-content></mat-card> }
+                @if (p.media.length) { <app-gallery [photos]="p.media" /> }
+                <app-social target="posts" [id]="p.id" /></mat-card-content></mat-card> }
               @if (d.photos.length) { <app-gallery [photos]="d.photos" /> }
               @if (d.logbook.length + d.posts.length + d.photos.length === 0) { <p class="muted">–</p> }
             </section>
@@ -84,6 +86,7 @@ const DAY_COLORS = ['#e53935', '#8e24aa', '#3949ab', '#039be5', '#00897b', '#7cb
 
         <mat-tab [label]="'trip.crew' | translate">
           <div class="toolbar">
+            <app-social target="trips" [id]="t.id" />
             @if (t.canEdit) { <button mat-flat-button (click)="addCrew(t)"><mat-icon>person_add</mat-icon> {{ 'trip.invite' | translate }}</button> }
             <mat-list>@for (c of t.crew; track c.id) {
               <mat-list-item><span matListItemTitle>@if (c.userId) { <a [routerLink]="['/u', c.userId]">{{ c.name }}</a> } @else { {{ c.name }} <span class="chip">Gast</span> }</span>

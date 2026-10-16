@@ -17,6 +17,8 @@ export const routes: Routes = [
   { path: 'auth/confirm', loadComponent: () => import('./features/auth/auth-pages').then(m => m.ConfirmPage) },
   { path: 'auth/forgot-password', loadComponent: () => import('./features/auth/auth-pages').then(m => m.ForgotPage) },
   { path: 'auth/reset-password', loadComponent: () => import('./features/auth/auth-pages').then(m => m.ResetPage) },
+  { path: 'feed', canActivate: [authGuard], loadComponent: () => import('./features/social/social').then(m => m.FeedPage), title: 'Feed' },
+  { path: 'explore', loadComponent: () => import('./features/social/social').then(m => m.FeedPage), title: 'Entdecken' },
   { path: 'ships', canActivate: [authGuard], loadComponent: () => import('./features/ships/ship-list').then(m => m.ShipListPage), title: 'Meine Schiffe' },
   { path: 'ships/:id', loadComponent: () => import('./features/ships/ship-page').then(m => m.ShipPage) },
   { path: 'ships/:id/logbook', loadComponent: () => import('./features/logbook/logbook-page').then(m => m.LogbookPage) },

@@ -34,12 +34,13 @@ public static class TrackingEndpoints
         // Ship members create ship-wide devices; accepted crew may create trip-scoped devices (their phone for one trip).
         ships.MapPost("/tracking-devices", async (Guid shipId, DeviceCreate req, SmsDbContext db, Access access, CurrentUser current, HttpRequest http, CancellationToken ct) =>
         {
+            if (req.TripId is { } t && !await db.Trips.AnyAsync(x => x.Id == t && x.ShipId == shipId, ct)) return Invalid("tripId", "Törn gehört nicht zum Schiff.");
             var member = await access.IsShipMemberAsync(shipId, null, ct);
-            var crewOfTrip = req.TripId is { } t && await access.IsCrewAsync(t, ct) && await db.Trips.AnyAsync(x => x.Id == t && x.ShipId == shipId, ct);
+            var crewOfTrip = req.TripId is { } tt && await access.IsCrewAsync(tt, ct);
             if (!member && !crewOfTrip) return Results.Forbid();
             if (string.IsNullOrWhiteSpace(req.Name)) return Invalid("name", "Name fehlt.");
             var token = NewToken();
-            var d = new TrackingDevice { ShipId = shipId, UserId = current.RequiredId, TripId = crewOfTrip && !member ? req.TripId : req.TripId, Name = req.Name.Trim(), Protocol = req.Protocol, TokenHash = TrackProcessor.HashToken(token), CreatedById = current.Id };
+            var d = new TrackingDevice { ShipId = shipId, UserId = current.RequiredId, TripId = req.TripId, Name = req.Name.Trim(), Protocol = req.Protocol, TokenHash = TrackProcessor.HashToken(token), CreatedById = current.Id };
             db.TrackingDevices.Add(d);
             await db.SaveChangesAsync(ct);
             var baseUrl = $"{http.Scheme}://{http.Host}/api/tracking";
@@ -92,7 +93,8 @@ public static class TrackingEndpoints
         {
             var form = await http.ReadFormAsync(ct);
             Guid? tripId = Guid.TryParse(form["tripId"], out var t) ? t : null;
-            var allowed = await access.IsShipMemberAsync(shipId, null, ct) || (tripId is { } tid && await access.IsCrewAsync(tid, ct) && await db.Trips.AnyAsync(x => x.Id == tid && x.ShipId == shipId, ct));
+            if (tripId is { } tid0 && !await db.Trips.AnyAsync(x => x.Id == tid0 && x.ShipId == shipId, ct)) return Invalid("tripId", "Törn gehört nicht zum Schiff.");
+            var allowed = await access.IsShipMemberAsync(shipId, null, ct) || (tripId is { } tid && await access.IsCrewAsync(tid, ct));
             if (!allowed) return Results.Forbid();
             var results = new List<object>();
             foreach (var file in form.Files)
@@ -130,7 +132,8 @@ public static class TrackingEndpoints
             var isCrew = viewer.CrewTripIds.Contains(tripId) || viewer.IsAdmin;
             if (!isCrew && !await access.CanViewAsync(trip.TrackVisibility, trip, trip.Ship, null, ct)) return Results.Ok(new { type = "FeatureCollection", features = Array.Empty<object>() });
             var cutoff = isCrew ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow.AddMinutes(-trip.PublicPositionDelayMinutes);
-            var segments = await db.TrackSegments.AsNoTracking().Where(s => s.TripId == tripId && s.StartTime <= cutoff).OrderBy(s => s.Day).ToListAsync(ct);
+            // public viewers only get segments that ended before the delay cutoff (spec 12 §12.5)
+            var segments = await db.TrackSegments.AsNoTracking().Where(s => s.TripId == tripId && s.EndTime <= cutoff).OrderBy(s => s.Day).ToListAsync(ct);
             var zones = isCrew ? [] : await db.PrivacyZones.AsNoTracking().Where(z => z.ShipId == trip.ShipId).ToListAsync(ct);
             var legs = await db.PlannedLegs.AsNoTracking().Where(l => l.TripId == tripId && l.RouteGeometry != null).OrderBy(l => l.Order).ToListAsync(ct);
             var features = new List<object>();
@@ -138,7 +141,7 @@ public static class TrackingEndpoints
             foreach (var s in segments)
             {
                 var geom = detail == "coarse" ? s.GeometryCoarse : s.Geometry;
-                if (zones.Count > 0) geom = StripZones(geom, zones);
+                geom = TrackProcessor.StripZones(geom, zones);
                 if (geom is null) continue;
                 features.Add(new { type = "Feature", geometry = geom, properties = new { kind = "track", day = s.Day, source = (s.SourceOverride ?? s.Source).ToString(), distanceNm = s.DistanceNm, durationMinutes = s.DurationMinutes, maxSogKn = s.MaxSogKn, avgSogKn = s.AvgSogKn, colourIndex = dayIndex++, logbookEntryId = s.LogbookEntryId, segmentId = s.Id } });
             }
@@ -217,10 +220,4 @@ public static class TrackingEndpoints
         try { return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(auth[6..])).Split(':', 2).ElementAtOrDefault(1); } catch { return null; }
     }
 
-    /// <summary>Removes the parts of a line inside privacy zones (returns null when nothing is left).</summary>
-    private static LineString? StripZones(LineString line, List<PrivacyZone> zones)
-    {
-        var kept = line.Coordinates.Where(c => !zones.Any(z => TrackMath.Haversine(z.Center.Y, z.Center.X, c.Y, c.X) <= z.RadiusM)).ToArray();
-        return kept.Length >= 2 ? Geo.Factory.CreateLineString(kept) : null;
-    }
 }

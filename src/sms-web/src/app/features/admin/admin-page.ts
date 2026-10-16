@@ -43,11 +43,18 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
         }
       </mat-card-content></mat-card>
       <mat-card appearance="outlined"><mat-card-content>
+        <h3>{{ 'admin.reports' | translate }}</h3>
+        @for (r of reports(); track r.id) {
+          <div class="row report"><span><b>{{ r.targetType }}</b> {{ r.targetId }} · {{ r.reporter }} · {{ r.reason }} · <i>{{ r.status }}</i></span>
+            @if (r.status === 'Open') { <button mat-stroked-button (click)="resolve(r, true)">{{ 'admin.hide' | translate }}</button><button mat-button (click)="resolve(r, false)">{{ 'admin.dismiss' | translate }}</button> }</div>
+        } @empty { <p class="muted">–</p> }
+      </mat-card-content></mat-card>
+      <mat-card appearance="outlined"><mat-card-content>
         <h3>{{ 'admin.signoz' | translate }}</h3>
         <p>SigNoz UI: <a href="http://localhost:3302" target="_blank">http://localhost:3302</a> · Login: admin&#64;localhost.dev / SailingPortal2026!</p>
       </mat-card-content></mat-card>
     </div>`,
-  styles: `.full-width { width: 100%; } mat-card { margin-bottom: 12px; } .progress { font-size: 12px; list-style: none; padding: 0; }`,
+  styles: `.full-width { width: 100%; } mat-card { margin-bottom: 12px; } .progress { font-size: 12px; list-style: none; padding: 0; } .report { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 13px; }`,
 })
 export class AdminPage {
   private api = inject(Api);
@@ -55,8 +62,11 @@ export class AdminPage {
   page: ContentPage = { slug: 'impressum', title: '', content: '', language: 'de', showInFooter: true };
   routing = signal<RoutingStatus | null>(null);
   private timer?: ReturnType<typeof setInterval>;
-  constructor() { this.loadPage(); this.loadRouting(); this.timer = setInterval(() => { if (this.routing()?.building) this.loadRouting(); }, 5000); }
+  constructor() { this.loadPage(); this.loadRouting(); this.loadReports(); this.timer = setInterval(() => { if (this.routing()?.building) this.loadRouting(); }, 5000); }
   ngOnDestroy(): void { clearInterval(this.timer); }
+  reports = signal<{ id: string; targetType: string; targetId: string; reporter: string; reason: string; status: string }[]>([]);
+  loadReports(): void { this.api.get<typeof this.reports extends () => infer T ? T : never>('/api/admin/reports').subscribe(r => this.reports.set(r)); }
+  resolve(r: { id: string }, hide: boolean): void { this.api.post(`/api/admin/reports/${r.id}/resolve`, { hide, resolution: hide ? 'hidden' : 'dismissed' }).subscribe(() => this.loadReports()); }
   loadRouting(): void { this.api.get<RoutingStatus>('/api/routing/status').subscribe(r => this.routing.set(r)); }
   rebuild(): void { this.api.post('/api/admin/routing/rebuild', {}).subscribe({ next: () => setTimeout(() => this.loadRouting(), 500), error: e => this.result.set(errorMessage(e)) }); }
   importOsm(): void {

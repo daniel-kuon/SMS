@@ -10,15 +10,17 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Media, Post, Trip } from '../../core/models';
 import { fmtDate, fmtDateTime, Gallery, UploadZone, VisibilityPicker } from '../../shared/shared';
+import { SocialBox } from '../social/social';
 
 @Component({
-  imports: [RouterLink, MatCardModule, MatButtonModule, TranslatePipe, Gallery],
+  imports: [RouterLink, MatCardModule, MatButtonModule, TranslatePipe, Gallery, SocialBox],
   template: `
     @if (post(); as p) {
     <div class="page page-narrow">
       <h1>{{ p.title || ('post.by' | translate) + ' ' + p.author }}</h1>
       <div class="muted">{{ p.author }} · {{ fmtTime(p.publishedAt) }} · <a [routerLink]="['/trips', p.tripId, 'timeline']">{{ 'trip.timeline' | translate }}</a> · <span class="chip" [class]="'chip ' + p.visibility.toLowerCase()">{{ 'visibility.' + p.visibility | translate }}</span></div>
       <mat-card appearance="outlined"><mat-card-content><div class="rich" [innerHTML]="p.content"></div>@if (p.media.length) { <app-gallery [photos]="p.media" /> }</mat-card-content></mat-card>
+      <app-social target="posts" [id]="p.id" />
     </div>}`,
 })
 export class PostDetailPage {

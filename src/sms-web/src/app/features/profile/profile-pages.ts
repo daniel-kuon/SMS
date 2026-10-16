@@ -13,15 +13,16 @@ import { TranslatePipe, TranslateService } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { TripSummary } from '../../core/models';
 import { confirm, fmtDate, HarbourSelect, UploadZone, VisibilityPicker } from '../../shared/shared';
+import { FollowButton } from '../social/social';
 
 interface PublicProfile { userId: string; displayName: string; bio: string | null; experience: string | null; homeHarbour: string | null; avatarUrl: string | null; trips: TripSummary[]; }
 
 @Component({
-  imports: [RouterLink, MatCardModule, MatListModule, TranslatePipe],
+  imports: [RouterLink, MatCardModule, MatListModule, TranslatePipe, FollowButton],
   template: `
     @if (profile(); as p) {
     <div class="page page-narrow">
-      <div class="row">@if (p.avatarUrl) { <img class="avatar" [src]="p.avatarUrl" /> }<h1>{{ p.displayName }}</h1></div>
+      <div class="row">@if (p.avatarUrl) { <img class="avatar" [src]="p.avatarUrl" /> }<h1 class="grow">{{ p.displayName }}</h1><app-follow targetType="User" [id]="p.userId" /></div>
       @if (p.homeHarbour) { <div class="muted">{{ 'ship.homeHarbour' | translate }}: {{ p.homeHarbour }}</div> }
       @if (p.bio) { <div class="rich" [innerHTML]="p.bio"></div> }
       @if (p.experience) { <p><b>{{ 'profile.experience' | translate }}:</b> {{ p.experience }}</p> }

@@ -8,19 +8,23 @@ import { MatMenuModule } from '@angular/material/menu';
 import { TranslatePipe, TranslateService } from '@ngx-translate/core';
 import { Api, AuthService } from './core/api';
 import { ContentPage } from './core/models';
+import { NotificationBell } from './features/social/social';
 
 @Component({
   selector: 'app-root',
-  imports: [UpperCasePipe, RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatButtonModule, MatIconModule, MatMenuModule, TranslatePipe],
+  imports: [UpperCasePipe, RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatButtonModule, MatIconModule, MatMenuModule, TranslatePipe, NotificationBell],
   template: `
     <mat-toolbar color="primary" class="nav">
       <a routerLink="/" class="brand"><mat-icon>sailing</mat-icon><span>{{ 'app.title' | translate }}</span></a>
       <a mat-button routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }"><mat-icon>map</mat-icon> {{ 'nav.harbours' | translate }}</a>
+      <a mat-button routerLink="/explore" routerLinkActive="active"><mat-icon>explore</mat-icon> {{ 'nav.explore' | translate }}</a>
       @if (auth.me()) {
+        <a mat-button routerLink="/feed" routerLinkActive="active"><mat-icon>dynamic_feed</mat-icon> {{ 'nav.feed' | translate }}</a>
         <a mat-button routerLink="/ships" routerLinkActive="active"><mat-icon>directions_boat</mat-icon> {{ 'nav.ships' | translate }}</a>
         <a mat-button routerLink="/trips" routerLinkActive="active"><mat-icon>route</mat-icon> {{ 'nav.trips' | translate }}</a>
       }
       <span class="spacer"></span>
+      @if (auth.me()) { <app-notifications /> }
       <button mat-button [matMenuTriggerFor]="langMenu"><mat-icon>language</mat-icon> {{ translate.getCurrentLang() | uppercase }}</button>
       <mat-menu #langMenu="matMenu">
         <button mat-menu-item (click)="setLang('de')">Deutsch</button>

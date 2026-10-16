@@ -149,6 +149,14 @@ public sealed class TrackProcessor(IServiceScopeFactory scopes, ILogger<TrackPro
         await db.SaveChangesAsync(ct);
     }
 
+    /// <summary>Removes the parts of a line inside privacy zones (spec 12 §12.5); null when nothing is left.</summary>
+    public static LineString? StripZones(LineString line, IReadOnlyList<PrivacyZone> zones)
+    {
+        if (zones.Count == 0) return line;
+        var kept = line.Coordinates.Where(c => !zones.Any(z => TrackMath.Haversine(z.Center.Y, z.Center.X, c.Y, c.X) <= z.RadiusM)).ToArray();
+        return kept.Length >= 2 ? Geo.Factory.CreateLineString(kept) : null;
+    }
+
     private static DateTimeOffset Min(DateTimeOffset a, DateTimeOffset b) => a < b ? a : b;
     private static DateTimeOffset Max(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
 }

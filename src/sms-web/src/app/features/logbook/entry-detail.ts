@@ -6,10 +6,11 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api } from '../../core/api';
 import { Day, LogbookEntry } from '../../core/models';
 import { fmtDate, fmtDateTime, Gallery } from '../../shared/shared';
+import { SocialBox } from '../social/social';
 
 /** Logbook entry detail: all fields plus the posts/photos of the day(s) it covers (spec 07 E2). */
 @Component({
-  imports: [RouterLink, MatCardModule, MatButtonModule, TranslatePipe, Gallery],
+  imports: [RouterLink, MatCardModule, MatButtonModule, TranslatePipe, Gallery, SocialBox],
   template: `
     @if (entry(); as e) {
     <div class="page page-narrow">
@@ -27,6 +28,7 @@ import { fmtDate, fmtDateTime, Gallery } from '../../shared/shared';
         </dl>
         @if (e.notes) { <div class="rich" [innerHTML]="e.notes"></div> }
       </mat-card-content></mat-card>
+      <app-social target="logbook" [id]="e.id" />
       @for (d of days(); track d.date) {
         <h3>{{ fmt(d.date, { weekday: 'long', day: 'numeric', month: 'long' }) }}</h3>
         @for (p of d.posts; track p.id) { <mat-card appearance="outlined"><mat-card-content><b><a [routerLink]="['/posts', p.id]">{{ p.title || p.author }}</a></b> <span class="muted">{{ p.author }}</span><div class="rich" [innerHTML]="p.content"></div>@if (p.media.length) { <app-gallery [photos]="p.media" /> }</mat-card-content></mat-card> }
