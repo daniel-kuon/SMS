@@ -257,7 +257,7 @@ public static class TripEndpoints
             var segments = trackVisible ? await db.TrackSegments.AsNoTracking().Where(s => s.TripId == id && s.Source != Sms.Domain.Tracking.TrackSource.Calculated && s.EndTime <= cutoff).ToListAsync(ct) : [];
             var zones = isCrewForTrack ? [] : await db.PrivacyZones.AsNoTracking().Where(z => z.ShipId == trip.ShipId).ToListAsync(ct);
             // recorded geometries shown to non-crew viewers have privacy zones removed (spec 12 §12.5)
-            var visibleGeometry = segments.ToDictionary(s => s.Id, s => TrackProcessor.StripZones(s.GeometryCoarse, zones));
+            var visibleGeometry = segments.ToDictionary(s => s.Id, s => TrackProcessor.StripZones(zones.Count > 0 ? s.Geometry : s.GeometryCoarse, zones)); // fine geometry when zones cut points
             segments = segments.Where(s => visibleGeometry[s.Id] is not null).ToList();
             var legs = entries.Select(l =>
             {
