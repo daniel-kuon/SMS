@@ -84,7 +84,7 @@ export class LogbookPage {
     <h2 mat-dialog-title>{{ data.entry ? ('common.edit' | translate) : ('logbook.newEntry' | translate) }}</h2>
     <mat-dialog-content class="form-grid">
       <app-harbour-select [label]="'logbook.startHarbour' | translate" [(harbourId)]="m.startHarbourId" [harbourName]="startName()" [required]="true" />
-      <app-harbour-select [label]="'logbook.endHarbour' | translate" [(harbourId)]="m.endHarbourId" [harbourName]="data.entry?.endHarbour ?? null" [required]="true" />
+      <app-harbour-select [label]="'logbook.endHarbour' | translate" [(harbourId)]="m.endHarbourId" [harbourName]="endName()" [required]="true" />
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.departed' | translate }}</mat-label><input matInput type="datetime-local" [(ngModel)]="m.departedAt" required /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.arrived' | translate }}</mat-label><input matInput type="datetime-local" [(ngModel)]="m.arrivedAt" required /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.engineStart' | translate }}</mat-label><input matInput type="number" step="0.1" [(ngModel)]="m.engineHoursStart" /></mat-form-field>
@@ -107,8 +107,8 @@ export class LogbookPage {
     <mat-dialog-actions align="end"><button mat-button mat-dialog-close>{{ 'common.cancel' | translate }}</button><button mat-flat-button (click)="save()">{{ 'common.save' | translate }}</button></mat-dialog-actions>`,
 })
 export class EntryDialog {
-  data = inject<{ shipId: string; tripId: string | null; entry?: LogbookEntry }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api); private auth = inject(AuthService);
-  wind = WIND; error = signal(''); startName = signal<string | null>(this.data.entry?.startHarbour ?? null);
+  data = inject<{ shipId: string; tripId: string | null; entry?: LogbookEntry; suggestion?: { departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number } }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api); private auth = inject(AuthService);
+  wind = WIND; error = signal(''); startName = signal<string | null>(this.data.entry?.startHarbour ?? null); endName = signal<string | null>(this.data.entry?.endHarbour ?? null);
   crew: (EntryCrew & { selected: boolean })[] = []; guest = '';
   private e = this.data.entry;
   m = { startHarbourId: this.e?.startHarbourId ?? null as string | null, endHarbourId: this.e?.endHarbourId ?? null as string | null,
@@ -121,6 +121,12 @@ export class EntryDialog {
     this.api.get<LogbookDefaults>(`/api/ships/${this.data.shipId}/logbook/new-defaults`, { trip: this.data.tripId }).subscribe(d => {
       this.m.startHarbourId = d.startHarbourId; this.startName.set(d.startHarbourName); this.m.engineHoursStart = d.engineHoursStart; this.m.logStart = d.logStart;
       this.crew = d.crew.map(c => ({ ...c, selected: true }));
+      const s = this.data.suggestion;
+      if (s) { // prefilled from a detected harbour stop (spec 12 §12.2)
+        this.m.departedAt = local(s.departedAt); this.m.arrivedAt = local(s.arrivedAt); this.m.sailedDistanceNm = s.sailedDistanceNm;
+        if (s.startHarbourId) { this.m.startHarbourId = s.startHarbourId; this.startName.set(s.startHarbourName); }
+        if (s.endHarbourId) { this.m.endHarbourId = s.endHarbourId; this.endName.set(s.endHarbourName); }
+      }
     });
   }
   addGuest(): void { if (this.guest.trim()) { this.crew.push({ crewMemberId: null, userId: null, name: this.guest.trim(), selected: true }); this.guest = ''; } }

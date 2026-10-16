@@ -133,6 +133,31 @@ public static class TrackMath
         return nearest is { } n && (n.Time - at).Duration() <= window ? (n.Lat, n.Lng) : null;
     }
 
+    public sealed record Stop(DateTimeOffset From, DateTimeOffset To, double Lat, double Lng);
+
+    /// <summary>Spec 12 §12.2 step 4: positions staying within <paramref name="radiusM"/> for at least <paramref name="minDuration"/>.</summary>
+    public static List<Stop> DetectStops(IReadOnlyList<TrackFix> ordered, double radiusM = 200, TimeSpan? minDuration = null)
+    {
+        var min = minDuration ?? TimeSpan.FromMinutes(30);
+        var stops = new List<Stop>();
+        var i = 0;
+        while (i < ordered.Count)
+        {
+            var anchor = ordered[i];
+            var j = i + 1;
+            while (j < ordered.Count && Haversine(anchor.Lat, anchor.Lng, ordered[j].Lat, ordered[j].Lng) <= radiusM) j++;
+            var last = ordered[j - 1];
+            if (last.Time - anchor.Time >= min)
+            {
+                var cluster = ordered.Skip(i).Take(j - i).ToList();
+                stops.Add(new Stop(anchor.Time, last.Time, cluster.Average(f => f.Lat), cluster.Average(f => f.Lng)));
+                i = j;
+            }
+            else i++;
+        }
+        return stops;
+    }
+
     public static double DistanceM(IReadOnlyList<TrackFix> fixes)
     {
         var d = 0.0;

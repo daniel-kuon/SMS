@@ -13,6 +13,7 @@ import { debounceTime, distinctUntilChanged, Subject, switchMap } from 'rxjs';
 import PhotoSwipeLightbox from 'photoswipe/lightbox';
 import PhotoSwipe from 'photoswipe';
 import { Api, errorMessage, Visibility } from '../core/api';
+import { isNetworkError, OfflineQueue } from '../core/offline';
 import { HarbourMarker, Media } from '../core/models';
 
 export const VISIBILITIES: Visibility[] = ['Private', 'Crew', 'Public'];
@@ -136,6 +137,7 @@ export class Gallery {
 })
 export class UploadZone {
   private api = inject(Api);
+  private queue = inject(OfflineQueue);
   url = input.required<string>();
   fields = input<Record<string, string>>({});
   uploaded = output<Media[]>();
@@ -149,9 +151,13 @@ export class UploadZone {
     const images = files.filter(f => f.type.startsWith('image/'));
     if (images.length === 0) return;
     this.busy.set(true); this.error.set('');
+    if (!navigator.onLine) { this.busy.set(false); void this.queue.enqueue(this.url(), images, this.fields()); return; }
     this.api.upload<Media[]>(this.url(), images, this.fields()).subscribe({
       next: m => { this.busy.set(false); this.uploaded.emit(m); },
-      error: err => { this.busy.set(false); this.error.set(errorMessage(err)); },
+      error: err => {
+        this.busy.set(false);
+        if (isNetworkError(err)) void this.queue.enqueue(this.url(), images, this.fields()); else this.error.set(errorMessage(err));
+      },
     });
   }
 }

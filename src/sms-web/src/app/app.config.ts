@@ -1,4 +1,10 @@
-import { ApplicationConfig, inject, provideAppInitializer, provideBrowserGlobalErrorListeners } from '@angular/core';
+import {
+  ApplicationConfig,
+  inject,
+  provideAppInitializer,
+  provideBrowserGlobalErrorListeners,
+  isDevMode,
+} from '@angular/core';
 import { provideRouter, withComponentInputBinding, withInMemoryScrolling } from '@angular/router';
 import { provideHttpClient, withFetch, withInterceptors } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
@@ -9,13 +15,18 @@ import { provideTranslateHttpLoader } from '@ngx-translate/http-loader';
 import { routes } from './app.routes';
 import { apiInterceptor, AuthService } from './core/api';
 import { initTelemetry } from './core/telemetry';
+import { provideServiceWorker } from '@angular/service-worker';
 
 initTelemetry();
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
-    provideRouter(routes, withComponentInputBinding(), withInMemoryScrolling({ scrollPositionRestoration: 'top' })),
+    provideRouter(
+      routes,
+      withComponentInputBinding(),
+      withInMemoryScrolling({ scrollPositionRestoration: 'top' }),
+    ),
     provideHttpClient(withFetch(), withInterceptors([apiInterceptor])),
     provideAnimationsAsync(),
     provideNativeDateAdapter(),
@@ -31,6 +42,10 @@ export const appConfig: ApplicationConfig = {
       const me = await auth.load();
       const lang = me?.language ?? localStorage.getItem('lang') ?? 'de';
       translate.use(lang);
+    }),
+    provideServiceWorker('ngsw-worker.js', {
+      enabled: !isDevMode(),
+      registrationStrategy: 'registerWhenStable:30000',
     }),
   ],
 };

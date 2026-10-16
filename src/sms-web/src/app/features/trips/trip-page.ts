@@ -15,7 +15,7 @@ import { Day, Leg, Media, Trip } from '../../core/models';
 import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, textNode, UploadZone } from '../../shared/shared';
 import { CrewDialog, TripEditDialog } from './trip-dialogs';
 import { TaskList } from './task-list';
-import { LogbookTable } from '../logbook/logbook-page';
+import { EntryDialog, LogbookTable } from '../logbook/logbook-page';
 import { PostEditorDialog } from '../posts/post-detail';
 import { CostsTab } from '../costs/costs-tab';
 import { SocialBox } from '../social/social';
@@ -48,6 +48,8 @@ const DAY_COLORS = ['#e53935', '#8e24aa', '#3949ab', '#039be5', '#00897b', '#7cb
                 <mat-list>@for (l of o.legs; track l.id; let i = $index) {
                   <a mat-list-item [routerLink]="['/logbook', l.id]" (mouseenter)="highlight(i)" (mouseleave)="highlight(-1)"><span matListItemIcon class="dot" [style.background]="color(i)"></span><span matListItemTitle>{{ l.from }} → {{ l.to }}</span><span matListItemLine>{{ fmt(l.day) }} · {{ l.distanceNm | number:'1.0-1' }} sm</span></a> }</mat-list>
                 @if (position(); as pos) { <p class="muted"><mat-icon inline>my_location</mat-icon> {{ 'tracking.lastPosition' | translate }} {{ fmtTime(pos.time) }} @if (pos.sogKn) { · {{ pos.sogKn | number:'1.0-1' }} kn } @if (pos.delayed) { · {{ 'tracking.delayed' | translate }} }</p> }
+                @if (suggestions().length) { <h4>{{ 'tracking.suggestions' | translate }}</h4>
+                  @for (s of suggestions(); track s.departedAt) { <div class="row suggestion"><span>{{ fmt(s.day) }}: {{ s.startHarbourName ?? '?' }} → {{ s.endHarbourName ?? '?' }} · {{ s.sailedDistanceNm }} sm</span><button mat-stroked-button (click)="adopt(t, s)">{{ 'tracking.adopt' | translate }}</button></div> } }
                 @if (t.isCrew) { <div class="import"><label>{{ 'tracking.import' | translate }} <input type="file" accept=".gpx,.kml,.nmea,.txt,.log" multiple (change)="importTrack(t, $event)" /></label> @if (importResult()) { <span class="muted">{{ importResult() }}</span> }</div> }
                 <p class="disclaimer">{{ o.attribution }} · {{ 'harbour.disclaimer' | translate }}</p>
               }
@@ -112,7 +114,7 @@ const DAY_COLORS = ['#e53935', '#8e24aa', '#3949ab', '#039be5', '#00897b', '#7cb
     .header h1 { margin: 0; } .toolbar { padding: 12px 0; }
     .overview { display: flex; gap: 12px; min-height: 480px; } .map { flex: 2; min-height: 480px; border-radius: 8px; } .side { flex: 1; max-width: 420px; }
     .stats { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0; } .stats div { display: flex; flex-direction: column; } .stats b { font-size: 20px; } .stats span { font-size: 11px; color: #666; }
-    .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; } .import { margin: 8px 0; font-size: 13px; }
+    .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; } .import { margin: 8px 0; font-size: 13px; } .suggestion { font-size: 13px; padding: 4px 0; border-bottom: 1px solid #eee; }
     .day { margin: 12px 0; } .day h3 { border-bottom: 2px solid #e3eef9; padding-bottom: 4px; } .entry, .post { margin: 8px 0; }
     @media (max-width: 800px) { .overview { flex-direction: column; } .side { max-width: none; } }`,
 })
@@ -121,6 +123,7 @@ export class TripPage {
   id = input.required<string>(); tab = input<string>();
   mapEl = viewChild<ElementRef<HTMLDivElement>>('map');
   trip = signal<Trip | null>(null); days = signal<Day[]>([]); legs = signal<Leg[]>([]); allPhotos = signal<Media[]>([]);
+  suggestions = signal<{ departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number; day: string }[]>([]);
   position = signal<{ time: string; lat: number; lng: number; sogKn: number | null; cogDeg: number | null; delayed: boolean } | null>(null);
   importResult = signal('');
   overview = signal<{ stats: { distanceNm: number; underwayHours: number; engineHours: number; harbours: number; nights: number; photos: number; posts: number; costsTotal: number | null }; legs: { id: string; day: string; from: string; to: string; coordinates: number[][]; distanceNm: number; source: string }[]; stops: { name: string; lat: number; lng: number; nights: number }[]; items: { type: string; id: string; lat: number; lng: number; thumbUrl: string | null; title: string | null }[]; attribution: string } | null>(null);
@@ -133,7 +136,7 @@ export class TripPage {
 
   reload(): void {
     const id = this.id();
-    this.api.get<Trip>(`/api/trips/${id}`).subscribe(t => this.trip.set(t));
+    this.api.get<Trip>(`/api/trips/${id}`).subscribe(t => { this.trip.set(t); if (t.canWriteLogbook) this.api.get<NonNullable<ReturnType<TripPage['suggestions']>>>(`/api/trips/${id}/track/suggestions`).subscribe(s => this.suggestions.set(s)); });
     this.api.get<Day[]>(`/api/trips/${id}/timeline`).subscribe(d => { this.days.set(d); this.allPhotos.set(d.flatMap(x => [...x.photos, ...x.posts.flatMap(p => p.media)])); });
     this.api.get<Leg[]>(`/api/trips/${id}/legs`).subscribe(l => this.legs.set(l));
     this.api.get<NonNullable<ReturnType<TripPage['overview']>>>(`/api/trips/${id}/overview`).subscribe(o => { this.overview.set(o); setTimeout(() => this.drawMap(), 50); });
@@ -175,6 +178,9 @@ export class TripPage {
   go(i: number): void { this.router.navigate(['/trips', this.id(), TABS[i]], { replaceUrl: true }); if (i === 0) setTimeout(() => this.drawMap(), 100); }
   totalNm(): number { return this.legs().reduce((s, l) => s + (l.distanceNm ?? 0), 0); }
 
+  adopt(t: Trip, s: NonNullable<ReturnType<TripPage['suggestions']>>[number]): void {
+    this.dialog.open(EntryDialog, { data: { shipId: t.shipId, tripId: t.id, suggestion: s }, width: '800px' }).afterClosed().subscribe(ok => ok && this.reload());
+  }
   importTrack(t: Trip, e: Event): void {
     const files = Array.from((e.target as HTMLInputElement).files ?? []);
     if (!files.length) return;

@@ -10,6 +10,7 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Media, Post, Trip } from '../../core/models';
 import { fmtDate, fmtDateTime, Gallery, UploadZone, VisibilityPicker } from '../../shared/shared';
+import { drafts } from '../../core/offline';
 import { SocialBox } from '../social/social';
 
 @Component({
@@ -35,7 +36,7 @@ export class PostDetailPage {
     <h2 mat-dialog-title>{{ 'post.new' | translate }}</h2>
     <mat-dialog-content class="form-grid">
       <mat-form-field appearance="outline" class="full"><mat-label>{{ 'post.title' | translate }}</mat-label><input matInput [(ngModel)]="m.title" /></mat-form-field>
-      <mat-form-field appearance="outline" class="full"><mat-label>{{ 'post.content' | translate }}</mat-label><textarea matInput rows="8" [(ngModel)]="m.content"></textarea></mat-form-field>
+      <mat-form-field appearance="outline" class="full"><mat-label>{{ 'post.content' | translate }}</mat-label><textarea matInput rows="8" [(ngModel)]="m.content" (ngModelChange)="saveDraft()"></textarea><mat-hint>{{ 'post.draftHint' | translate }}</mat-hint></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'post.day' | translate }}</mat-label><input matInput type="date" [(ngModel)]="m.day" [min]="data.trip.startDate" [max]="data.trip.endDate" /></mat-form-field>
       <app-visibility [(value)]="m.visibility" />
       <div class="full"><app-upload [url]="'/api/trips/' + data.trip.id + '/media'" [fields]="{ visibility: m.visibility, day: m.day }" (uploaded)="attach($event)" />
@@ -50,15 +51,19 @@ export class PostEditorDialog {
   data = inject<{ trip: Trip; postId?: string }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api); private auth = inject(AuthService);
   photos = signal<Media[]>([]); error = signal('');
   m = { title: '', content: '', day: clamp(new Date().toISOString().slice(0, 10), this.data.trip), visibility: this.auth.me()?.defaultContentVisibility ?? 'Crew' as const };
+  private draftScope = `post:${this.data.trip.id}:${this.data.postId ?? 'new'}`;
   constructor() {
-    if (this.data.postId) this.api.get<Post>(`/api/posts/${this.data.postId}`).subscribe(p => { this.m = { title: p.title ?? '', content: htmlToText(p.content), day: p.day, visibility: p.visibility }; this.photos.set(p.media); });
+    const draft = drafts.load<typeof this.m & { photos?: Media[] }>(this.draftScope);
+    if (draft) { this.m = { title: draft.title, content: draft.content, day: draft.day, visibility: draft.visibility }; this.photos.set(draft.photos ?? []); }
+    else if (this.data.postId) this.api.get<Post>(`/api/posts/${this.data.postId}`).subscribe(p => { this.m = { title: p.title ?? '', content: htmlToText(p.content), day: p.day, visibility: p.visibility }; this.photos.set(p.media); });
   }
-  attach(m: Media[]): void { this.photos.update(p => [...p, ...m]); }
+  saveDraft(): void { drafts.save(this.draftScope, { ...this.m, photos: this.photos() }); }
+  attach(m: Media[]): void { this.photos.update(p => [...p, ...m]); this.saveDraft(); }
   detach(p: Media): void { this.photos.update(ps => ps.filter(x => x.id !== p.id)); }
   save(): void {
     const body = { ...this.m, content: textToHtml(this.m.content), mediaIds: this.photos().map(p => p.id) };
     const req = this.data.postId ? this.api.put(`/api/posts/${this.data.postId}`, body) : this.api.post(`/api/trips/${this.data.trip.id}/posts`, body);
-    req.subscribe({ next: () => this.ref.close(true), error: e => this.error.set(errorMessage(e)) });
+    req.subscribe({ next: () => { drafts.clear(this.draftScope); this.ref.close(true); }, error: e => this.error.set(errorMessage(e)) });
   }
   remove(): void { this.api.delete(`/api/posts/${this.data.postId}`).subscribe(() => this.ref.close(true)); }
 }

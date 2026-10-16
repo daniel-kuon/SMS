@@ -9,6 +9,7 @@ import { TranslatePipe, TranslateService } from '@ngx-translate/core';
 import { Api, AuthService } from './core/api';
 import { ContentPage } from './core/models';
 import { NotificationBell } from './features/social/social';
+import { OfflineQueue } from './core/offline';
 
 @Component({
   selector: 'app-root',
@@ -24,6 +25,8 @@ import { NotificationBell } from './features/social/social';
         <a mat-button routerLink="/trips" routerLinkActive="active"><mat-icon>route</mat-icon> {{ 'nav.trips' | translate }}</a>
       }
       <span class="spacer"></span>
+      @if (!offline.online()) { <span class="chip private" title="offline"><mat-icon inline>cloud_off</mat-icon> offline</span> }
+      @if (offline.pending()) { <button mat-button (click)="offline.flush()" title="Ausstehende Uploads"><mat-icon>cloud_upload</mat-icon> {{ offline.pending() }}</button> }
       @if (auth.me()) { <app-notifications /> }
       <button mat-button [matMenuTriggerFor]="langMenu"><mat-icon>language</mat-icon> {{ translate.getCurrentLang() | uppercase }}</button>
       <mat-menu #langMenu="matMenu">
@@ -65,6 +68,7 @@ import { NotificationBell } from './features/social/social';
 export class App {
   readonly auth = inject(AuthService);
   readonly translate = inject(TranslateService);
+  readonly offline = inject(OfflineQueue);
   private api = inject(Api);
   readonly pages = signal<Pick<ContentPage, 'slug' | 'title'>[]>([]);
 

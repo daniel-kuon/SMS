@@ -174,6 +174,35 @@ public static class TrackingEndpoints
             return Results.NoContent();
         }).RequireAuthorization().WithTags("Tracking");
 
+        // Spec 12 §12.2 step 4: suggested logbook entries from detected harbour stops (crew with "Logbuch schreiben").
+        trips.MapGet("/track/suggestions", async (Guid tripId, SmsDbContext db, Access access, CancellationToken ct) =>
+        {
+            if (!await access.CanWriteLogbookAsync(tripId, ct)) return Results.Forbid();
+            var trip = await db.Trips.AsNoTracking().FirstAsync(t => t.Id == tripId, ct);
+            var points = await db.TrackPoints.AsNoTracking().Where(p => p.TripId == tripId && !p.IsOutlier).OrderBy(p => p.Time).Select(p => new { p.Time, p.Location }).ToListAsync(ct);
+            var fixes = points.Select(p => new TrackFix(p.Time, p.Location.Y, p.Location.X)).ToList();
+            var stops = TrackMath.DetectStops(fixes);
+            if (stops.Count < 2) return Results.Ok(Array.Empty<object>());
+            var entries = await db.LogbookEntries.AsNoTracking().Where(l => l.TripId == tripId).Select(l => new { l.DepartedAt, l.ArrivedAt }).ToListAsync(ct);
+            var suggestions = new List<object>();
+            for (var i = 1; i < stops.Count; i++)
+            {
+                var from = stops[i - 1]; var to = stops[i];
+                var departed = from.To; var arrived = to.From;
+                if (entries.Any(e => e.DepartedAt < arrived && e.ArrivedAt > departed)) continue; // already logged
+                var a = Geo.Point(from.Lat, from.Lng); var b = Geo.Point(to.Lat, to.Lng);
+                var startHarbour = await db.Harbours.AsNoTracking().Where(h => h.IsActive && h.Location.IsWithinDistance(a, 1500)).OrderBy(h => h.Location.Distance(a)).Select(h => new { h.Id, h.Name }).FirstOrDefaultAsync(ct);
+                var endHarbour = await db.Harbours.AsNoTracking().Where(h => h.IsActive && h.Location.IsWithinDistance(b, 1500)).OrderBy(h => h.Location.Distance(b)).Select(h => new { h.Id, h.Name }).FirstOrDefaultAsync(ct);
+                var leg = fixes.Where(f => f.Time >= departed && f.Time <= arrived).ToList();
+                suggestions.Add(new
+                {
+                    departedAt = departed, arrivedAt = arrived, startHarbourId = startHarbour?.Id, startHarbourName = startHarbour?.Name, endHarbourId = endHarbour?.Id, endHarbourName = endHarbour?.Name,
+                    sailedDistanceNm = Math.Round((decimal)(TrackMath.DistanceM(leg) / TrackMath.Nm), 1), day = DayIn(departed, trip.TimeZone),
+                });
+            }
+            return Results.Ok(suggestions);
+        }).RequireAuthorization();
+
         trips.MapPost("/track/reprocess", async (Guid tripId, Access access, TrackProcessor processor, CancellationToken ct) =>
         {
             if (!await access.CanWriteLogbookAsync(tripId, ct)) return Results.Forbid();
