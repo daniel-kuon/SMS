@@ -21,11 +21,19 @@ public static class PoiEndpoints
             var addr = string.Join(", ", new[] { string.Join(" ", new[] { T("addr:street"), T("addr:housenumber") }.Where(s => s != null)), string.Join(" ", new[] { T("addr:postcode"), T("addr:city") }.Where(s => s != null)) }.Where(s => s.Length > 0));
             return Results.Ok(new
             {
-                p.OsmType, p.OsmId, p.Name, p.Class, p.Kind, openingHours = T("opening_hours"), website = T("website") ?? T("contact:website"), phone = T("phone") ?? T("contact:phone"), email = T("email") ?? T("contact:email"),
+                p.OsmType, p.OsmId, p.Name, p.Class, p.Kind, openingHours = T("opening_hours"), website = HttpUrl(T("website") ?? T("contact:website")), phone = T("phone") ?? T("contact:phone"), email = T("email") ?? T("contact:email"),
                 address = addr.Length > 0 ? addr : null, cuisine = T("cuisine"), wheelchair = T("wheelchair"), description = T("description"), osmUrl = $"https://www.openstreetmap.org/{p.OsmType}/{p.OsmId}",
             });
         }).WithTags("Pois");
         api.MapGet("/pois/status", async (SmsDbContext db, CancellationToken ct) => Results.Ok(new { count = await db.Pois.CountAsync(ct) })).WithTags("Pois");
+    }
+
+    /// <summary>OSM website tags are free text: only http(s) URLs are handed to the browser as links.</summary>
+    public static string? HttpUrl(string? v)
+    {
+        if (string.IsNullOrWhiteSpace(v)) return null;
+        var s = v.Contains("://") ? v.Trim() : "https://" + v.Trim();
+        return Uri.TryCreate(s, UriKind.Absolute, out var u) && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps) ? u.ToString() : null;
     }
 
     /// <summary>Upserts the POI elements of an Overpass-style document that lie near a harbour (NearIndex) – ways use their centre.</summary>

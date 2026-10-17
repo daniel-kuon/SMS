@@ -192,9 +192,14 @@ export async function showPoiPopup(map: MlMap, p: Record<string, unknown>, lngLa
       div.appendChild(r);
     };
     row('Adresse', d.address); row('Öffnungszeiten', d.openingHours); row('Küche', d.cuisine); row('Telefon', d.phone, d.phone ? `tel:${d.phone}` : undefined); row('E-Mail', d.email, d.email ? `mailto:${d.email}` : undefined);
-    row('Website', d.website, d.website ?? undefined); if (d.description) div.appendChild(textEl(d.description, 'div')); row('OSM', `${d.osmType}/${d.osmId}`, d.osmUrl);
+    row('Website', d.website, httpUrl(d.website)); if (d.description) div.appendChild(textEl(d.description, 'div')); row('OSM', `${d.osmType}/${d.osmId}`, d.osmUrl);
     popup.setDOMContent(div);
   } catch { /* the tile properties stay */ }
+}
+/** Only http(s) links become clickable; anything else from the OSM tag (javascript:, data:, …) stays plain text. */
+export function httpUrl(u: string | null | undefined): string | undefined {
+  if (!u) return undefined;
+  try { const x = new URL(u.includes('://') ? u : `https://${u}`); return x.protocol === 'http:' || x.protocol === 'https:' ? x.href : undefined; } catch { return undefined; }
 }
 const KIND_DE: Record<string, string> = { restaurant: 'Restaurant', cafe: 'Café', bar: 'Bar', pub: 'Kneipe', fast_food: 'Imbiss', ice_cream: 'Eisdiele', bakery: 'Bäckerei', supermarket: 'Supermarkt', convenience: 'Nahversorger', chandler: 'Yachtausrüster', boat_repair: 'Bootswerft', fuel: 'Tankstelle', toilets: 'Toiletten', shower: 'Duschen', drinking_water: 'Trinkwasser', hotel: 'Hotel', guest_house: 'Pension', pharmacy: 'Apotheke', hospital: 'Krankenhaus', doctors: 'Arzt', atm: 'Geldautomat', bank: 'Bank', police: 'Polizei', post_office: 'Post', bicycle_rental: 'Fahrradverleih', laundry: 'Waschsalon', marina: 'Marina', museum: 'Museum', information: 'Information', viewpoint: 'Aussichtspunkt', beach: 'Strand', kiosk: 'Kiosk', hairdresser: 'Friseur', butcher: 'Metzgerei', seafood: 'Fischgeschäft', alcohol: 'Spirituosen', clothes: 'Bekleidung' };
 export const kindLabel = (kind: string) => KIND_DE[kind] ?? kind.replace(/_/g, ' ');
