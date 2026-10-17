@@ -136,9 +136,10 @@ public class WeatherTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Contains(p.Layers, l => l.Id == "radar");
         Assert.Null(p.TileAsync("radar", 8, 136, 82, CancellationToken.None).Result);
         Assert.Null(p.MapsGl);
-        var withKey = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Xweather:ClientId"] = "id", ["Xweather:ClientSecret"] = "s" }).Build();
-        Assert.Equal(new OverlayGlAccess("id", "s"), new XweatherOverlayProvider(null!, new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()), withKey).MapsGl);
-        var off = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Xweather:ClientId"] = "id", ["Xweather:ClientSecret"] = "s", ["Xweather:MapsGl"] = "false" }).Build();
-        Assert.Null(new XweatherOverlayProvider(null!, new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()), off).MapsGl);
+        // the server key alone never reaches the browser; only an explicitly configured browser key does
+        var serverOnly = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Xweather:ClientId"] = "id", ["Xweather:ClientSecret"] = "s" }).Build();
+        Assert.Null(new XweatherOverlayProvider(null!, new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()), serverOnly).MapsGl);
+        var browserKey = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Xweather:ClientId"] = "id", ["Xweather:ClientSecret"] = "s", ["Xweather:MapsGlClientId"] = "web", ["Xweather:MapsGlClientSecret"] = "w" }).Build();
+        Assert.Equal(new OverlayGlAccess("web", "w"), new XweatherOverlayProvider(null!, new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()), browserKey).MapsGl);
     }
 }

@@ -17,7 +17,7 @@ public sealed record WeatherPoint(DateTimeOffset Time, double? TemperatureC, dou
 public sealed record WeatherDay(DateOnly Date, int? WeatherCode, double? TempMinC, double? TempMaxC, double? WindMaxKn, double? GustMaxKn, double? WindDirDeg, double? PrecipitationMm, DateTimeOffset? Sunrise, DateTimeOffset? Sunset);
 public sealed record WeatherForecast(string Provider, double Lat, double Lng, string TimeZone, WeatherPoint Current, IReadOnlyList<WeatherPoint> Hourly, IReadOnlyList<WeatherDay> Daily, DateTimeOffset FetchedAt);
 public sealed record OverlayLayer(string Id, string Name, string Attribution);
-/// <summary>Credentials the browser needs for the provider's WebGL SDK (MapsGL renders particles client-side, so the key must be there; restrict it to the site's domain in the provider account).</summary>
+/// <summary>Browser credentials for the provider's WebGL SDK (MapsGL renders client-side). A dedicated key restricted to the site's domain in the provider account, never the server key.</summary>
 public sealed record OverlayGlAccess(string ClientId, string ClientSecret);
 
 public interface IWeatherProvider
@@ -108,7 +108,8 @@ public sealed class XweatherOverlayProvider(IHttpClientFactory http, IMemoryCach
 {
     public string Name => "Xweather";
     public bool Configured => !string.IsNullOrWhiteSpace(cfg["Xweather:ClientId"]) && !string.IsNullOrWhiteSpace(cfg["Xweather:ClientSecret"]);
-    public OverlayGlAccess? MapsGl => Configured && !string.Equals(cfg["Xweather:MapsGl"], "false", StringComparison.OrdinalIgnoreCase) ? new(cfg["Xweather:ClientId"]!, cfg["Xweather:ClientSecret"]!) : null;
+    // a separate, domain-restricted browser key: the server credentials are never handed out
+    public OverlayGlAccess? MapsGl => !string.IsNullOrWhiteSpace(cfg["Xweather:MapsGlClientId"]) && !string.IsNullOrWhiteSpace(cfg["Xweather:MapsGlClientSecret"]) ? new(cfg["Xweather:MapsGlClientId"]!, cfg["Xweather:MapsGlClientSecret"]!) : null;
     public IReadOnlyList<OverlayLayer> Layers { get; } =
     [
         new("radar", "Regenradar", "© Vaisala Xweather"), new("satellite", "Satellit", "© Vaisala Xweather"), new("wind-speeds", "Wind", "© Vaisala Xweather"),
