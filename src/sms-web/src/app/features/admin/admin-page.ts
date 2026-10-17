@@ -41,7 +41,8 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
         <h3>{{ 'admin.seamarks' | translate }}</h3>
         <p class="muted">{{ 'admin.seamarksHint' | translate }} @if (seamarks(); as s) { · {{ s.count }} {{ 'admin.seamarksCount' | translate }} }</p>
         <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="seamarkBbox" /></mat-form-field>
-          <button mat-flat-button (click)="importSeamarks()" [disabled]="busy()">{{ 'admin.import' | translate }}</button></div>
+          <button mat-flat-button (click)="importSeamarks()" [disabled]="busy()">{{ 'admin.import' | translate }}</button>
+          <button mat-stroked-button (click)="deriveFairways()" [disabled]="busy()" [title]="'admin.fairwaysHint' | translate">{{ 'admin.fairways' | translate }}</button></div>
       </mat-card-content></mat-card>
       <mat-card appearance="outlined"><mat-card-content>
         <h3>{{ 'admin.tenantPreview' | translate }}</h3>
@@ -106,6 +107,12 @@ export class AdminPage {
   loadRouting(): void { this.api.get<RoutingStatus>('/api/routing/status').subscribe(r => this.routing.set(r)); }
   rebuild(): void { this.api.post('/api/admin/routing/rebuild', {}).subscribe({ next: () => setTimeout(() => this.loadRouting(), 500), error: e => this.result.set(errorMessage(e)) }); }
   waterwayBbox = '54.2,9.1,54.5,10.2';
+  deriveFairways(): void {
+    this.busy.set(true);
+    this.api.post<{ marks: number; created: number; removed: number }>(`/api/admin/routing/derive-fairways?bbox=${encodeURIComponent(this.seamarkBbox)}`, {}).subscribe({
+      next: r => { this.busy.set(false); this.result.set(`${r.created} Fahrwasser aus ${r.marks} Seitentonnen abgeleitet (${r.removed} ersetzt) – Routing-Graph neu bauen, damit sie wirken.`); this.loadRouting(); },
+      error: e => { this.busy.set(false); this.result.set(errorMessage(e)); } });
+  }
   importWaterways(): void {
     this.busy.set(true);
     this.api.post<{ created: number; removed: number }>(`/api/admin/routing/import-waterways?bbox=${encodeURIComponent(this.waterwayBbox)}`, {}).subscribe({

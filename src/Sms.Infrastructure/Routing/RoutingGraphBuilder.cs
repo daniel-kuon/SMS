@@ -25,6 +25,8 @@ public sealed class RoutingOptions
     public int TileCells { get; set; } = 10;
     public double HarbourAccessM { get; set; } = 3000;
     public double CoastPenaltyFactor { get; set; } = 0.2;
+    /// <summary>Cost multiplier for passage edges (canals, derived fairways): below 1 routes prefer marked channels. Reported distances come from the geometry and are unaffected.</summary>
+    public double PassageCostFactor { get; set; } = 0.8;
     public double MaxRouteNm { get; set; } = 500;
 
     public sealed class RegionBox { public double MinLng { get; set; } = 9.3; public double MinLat { get; set; } = 53.8; public double MaxLng { get; set; } = 12.6; public double MaxLat { get; set; } = 55.4; }
@@ -165,7 +167,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             {
                 var p = ls.GetCoordinateN(i);
                 var id = NodeAt(p);
-                if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); extraEdges.Add(new GraphEdge(pv, id, Haversine(q.Y, q.X, p.Y, p.X), Geo.Factory.CreateLineString([q, p]))); }
+                if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); extraEdges.Add(new GraphEdge(pv, id, Haversine(q.Y, q.X, p.Y, p.X) * o.PassageCostFactor, Geo.Factory.CreateLineString([q, p]))); }
                 if (i == 0 || i == ls.NumPoints - 1)
                 {
                     var near = await NearestNodeAsync(conn, version, p.X, p.Y, o.HarbourAccessM, ct);

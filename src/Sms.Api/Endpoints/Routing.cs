@@ -146,6 +146,29 @@ public static class RoutingEndpoints
             return Results.Ok(await ImportWaterwaysAsync(doc, db, current, ct));
         });
 
+        // Spec 10 §10.5 step 2: fairway centrelines from the lateral marks already imported into the Seamarks table.
+        admin.MapPost("/derive-fairways", async (string bbox, CurrentUser current, SmsDbContext db, RoutingGraphBuilder builder, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var p = bbox.Split(',');
+            if (p.Length != 4 || !double.TryParse(p[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var s) || !double.TryParse(p[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var w)
+                || !double.TryParse(p[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n) || !double.TryParse(p[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var e))
+                return Invalid("bbox", "bbox=south,west,north,east");
+            var sw = SeamarkEndpoints.ToMercator(s, w); var ne = SeamarkEndpoints.ToMercator(n, e);
+            var box = Geo.Factory.ToGeometry(new Envelope(sw.X, ne.X, sw.Y, ne.Y)); box.SRID = 3857;
+            var rows = await db.Seamarks.AsNoTracking().Where(m => (m.Type == "buoy_lateral" || m.Type == "beacon_lateral") && m.Location.Within(box)).Select(m => new { m.Type, m.Category, m.Location }).ToListAsync(ct);
+            var marks = rows.Select(m => (side: Fairways.SideOf(m.Type, m.Category), pos: Fairways.FromMercator(m.Location.X, m.Location.Y))).Where(m => m.side != null)
+                .Select(m => new LateralMark(m.pos.lat, m.pos.lng, m.side!.Value)).ToList();
+            var fairways = Fairways.Derive(marks, Geo.Factory);
+            var extent = Geo.Factory.ToGeometry(new Envelope(w, e, s, n)); extent.SRID = 4326;
+            var old = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Geometry.Within(extent)).ToListAsync(ct);
+            db.RoutingCorrections.RemoveRange(old);
+            foreach (var f in fairways)
+                db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = f.Line, Note = $"Fahrwasser ({f.Pairs} Tonnenpaare)", Active = true, CreatedById = current.Id });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new { marks = marks.Count, created = fairways.Count, removed = old.Count, lines = fairways.Select(f => new { f.Pairs, points = f.Line.NumPoints, lengthNm = Math.Round(LengthNm(f.Line), 1) }) });
+        });
+
         admin.MapGet("/unreachable-harbours", async (CurrentUser current, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
