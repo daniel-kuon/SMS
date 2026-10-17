@@ -28,7 +28,7 @@ public static class ApiHelpers
         if (Uri.TryCreate(req.Headers.Origin.FirstOrDefault(), UriKind.Absolute, out var origin)
             && (origin.IsLoopback || allowed.Contains(origin.GetLeftPart(UriPartial.Authority), StringComparer.OrdinalIgnoreCase)))
             return origin.GetLeftPart(UriPartial.Authority);
-        throw new InvalidOperationException("Web:BaseUrl is not configured and the request origin is not allowed (Web:AllowedOrigins).");
+        throw new BadHttpRequestException("Web:BaseUrl is not configured and the request origin is not allowed (Web:AllowedOrigins).", StatusCodes.Status400BadRequest);
     }
 
     /// <summary>HTML-encodes user-controlled text before it is placed into mail bodies.</summary>

@@ -11,11 +11,12 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api, errorMessage } from '../../core/api';
 import { ContentPage } from '../../core/models';
 import { tenantPreview } from '../../core/site';
+import { RoutingCorrections } from './routing-corrections';
 
 interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; waterways: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
 
 @Component({
-  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe],
+  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe, RoutingCorrections],
   template: `
     <div class="page page-narrow">
       <h1>{{ 'admin.title' | translate }}</h1>
@@ -61,6 +62,7 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
           <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="waterwayBbox" /></mat-form-field>
             <button mat-stroked-button (click)="importWaterways()" [disabled]="busy()">{{ 'admin.import' | translate }}</button>
             <label class="muted">{{ 'admin.orFile' | translate }} <input type="file" accept=".json" (change)="importWaterwaysFile($event)" /></label></div>
+          <app-routing-corrections />
           <ul class="progress">@for (p of r.progress.slice(-8); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul>
         }
       </mat-card-content></mat-card>
