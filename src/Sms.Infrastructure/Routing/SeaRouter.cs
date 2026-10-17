@@ -31,12 +31,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     public async Task<int> ActiveVersionAsync(CancellationToken ct) => (await StatusAsync(ct)).ActiveVersion;
 
     /// <summary>Harbour → harbour route; null when either harbour is not connected to the active graph or no path exists.</summary>
-    public async Task<RouteResult?> RouteAsync(Guid from, Guid to, CancellationToken ct, double? airDraftM = null)
+    public async Task<RouteResult?> RouteAsync(Guid from, Guid to, CancellationToken ct, double? airDraftM = null, double? draftM = null)
     {
         var version = await ActiveVersionAsync(ct);
         if (version == 0) return null;
-        // the cache holds unrestricted routes only; an air draft may close bridges, so those are computed every time
-        var cached = airDraftM is null ? await db.RouteCaches.AsNoTracking().FirstOrDefaultAsync(r => r.FromHarbourId == from && r.ToHarbourId == to && r.GraphVersion == version, ct) : null;
+        // the cache holds unrestricted routes only; an air draft may close bridges and a draft shallow areas, so those are computed every time
+        var cached = airDraftM is null && draftM is null ? await db.RouteCaches.AsNoTracking().FirstOrDefaultAsync(r => r.FromHarbourId == from && r.ToHarbourId == to && r.GraphVersion == version, ct) : null;
         var a = await db.Harbours.AsNoTracking().Where(h => h.Id == from).Select(h => h.Location).FirstOrDefaultAsync(ct);
         var b = await db.Harbours.AsNoTracking().Where(h => h.Id == to).Select(h => h.Location).FirstOrDefaultAsync(ct);
         if (a is null || b is null) return null;
@@ -45,9 +45,9 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var start = await AccessNodeAsync(from, version, ct);
         var end = await AccessNodeAsync(to, version, ct);
         if (start is null || end is null) return null;
-        var result = await RouteNodesAsync(start.Value, end.Value, a, b, version, ct, airDraftM);
+        var result = await RouteNodesAsync(start.Value, end.Value, a, b, version, ct, airDraftM, draftM);
         if (result is null) return null;
-        if (airDraftM is not null) return result;
+        if (airDraftM is not null || draftM is not null) return result;
         db.RouteCaches.Add(new RouteCache { FromHarbourId = from, ToHarbourId = to, GraphVersion = version, DistanceNm = result.DistanceNm, Geometry = result.Geometry });
         db.RouteCaches.Add(new RouteCache { FromHarbourId = to, ToHarbourId = from, GraphVersion = version, DistanceNm = result.DistanceNm, Geometry = (LineString)result.Geometry.Reverse() });
         try { await db.SaveChangesAsync(ct); } catch (DbUpdateException) { db.ChangeTracker.Clear(); } // concurrent insert of the same pair
@@ -55,14 +55,14 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     /// <summary>Point → point route (map clicks). Points are snapped to the nearest water node within 2 km.</summary>
-    public async Task<RouteResult?> RouteAsync(Point from, Point to, CancellationToken ct, double? airDraftM = null)
+    public async Task<RouteResult?> RouteAsync(Point from, Point to, CancellationToken ct, double? airDraftM = null, double? draftM = null)
     {
         var version = await ActiveVersionAsync(ct);
         if (version == 0) return null;
         var start = await SnapAsync(from, version, ct);
         var end = await SnapAsync(to, version, ct);
         if (start is null || end is null) return null;
-        return await RouteNodesAsync(start.Value, end.Value, from, to, version, ct, airDraftM);
+        return await RouteNodesAsync(start.Value, end.Value, from, to, version, ct, airDraftM, draftM);
     }
 
     public async Task<List<NearbyResult>?> NearbyAsync(Guid? harbourId, Point? origin, double maxNm, int limit, CancellationToken ct)
@@ -89,10 +89,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             .OrderBy(r => r.DistanceNm).Take(limit).ToList();
     }
 
-    private async Task<RouteResult?> RouteNodesAsync(long start, long end, Point a, Point b, int version, CancellationToken ct, double? airDraftM = null)
+    private async Task<RouteResult?> RouteNodesAsync(long start, long end, Point a, Point b, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null)
     {
-        // bridges lower than the ship's air draft close their passage edges (clearance_m is null elsewhere)
+        // bridges lower than the ship's air draft close their passage edges (clearance_m is null elsewhere); charted depth areas
+        // shallower than draft + margin close grid edges (min_depth_m is null on marked passages: a buoyed channel is followed anyway)
         var clearance = airDraftM is { } ad ? $" AND (clearance_m IS NULL OR clearance_m >= {ad.ToString(System.Globalization.CultureInfo.InvariantCulture)})" : "";
+        if (draftM is { } dm) clearance += $" AND (min_depth_m IS NULL OR min_depth_m >= {(dm + builder.Options.DepthSafetyMarginM).ToString(System.Globalization.CultureInfo.InvariantCulture)})";
         using var span = Activity.StartActivity("routing.route");
         span?.SetTag("routing.graph_version", version);
         var straightM = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X);
@@ -122,9 +124,14 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph");
     }
 
-    /// <summary>String pulling: connect each point to the farthest later point whose segment does not cross land.</summary>
+    /// <summary>
+    /// String pulling: connect each point to the farthest later point whose segment does not cross land. Offshore grid edges
+    /// are up to 20 km long, so the path is densified first (every ≤ 500 m) – otherwise the pulled string could only bend at
+    /// grid nodes and kept a dog-leg when the direct line to the next node grazed the coast.
+    /// </summary>
     private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, int version, CancellationToken ct)
     {
+        path = Densify(path, 500);
         var env = new Envelope(); foreach (var c in path) env.ExpandToInclude(c); env.ExpandBy(0.05);
         var land = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", version, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
         var index = new STRtree<IPreparedGeometry>();
@@ -144,6 +151,20 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             }
             result.Add(path[j]);
             i = j;
+        }
+        return result;
+    }
+
+    /// <summary>Intermediate points every ≤ stepM along the path (bend candidates for the string pulling).</summary>
+    public static List<Coordinate> Densify(IReadOnlyList<Coordinate> path, double stepM)
+    {
+        var result = new List<Coordinate> { path[0] };
+        for (var i = 1; i < path.Count; i++)
+        {
+            var a = path[i - 1]; var b = path[i];
+            var n = (int)Math.Ceiling(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / stepM);
+            for (var k = 1; k < n; k++) result.Add(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n));
+            result.Add(b);
         }
         return result;
     }

@@ -34,7 +34,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         _ = Task.Run(async () =>
         {
             try { await RunAsync(req, userId, CancellationToken.None); }
-            catch (Exception ex) { Report("failed", ex is InvalidOperationException ? ex.Message : "Import fehlgeschlagen – Details im Log."); logger.LogError(ex, "PBF import failed"); }
+            catch (Exception ex) { Report("failed", ex is InvalidOperationException ? ex.Message : $"Import fehlgeschlagen: {ex.GetType().Name}: {ex.Message[..Math.Min(ex.Message.Length, 300)]}{(ex.InnerException is { } ie ? $" ← {ie.GetType().Name}: {ie.Message[..Math.Min(ie.Message.Length, 200)]}" : "")}"); logger.LogError(ex, "PBF import failed"); }
             finally { Interlocked.Exchange(ref _running, 0); }
         });
         return true;

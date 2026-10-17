@@ -5,7 +5,8 @@ using NetTopologySuite.Index.Strtree;
 namespace Sms.Infrastructure.Routing;
 
 public sealed record GraphNode(long Id, double X, double Y, bool IsMin);
-public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null);
+/// <summary>MinDepthM: shallowest charted depth area the edge touches (null = no data or a marked passage, which is never depth-limited).</summary>
+public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null);
 public sealed record GraphTile(Envelope Envelope, double StartDegLng, double StartDegLat);
 
 /// <summary>

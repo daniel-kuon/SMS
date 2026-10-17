@@ -3,6 +3,7 @@
     <UserSecretsId>sms-api-3f6b9d2a-1e7c-4c5a-8f1e-5a2b7c9d0e13</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="NetTopologySuite.IO.VectorTiles.Mapbox" />
     <ProjectReference Include="..\Sms.ServiceDefaults\Sms.ServiceDefaults.csproj" />
     <ProjectReference Include="..\Sms.Infrastructure\Sms.Infrastructure.csproj" />
     <PackageReference Include="Aspire.Npgsql.EntityFrameworkCore.PostgreSQL" />

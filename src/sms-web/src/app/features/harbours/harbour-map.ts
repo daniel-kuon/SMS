@@ -22,14 +22,28 @@ import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
 import { UploadZone } from '../../shared/shared';
 import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
+import { ShipContextService } from '../../core/ship-context';
+import { applyHazardFilter } from '../../core/map';
 
 const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
 
 @Component({
-  imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone, MatListModule, RouterLink, WeatherCard],
+  imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone, MatListModule, RouterLink, WeatherCard, MatSelectModule, MatFormFieldModule, MatInputModule],
   template: `
     <div class="layout">
       <div #map class="map"></div>
+      <div class="ship-ctx">
+        <mat-icon inline>sailing</mat-icon>
+        @if (shipCtx.myShips().length) {
+          <select [ngModel]="shipCtx.ship()?.id ?? ''" (ngModelChange)="pickShip($event)" [attr.aria-label]="'ship.forMap' | translate">
+            <option value="">{{ 'ship.noShipContext' | translate }}</option>
+            @for (s of shipCtx.myShips(); track s.id) { <option [value]="s.id">{{ s.name }}</option> }
+          </select>
+        }
+        <label>{{ 'ship.draft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.draftM()" (ngModelChange)="shipCtx.manual($event === '' ? null : +$event, shipCtx.airDraftM())" /></label>
+        <label>{{ 'ship.airDraft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.draftM(), $event === '' ? null : +$event)" /></label>
+        @if (shipCtx.draftM() !== null) { <span class="muted small">{{ 'ship.hazardsHidden' | translate }}</span> }
+      </div>
       <aside class="panel" [class.open]="harbour()">
         @if (harbour(); as h) {
           <div class="row"><h2 class="grow">{{ h.name }}</h2>
@@ -97,12 +111,15 @@ const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: numb
     .panel.open { width: 420px; max-width: 100vw; padding: 12px; overflow-y: auto; }
     .panel h2 { margin: 0; font-size: 20px; } .links { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; } .links .pos { font-size: 12px; }
     .review { padding: 6px 0; border-bottom: 1px solid #eee; }
+    .ship-ctx { position: absolute; left: 50px; top: 10px; background: rgba(255,255,255,.95); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.3); padding: 4px 8px; display: flex; gap: 8px; align-items: center; font-size: 12px; z-index: 2; }
+    .ship-ctx input { width: 44px; } .ship-ctx select { max-width: 140px; } .ship-ctx .small { font-size: 11px; }
     .full-width { width: 100%; }
     @media (max-width: 800px) { .layout { flex-direction: column; } .panel.open { width: 100%; } }
   `,
 })
 export class HarbourMapPage {
   readonly auth = inject(AuthService);
+  readonly shipCtx = inject(ShipContextService);
   private api = inject(Api);
   private router = inject(Router);
   private dialog = inject(MatDialog);
@@ -123,7 +140,11 @@ export class HarbourMapPage {
   private harbours = new Map<string, HarbourMarker>();
   private pinned = false;
 
-  constructor() { effect(() => { const id = this.id(); if (id) this.load(id); else this.harbour.set(null); }); }
+  constructor() {
+    effect(() => { const id = this.id(); if (id) this.load(id); else this.harbour.set(null); });
+    effect(() => { const draft = this.shipCtx.draftM(); if (this.map) applyHazardFilter(this.map, draft); });
+  }
+  pickShip(id: string): void { this.shipCtx.select(this.shipCtx.myShips().find(s => s.id === id) ?? null); }
 
   async ngAfterViewInit(): Promise<void> {
     const map = await createMap(this.mapEl().nativeElement);
@@ -145,6 +166,7 @@ export class HarbourMapPage {
     map.on('mouseenter', 'harbour-points', e => { map.getCanvas().style.cursor = 'pointer'; const id = e.features?.[0]?.properties?.['id']; if (id) this.hoverHarbour(id); });
     map.on('mouseleave', 'harbour-points', () => { map.getCanvas().style.cursor = ''; this.hideRoute(); });
     map.on('contextmenu', e => this.contextMenu(e));
+    applyHazardFilter(map, this.shipCtx.draftM());
     this.refresh();
     const h = this.harbour();
     if (h) map.easeTo({ center: [h.lng, h.lat], zoom: Math.max(map.getZoom(), 11) });
@@ -201,7 +223,7 @@ export class HarbourMapPage {
     this.pointPopup?.remove();
     this.pointPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat([lng, lat]).setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie) …`)).addTo(map);
     this.pointPopup.on('close', () => { if (this.pinned) this.hideRoute(true); });
-    this.api.get<{ distanceNm: number; straightLineNm: number; geometry: { coordinates: number[][] }; method: string }>('/api/routing/route', { from: `${h.lat},${h.lng}`, to: `${lat},${lng}` }).subscribe({
+    this.api.get<{ distanceNm: number; straightLineNm: number; geometry: { coordinates: number[][] }; method: string }>('/api/routing/route', { from: `${h.lat},${h.lng}`, to: `${lat},${lng}`, ...this.shipCtx.routeParams() }).subscribe({
       next: r => {
         if (!this.pointPopup?.isOpen()) return;
         this.pinned = false; this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line'); this.pinned = true;
@@ -218,7 +240,7 @@ export class HarbourMapPage {
     if (!h || this.pinned) return;
     this.draw([[h.lng, h.lat], [p.lng, p.lat]], p.distanceNm, p.method === 'straight-line');
     if (p.method !== 'straight-line') {
-      const params = h.id ? { fromHarbour: h.id, toHarbour: p.harbourId } : { from: `${h.lat},${h.lng}`, to: `${p.lat},${p.lng}` };
+      const params = { ...(h.id ? { fromHarbour: h.id, toHarbour: p.harbourId } : { from: `${h.lat},${h.lng}`, to: `${p.lat},${p.lng}` }), ...this.shipCtx.routeParams() };
       this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] }; method: string }>('/api/routing/route', params).subscribe(r => {
         if (this.hovered === p.harbourId) this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line');
       });

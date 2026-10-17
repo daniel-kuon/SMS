@@ -51,7 +51,7 @@ app.MapGet("/tiles/seamark.json", (HttpRequest req) => Results.Ok(new
 {
     tilejson = "3.0.0", name = "seamark", attribution = "© OpenStreetMap-Mitwirkende, OpenSeaMap",
     tiles = new[] { $"{req.Scheme}://{req.Host}/tiles/seamark/{{z}}/{{x}}/{{y}}.mvt" }, minzoom = 8, maxzoom = 18,
-    vector_layers = new[] { new { id = "seamark", fields = new { type = "String", category = "String", name = "String", colour = "String", shape = "String", light = "String", sectors = "String", osm_id = "Number", osm_type = "String" } } },
+    vector_layers = new[] { new { id = "seamark", fields = new { type = "String", category = "String", name = "String", colour = "String", shape = "String", light = "String", sectors = "String", osm_id = "Number", osm_type = "String", colour_pattern = "String", colour_key = "String", topmark_colour_key = "String", topmark_shape = "String", topmark_colour = "String", light_colour = "String", water_level = "String", depth = "Number", conspicuous = "Boolean", function = "String" } } },
 }));
 
 app.MapGet("/tiles/seamark/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int y, NpgsqlDataSource db, IMemoryCache cache, HttpContext ctx, CancellationToken ct) =>
@@ -68,12 +68,22 @@ app.MapGet("/tiles/seamark/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, in
             WITH b AS (SELECT ST_TileEnvelope(@z, @x, @y) AS geom),
             q AS (
                 SELECT s."OsmId" AS osm_id, s."OsmType" AS osm_type, s."Type" AS type, s."Category" AS category, s."Name" AS name, s."Colour" AS colour, s."Shape" AS shape, s."Light" AS light, s."Sectors" AS sectors,
+                       s."TagsJson"->>('seamark:' || s."Type" || ':colour_pattern') AS colour_pattern,
+                       replace(replace(COALESCE(s."Colour", 'generic'), ';', '_'), ',', '_') AS colour_key,
+                       replace(COALESCE(s."TagsJson"->>'seamark:topmark:colour', 'generic'), ';', '_') AS topmark_colour_key,
+                       replace(replace(replace(replace(s."TagsJson"->>'seamark:topmark:shape', ', ', '_'), ' ', '_'), 'x-shape', 'cross'), '-', '_') AS topmark_shape,
+                       s."TagsJson"->>'seamark:topmark:colour' AS topmark_colour,
+                       split_part(COALESCE(s."TagsJson"->>'seamark:light:colour', s."TagsJson"->>'seamark:light:1:colour'), ';', 1) AS light_colour,
+                       COALESCE(s."TagsJson"->>('seamark:' || s."Type" || ':water_level'), s."TagsJson"->>'seamark:water_level') AS water_level,
+                       NULLIF(regexp_replace(COALESCE(s."TagsJson"->>'depth', s."TagsJson"->>('seamark:' || s."Type" || ':depth')), '[^0-9.\-]', '', 'g'), '')::float8 AS depth,
+                       (s."TagsJson"->>'seamark:landmark:conspicuity') = 'conspicuous' AS conspicuous,
+                       split_part(COALESCE(s."TagsJson"->>('seamark:' || s."Type" || ':function'), ''), ';', 1) AS function,
                        ST_AsMVTGeom(s."Location", b.geom, 4096, 64, true) AS geom
                 FROM "Seamarks" s, b
                 WHERE s."Line" IS NULL AND s."Location" && ST_Expand(b.geom, (ST_XMax(b.geom) - ST_XMin(b.geom)) / 64)
                   AND (@z >= 12 OR s."Type" IN ('light_major', 'light_minor', 'harbour', 'buoy_cardinal', 'buoy_safe_water', 'buoy_isolated_danger', 'beacon_cardinal', 'landmark'))
                 UNION ALL
-                SELECT s."OsmId", s."OsmType", s."Type", s."Category", s."Name", s."Colour", s."Shape", s."Light", s."Sectors",
+                SELECT s."OsmId", s."OsmType", s."Type", s."Category", s."Name", s."Colour", s."Shape", s."Light", s."Sectors", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL::float8, NULL::boolean, NULL,
                        ST_AsMVTGeom(s."Line", b.geom, 4096, 64, true) AS geom
                 FROM "Seamarks" s, b
                 WHERE s."Line" IS NOT NULL AND s."Line" && b.geom AND @z >= 10

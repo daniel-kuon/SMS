@@ -58,7 +58,7 @@ public static class RoutingEndpoints
             return Results.Ok(new { method, disclaimer = Disclaimer, attribution = Attribution, ports });
         });
 
-        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
+        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, double? draft, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
         {
             RouteResult? r = null;
             Point? a = null, b = null;
@@ -67,12 +67,12 @@ public static class RoutingEndpoints
                 a = await db.Harbours.AsNoTracking().Where(h => h.Id == f).Select(h => h.Location).FirstOrDefaultAsync(ct);
                 b = await db.Harbours.AsNoTracking().Where(h => h.Id == t).Select(h => h.Location).FirstOrDefaultAsync(ct);
                 if (a is null || b is null) return Results.NotFound();
-                r = await router.RouteAsync(f, t, ct, airDraft);
+                r = await router.RouteAsync(f, t, ct, airDraft, draft);
             }
             else if (TryParsePoint(from, out var pa) && TryParsePoint(to, out var pb))
             {
                 a = pa; b = pb;
-                r = await router.RouteAsync(pa, pb, ct, airDraft);
+                r = await router.RouteAsync(pa, pb, ct, airDraft, draft);
             }
             else return Invalid("from", "fromHarbour/toHarbour oder from=lat,lng&to=lat,lng angeben.");
 
@@ -125,6 +125,22 @@ public static class RoutingEndpoints
         admin.MapDelete("/corrections/{id:guid}", async (Guid id, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
             await current.IsAdminAsync(ct) ? (await db.RoutingCorrections.Where(x => x.Id == id).ExecuteDeleteAsync(ct) > 0 ? Results.NoContent() : Results.NotFound()) : Results.Forbid());
         // Spec 10 §10.5 step 1: OSM waterway centrelines for a bounding box become derived passages (reviewable in the corrections list).
+        // depth areas for the region (or a bbox south,west,north,east) from the depth provider; the next rebuild uses them
+        admin.MapPost("/import-depths", async (string? bbox, CurrentUser current, SmsDbContext db, IDepthProvider depths, RoutingGraphBuilder builder, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            double minLng, minLat, maxLng, maxLat;
+            if (bbox is { Length: > 0 })
+            {
+                var p = bbox.Split(',').Select(v => double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : double.NaN).ToArray();
+                if (p.Length != 4 || p.Any(double.IsNaN)) return Invalid("bbox", "bbox=south,west,north,east");
+                (minLat, minLng, maxLat, maxLng) = (p[0], p[1], p[2], p[3]);
+            }
+            else { var r = builder.Options.Region; (minLng, minLat, maxLng, maxLat) = (r.MinLng, r.MinLat, r.MaxLng, r.MaxLat); }
+            if ((maxLng - minLng) * (maxLat - minLat) > 400) return Invalid("bbox", "Höchstens 400 Quadratgrad pro Import.");
+            var (areas, removed) = await DepthImport.RunAsync(depths, db, minLng, minLat, maxLng, maxLat, ct);
+            return Results.Ok(new { areas, removed, provider = depths.Name });
+        });
         admin.MapPost("/import-waterways", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();

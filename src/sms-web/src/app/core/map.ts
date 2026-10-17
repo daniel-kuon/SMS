@@ -1,6 +1,7 @@
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MlMap, MapOptions, StyleSpecification } from 'maplibre-gl';
-import { formatPosition, registerSeamarkIcons, seamarkIconExpression, seamarkTypeLabel } from './seamark-icons';
+import { formatPosition, seamarkTypeLabel } from './seamark-icons';
+import { chartIconExpression, chartTopmarkExpression, chartTopmarkOffset, hazardFilter, lightIconExpression } from './chart-symbols';
 
 /** Public map configuration served by the API (/api/config). */
 export interface MapConfig { mapStyleUrl: string; seamarkTilesUrl: string; attribution: string; }
@@ -225,7 +226,7 @@ export function addSeamarkOverlay(map: MlMap, tilesUrl: string): void {
     id: 'seamark-points', type: 'circle', source: 'seamark', 'source-layer': 'seamark', minzoom: 8, maxzoom: 11,
     paint: { 'circle-color': colour, 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.5, 11, 4], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1, 'circle-opacity': 0.95 },
   });
-  registerSeamarkIcons(map);
+  map.addSprite('fnc', `${location.origin}/seamarks/fnc`); // chart symbols (quantenschaum/mapping via Open Waters Seamap, CC-BY)
   // line marks: leading lines / recommended tracks (dashed black), cables and pipelines (magenta), fairway and restricted edges
   map.addLayer({
     id: 'seamark-lines', type: 'line', source: 'seamark', 'source-layer': 'seamark', minzoom: 10, filter: ['==', ['geometry-type'], 'LineString'],
@@ -247,11 +248,25 @@ export function addSeamarkOverlay(map: MlMap, tilesUrl: string): void {
   map.addLayer({ id: 'seamark-sector-legs', type: 'line', source: 'seamark-sectors', minzoom: 11, filter: ['==', ['get', 'leg'], true], paint: { 'line-color': '#616161', 'line-width': 0.8, 'line-dasharray': [3, 3], 'line-opacity': 0.8 } });
   const updateSectors = () => { if (map.getZoom() >= 11) (map.getSource('seamark-sectors') as maplibregl.GeoJSONSource).setData(sectorFeatures(map)); };
   map.on('idle', updateSectors);
+  // chart symbols from the sprite: body (buoy, beacon, light, landmark, hazard, facility …), then topmark and light flare on top
   map.addLayer({
-    id: 'seamark-icons', type: 'symbol', source: 'seamark', 'source-layer': 'seamark', minzoom: 11,
-    layout: { 'icon-image': seamarkIconExpression, 'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.45, 14, 0.8, 17, 1.1], 'icon-anchor': 'bottom', 'icon-allow-overlap': true, 'icon-ignore-placement': true },
+    id: 'seamark-icons', type: 'symbol', source: 'seamark', 'source-layer': 'seamark', minzoom: 11, filter: hazardFilter(null),
+    layout: { 'icon-image': chartIconExpression, 'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.5, 13, 0.8, 16, 1], 'icon-anchor': 'bottom', 'icon-allow-overlap': true, 'icon-ignore-placement': true },
   });
-  for (const layer of ['seamark-points', 'seamark-icons']) {
+  map.addLayer({
+    id: 'seamark-topmarks', type: 'symbol', source: 'seamark', 'source-layer': 'seamark', minzoom: 12, filter: ['all', ['has', 'topmark_shape'], ['any', ['in', 'buoy', ['get', 'type']], ['in', 'beacon', ['get', 'type']]]],
+    layout: { 'icon-image': chartTopmarkExpression, 'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.5, 13, 0.8, 16, 1], 'icon-anchor': 'bottom', 'icon-offset': chartTopmarkOffset, 'icon-allow-overlap': true, 'icon-ignore-placement': true },
+  });
+  map.addLayer({
+    id: 'seamark-light-flares', type: 'symbol', source: 'seamark', 'source-layer': 'seamark', minzoom: 12, filter: ['all', ['has', 'light_colour'], ['!', ['in', ['get', 'type'], ['literal', ['light_major', 'light_minor']]]]],
+    layout: { 'icon-image': lightIconExpression, 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.6, 14, 0.9], 'icon-anchor': 'top', 'icon-offset': [0, 2], 'icon-rotate': -45, 'icon-rotation-alignment': 'viewport', 'icon-allow-overlap': true, 'icon-ignore-placement': true },
+  });
+  map.addLayer({
+    id: 'seamark-hazard-depths', type: 'symbol', source: 'seamark', 'source-layer': 'seamark', minzoom: 13, filter: ['all', hazardFilter(null), ['in', ['get', 'type'], ['literal', ['rock', 'wreck', 'obstruction']]], ['has', 'depth']],
+    layout: { 'text-field': ['to-string', ['get', 'depth']], 'text-font': ['Noto Sans Italic'], 'text-size': 10, 'text-variable-anchor': ['left', 'right', 'bottom', 'top'], 'text-radial-offset': 1.2, 'text-optional': true },
+    paint: { 'text-color': ['case', ['<=', ['get', 'depth'], 2], '#000', '#768c97'], 'text-halo-color': 'rgba(255,255,255,0.8)', 'text-halo-width': 1.5 },
+  });
+  for (const layer of ['seamark-points', 'seamark-icons', 'seamark-topmarks']) {
     map.on('click', layer, e => { const f = e.features?.[0]; if (f) showSeamarkPopup(map, f.properties as Record<string, unknown>, e.lngLat); });
     map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
@@ -270,6 +285,12 @@ export function addSeamarkOverlay(map: MlMap, tilesUrl: string): void {
     },
     paint: { 'text-color': '#263238', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
   });
+}
+
+/** Hides rocks, wrecks and obstructions that lie deeper than the ship's draft plus a margin (null = show all). */
+export function applyHazardFilter(map: MlMap, draftM: number | null): void {
+  for (const id of ['seamark-icons', 'seamark-points']) if (map.getLayer(id)) map.setFilter(id, id === 'seamark-points' ? hazardFilter(draftM) : hazardFilter(draftM));
+  if (map.getLayer('seamark-hazard-depths')) map.setFilter('seamark-hazard-depths', ['all', hazardFilter(draftM), ['in', ['get', 'type'], ['literal', ['rock', 'wreck', 'obstruction']]], ['has', 'depth']]);
 }
 
 /** Arc polylines for every light with sectors currently rendered: radius shrinks with zoom so arcs stay readable. */

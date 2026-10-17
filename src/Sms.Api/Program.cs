@@ -78,6 +78,7 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IWeatherProvider, OpenMeteoProvider>();
 builder.Services.AddSingleton<IWeatherOverlayProvider, XweatherOverlayProvider>();
 builder.Services.AddSingleton<ITideProvider, OpenWatersTideProvider>();
+builder.Services.AddSingleton<IDepthProvider, SeascapeDepthProvider>();
 builder.Services.AddSingleton<WeatherRecorder>();
 builder.Services.AddSingleton<IAisPositionProvider, AisStreamProvider>();
 builder.Services.AddSingleton<IAisPositionProvider, MarineTrafficProvider>();

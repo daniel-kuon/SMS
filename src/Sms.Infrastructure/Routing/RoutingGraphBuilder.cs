@@ -31,6 +31,8 @@ public sealed class RoutingOptions
     public double LockPenaltyM { get; set; } = 1852;
     /// <summary>Extra cost (metres) for an opening bridge: waiting for the next opening, about half a lock.</summary>
     public double BridgeOpeningPenaltyM { get; set; } = 926;
+    /// <summary>Water under the keel a route keeps: an edge is usable when its shallowest charted depth ≥ draft + this.</summary>
+    public double DepthSafetyMarginM { get; set; } = 0.5;
     /// <summary>Open water within this distance of a derived fairway counts as unmarked/shallow: grid edges there cost ×ChannelPenaltyFactor (0 = off).</summary>
     public double ChannelPreferenceM { get; set; } = 1500;
     /// <summary>Interior passage vertices link to a water node this close, so fairways and canals can be joined along their length (ends use HarbourAccessM).</summary>
@@ -124,6 +126,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         // derived fairways (buoy chains) make the water next to them expensive, spec 10 §10.5 step 3
         var fairways = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
         var fairwayAreas = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Fairway).Select(c => c.Geometry).ToListAsync(ct)).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
+        var depthsByTile = new System.Collections.Concurrent.ConcurrentDictionary<string, List<(Geometry, double)>>();
+        static string result_tile_key(Envelope e) => $"{e.MinX:0.####},{e.MinY:0.####}";
         var tiler = new WaterGraphTiler(Geo.Factory, regionEnv, o.StartCellM, o.MinCellM, o.CoastPenaltyFactor, o.TileCells);
         var tileNo = 0;
         Report("grid", $"{tiler.Tiles.Count} tiles of {o.TileCells}×{o.TileCells} start cells");
@@ -138,8 +142,15 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 cmd.Parameters.AddWithValue("v", version);
                 cmd.Parameters.AddWithValue("x1", e.MinX); cmd.Parameters.AddWithValue("y1", e.MinY); cmd.Parameters.AddWithValue("x2", e.MaxX); cmd.Parameters.AddWithValue("y2", e.MaxY);
                 var land = new List<Geometry>();
-                await using var r = await cmd.ExecuteReaderAsync(c);
-                while (await r.ReadAsync(c)) if (!r.IsDBNull(0)) { var g = r.GetFieldValue<Geometry>(0); if (!g.IsEmpty) land.Add(g); }
+                await using (var r = await cmd.ExecuteReaderAsync(c))
+                    while (await r.ReadAsync(c)) if (!r.IsDBNull(0)) { var g = r.GetFieldValue<Geometry>(0); if (!g.IsEmpty) land.Add(g); }
+                // charted depth areas of the tile (routing_depth, filled by the admin depth import)
+                await using var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1,@y1,@x2,@y2,4326)", conn);
+                dcmd.Parameters.AddWithValue("x1", e.MinX); dcmd.Parameters.AddWithValue("y1", e.MinY); dcmd.Parameters.AddWithValue("x2", e.MaxX); dcmd.Parameters.AddWithValue("y2", e.MaxY);
+                var depths = new List<(Geometry, double)>();
+                await using (var dr = await dcmd.ExecuteReaderAsync(c))
+                    while (await dr.ReadAsync(c)) depths.Add((dr.GetFieldValue<Geometry>(0), dr.GetDouble(1)));
+                depthsByTile[result_tile_key(e)] = depths;
                 return land;
             },
             async (result, c) =>
@@ -150,7 +161,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                     foreach (var n in result.Nodes) { await w.StartRowAsync(c); await w.WriteAsync(version, NpgsqlDbType.Integer, c); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, c); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, c); }
                     await w.CompleteAsync(c);
                 }
-                await WriteEdgesAsync(conn, version, ChannelPreference.Apply(result.Edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), c);
+                await WriteEdgesAsync(conn, version, DepthLimits.Apply(ChannelPreference.Apply(result.Edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), depthsByTile.TryRemove(result_tile_key(WaterGraphTiler.WithMargin(result.Tile)), out var tileDepths) ? tileDepths : []), c);
                 foreach (var h in harbourIndex.Query(result.Tile.Envelope))
                     if (result.Nearest(h.X, h.Y, accessDeg) is { } near) access.Add((h.Id, near.Id, Haversine(h.Y, h.X, near.Y, near.X)));
                 if (result.Nodes.Count > 0 || tileNo % 25 == 0)
@@ -238,7 +249,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     private static async Task WriteEdgesAsync(NpgsqlConnection conn, int version, IReadOnlyList<GraphEdge> edges, CancellationToken ct)
     {
         if (edges.Count == 0) return;
-        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m) FROM STDIN (FORMAT BINARY)", ct);
+        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m) FROM STDIN (FORMAT BINARY)", ct);
         foreach (var e in edges)
         {
             await w.StartRowAsync(ct);
@@ -248,6 +259,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.WriteAsync(e.Geom.EndPoint.X, NpgsqlDbType.Double, ct); await w.WriteAsync(e.Geom.EndPoint.Y, NpgsqlDbType.Double, ct);
             await w.WriteAsync(e.Geom, NpgsqlDbType.Geometry, ct);
             if (e.ClearanceM is { } cl) await w.WriteAsync(cl, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
+            if (e.MinDepthM is { } md) await w.WriteAsync(md, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
         }
         await w.CompleteAsync(ct);
     }

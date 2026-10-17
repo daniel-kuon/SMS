@@ -1,0 +1,104 @@
+using System.Globalization;
+using Microsoft.EntityFrameworkCore;
+using NetTopologySuite.Geometries;
+using NetTopologySuite.IO.VectorTiles.Mapbox;
+using Sms.Infrastructure;
+
+namespace Sms.Api;
+
+public sealed record DepthArea(Polygon Area, double MinDepthM, double MaxDepthM, string Source);
+
+/// <summary>
+/// Depth areas (DEPARE: "between drval1 and drval2 metres") for the routing graph. Provider behind an interface like the
+/// weather; today the Open Waters Seascape vector tiles (EMODnet/GEBCO/NOAA bathymetry, per-source licences, chart datum).
+/// </summary>
+public interface IDepthProvider
+{
+    string Name { get; }
+    Task<List<DepthArea>> AreasAsync(double minLng, double minLat, double maxLng, double maxLat, CancellationToken ct);
+}
+
+public sealed class SeascapeDepthProvider(IHttpClientFactory http, IConfiguration cfg, ILogger<SeascapeDepthProvider> logger) : IDepthProvider
+{
+    public string Name => "OpenWaters Seascape";
+    /// <summary>z10 carries only the 10-fathom contours; z12 has the shallow DEPARE steps that matter for yachts (16× the tiles).</summary>
+    private int Zoom => cfg.GetValue("Depths:Zoom", 12);
+
+    public async Task<List<DepthArea>> AreasAsync(double minLng, double minLat, double maxLng, double maxLat, CancellationToken ct)
+    {
+        var baseUrl = (cfg["Depths:SeascapeUrl"] ?? "https://tiles.openwaters.io/seascape").TrimEnd('/');
+        var client = http.CreateClient("weather");
+        var result = new List<DepthArea>();
+        var z = Zoom;
+        var (x1, y1) = TileXY(minLng, maxLat, z); var (x2, y2) = TileXY(maxLng, minLat, z);
+        var failed = 0;
+        for (var x = x1; x <= x2; x++)
+            for (var y = y1; y <= y2; y++)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    using var resp = await client.GetAsync($"{baseUrl}/{z}/{x}/{y}.pbf", ct);
+                    if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) continue;
+                    resp.EnsureSuccessStatusCode();
+                    await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+                    result.AddRange(Decode(stream, x, y, z));
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException) { failed++; logger.LogWarning(ex, "Seascape tile {Z}/{X}/{Y} failed", z, x, y); }
+            }
+        if (failed > 0) logger.LogWarning("Seascape: {Failed} tiles failed", failed);
+        return result;
+    }
+
+    /// <summary>DEPARE polygons of one Seascape tile as WGS84 geometries.</summary>
+    public static List<DepthArea> Decode(Stream pbf, int x, int y, int z)
+    {
+        var tile = new MapboxTileReader().Read(pbf, new NetTopologySuite.IO.VectorTiles.Tiles.Tile(x, y, z));
+        var layer = tile.Layers.FirstOrDefault(l => l.Name == "depare");
+        if (layer is null) return [];
+        var result = new List<DepthArea>();
+        foreach (var f in layer.Features)
+        {
+            var d1 = f.Attributes.Exists("drval1") ? Num(f.Attributes["drval1"]) : null; var d2 = f.Attributes.Exists("drval2") ? Num(f.Attributes["drval2"]) : null;
+            if (d1 is null) continue;
+            var src = f.Attributes.Exists("sys") ? f.Attributes["sys"]?.ToString() ?? "" : "";
+            var polys = f.Geometry switch { Polygon p => [p], MultiPolygon mp => mp.Geometries.OfType<Polygon>().ToList(), _ => new List<Polygon>() };
+            foreach (var p in polys) { p.SRID = 4326; result.Add(new DepthArea(p, d1.Value, d2 ?? d1.Value, src)); }
+        }
+        return result;
+    }
+
+    private static double? Num(object? v) => v switch { null => null, double d => d, float f => f, long l => l, int i => i, string s when double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) => d, _ => null };
+
+    private static (int x, int y) TileXY(double lng, double lat, int zoom)
+    {
+        var n = 1 << zoom;
+        var x = (int)Math.Floor((lng + 180) / 360 * n);
+        var latR = lat * Math.PI / 180;
+        var y = (int)Math.Floor((1 - Math.Log(Math.Tan(latR) + 1 / Math.Cos(latR)) / Math.PI) / 2 * n);
+        return (Math.Clamp(x, 0, n - 1), Math.Clamp(y, 0, n - 1));
+    }
+}
+
+/// <summary>Replaces the depth areas inside a bounding box with the provider's; the next graph build reads them.</summary>
+public static class DepthImport
+{
+    public static async Task<(int areas, int removed)> RunAsync(IDepthProvider provider, SmsDbContext db, double minLng, double minLat, double maxLng, double maxLat, CancellationToken ct)
+    {
+        var areas = await provider.AreasAsync(minLng, minLat, maxLng, maxLat, ct);
+        var removed = await db.Database.ExecuteSqlRawAsync("DELETE FROM routing_depth WHERE geom && ST_MakeEnvelope({0},{1},{2},{3},4326)", [minLng, minLat, maxLng, maxLat], ct);
+        var conn = (Npgsql.NpgsqlConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+        await using (var w = await conn.BeginBinaryImportAsync("COPY routing_depth (geom, min_depth_m, max_depth_m, source) FROM STDIN (FORMAT BINARY)", ct))
+        {
+            foreach (var a in areas)
+            {
+                await w.StartRowAsync(ct);
+                await w.WriteAsync(a.Area, NpgsqlTypes.NpgsqlDbType.Geometry, ct); await w.WriteAsync(a.MinDepthM, NpgsqlTypes.NpgsqlDbType.Double, ct);
+                await w.WriteAsync(a.MaxDepthM, NpgsqlTypes.NpgsqlDbType.Double, ct); await w.WriteAsync(a.Source, NpgsqlTypes.NpgsqlDbType.Text, ct);
+            }
+            await w.CompleteAsync(ct);
+        }
+        return (areas.Count, removed);
+    }
+}

@@ -64,3 +64,21 @@ test('a selected harbour shows the distance to a hovered harbour and to any clic
   await page.locator('.maplibregl-popup-close-button').click();
   await expect(page.locator('.maplibregl-popup-content')).toHaveCount(0);
 });
+
+test('ship context hides deep hazards and routes carry the draft', async ({ page }) => {
+  const list = await (await page.request.get('/api/harbours?q=Meldorfer')).json() as { id: string }[];
+  await page.goto(`/harbours/${list[0].id}`);
+  await expect(page.locator('.maplibregl-canvas')).toBeVisible();
+  await page.waitForResponse(r => r.url().includes('/api/routing/nearby-ports') && r.ok());
+  await page.locator('.ship-ctx input').first().fill('1.8');
+  await page.locator('.ship-ctx input').first().dispatchEvent('input');
+  await expect(page.locator('.ship-ctx .small')).toBeVisible();
+  const filter = await page.evaluate(() => JSON.stringify((window as unknown as { smsMap: { getFilter(id: string): unknown } }).smsMap.getFilter('seamark-icons')));
+  expect(filter).toContain('2.3');
+  const route = page.waitForRequest(r => r.url().includes('/api/routing/route?') && r.url().includes('draft=1.8'), { timeout: 30_000 });
+  await page.waitForTimeout(1000);
+  await page.locator('.maplibregl-canvas').click({ position: { x: 60, y: 420 } });
+  await route;
+  await page.reload();
+  await expect(page.locator('.ship-ctx input').first()).toHaveValue('1.8'); // remembered
+});
