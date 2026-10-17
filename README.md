@@ -71,7 +71,8 @@ Migrations: `dotnet ef migrations add <Name> --project src/Sms.Infrastructure` (
   `media/tiles/basemap.pmtiles`; the AppHost's Martin container serves it and the API serves the Liberty style with
   its vector source pointed at Martin (`/api/map/style.json`) as soon as the file exists – no code change, no key.
   `schleswig-holstein` takes a few minutes, `europe` hours (see the Planetiler docs for RAM/disk). Glyphs and sprites
-  still come from OpenFreeMap (static files; mirror them for a fully offline setup).
+  are cached on first use under `media/cache/map` (`/api/map/fonts`, `/api/map/sprites`), so the map runs without
+  OpenFreeMap afterwards.
 * **Sea marks**: Admin page → "Seezeichen (OpenSeaMap, Vektorkacheln)" loads OpenSeaMap data (OSM `seamark:*` tags) for a bounding
   box from Overpass (mirrors in `Overpass:Endpoints`) or from an uploaded Overpass-JSON file; `Sms.Tiles` renders
   them as vector tiles that the map overlays (buoys, beacons, lights, harbours, names from zoom 8 upwards).

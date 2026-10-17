@@ -21,7 +21,10 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.True(kept.GetProperty("sources").TryGetProperty("ne2_shaded", out _));
         Assert.Equal(2, kept.GetProperty("layers").GetArrayLength());
         Assert.Equal("OpenFreeMap Liberty (self-hosted)", kept.GetProperty("name").GetString());
-        Assert.Contains("openfreemap.org/fonts", kept.GetProperty("glyphs").GetString()); // glyphs stay remote
+        Assert.Contains("openfreemap.org/fonts", kept.GetProperty("glyphs").GetString()); // glyphs stay remote without an assets base
+        var proxied = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", true, "http://localhost:5173/api/map")).RootElement;
+        Assert.Equal("http://localhost:5173/api/map/fonts/{fontstack}/{range}.pbf", proxied.GetProperty("glyphs").GetString());
+        Assert.Equal("http://localhost:5173/api/map/sprites/ofm", proxied.GetProperty("sprite").GetString());
 
         var offline = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", keepRemoteRaster: false)).RootElement;
         Assert.False(offline.GetProperty("sources").TryGetProperty("ne2_shaded", out _));
@@ -36,5 +39,23 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(MapStyleEndpoints.DefaultStyleUrl, cfg.GetProperty("mapStyleUrl").GetString());
         Assert.False(cfg.GetProperty("selfHostedBasemap").GetBoolean());
         Assert.Equal(HttpStatusCode.NotFound, (await f.Anonymous().GetAsync("/api/map/style.json")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Asset_proxy_caches_fonts_and_sprites_and_rejects_odd_names()
+    {
+        var anon = f.Anonymous();
+        var glyph = await anon.GetAsync("/api/map/fonts/Noto%20Sans%20Regular/0-255.pbf");
+        glyph.EnsureSuccessStatusCode();
+        Assert.Equal("application/x-protobuf", glyph.Content.Headers.ContentType?.MediaType);
+        Assert.True((await glyph.Content.ReadAsByteArrayAsync()).Length > 1000);
+        var again = await anon.GetAsync("/api/map/fonts/Noto%20Sans%20Regular/0-255.pbf"); // served from the cache now
+        again.EnsureSuccessStatusCode();
+        var sprite = await anon.GetAsync("/api/map/sprites/ofm.json");
+        sprite.EnsureSuccessStatusCode();
+        Assert.Equal("application/json", sprite.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(HttpStatusCode.NotFound, (await anon.GetAsync("/api/map/fonts/..%2F..%2Fx/0-255.pbf")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await anon.GetAsync("/api/map/sprites/..%2Fstyle.json")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await anon.GetAsync("/api/map/sprites/evil.png")).StatusCode);
     }
 }

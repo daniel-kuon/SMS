@@ -48,5 +48,7 @@ var web = builder.AddViteApp("web", "../sms-web")
     .WithExternalHttpEndpoints()
     .WithEndpoint("http", e => e.Port = 5173) // fixed port for bookmarks and the Playwright e2e tests
     .WithUrlForEndpoint("http", u => u.DisplayText = "Sailing portal");
+// the API builds absolute links (mails, map asset URLs) with the public web origin
+api.WithEnvironment("Web__BaseUrl", web.GetEndpoint("http"));
 
 builder.Build().Run();
