@@ -11,6 +11,8 @@ import { fmtDate } from '../shared/shared';
 /** Forecast as served by /api/weather (provider-neutral shape; the API hides Open-Meteo or whatever replaces it). */
 export interface WeatherPoint { time: string; temperatureC: number | null; windKn: number | null; windDirDeg: number | null; gustKn: number | null; precipitationMm: number | null; precipitationChance: number | null; weatherCode: number | null; pressureHpa: number | null; cloudCover: number | null; waveHeightM: number | null; waveDirDeg: number | null; wavePeriodS: number | null; }
 export interface WeatherDay { date: string; weatherCode: number | null; tempMinC: number | null; tempMaxC: number | null; windMaxKn: number | null; gustMaxKn: number | null; windDirDeg: number | null; precipitationMm: number | null; sunrise: string | null; sunset: string | null; }
+export interface TideExtreme { time: string; levelM: number; high: boolean; }
+export interface TideForecast { provider: string; stationId: string; stationName: string; stationLat: number; stationLng: number; distanceKm: number; datum: string; attribution: string; commercialUse: boolean; extremes: TideExtreme[]; }
 export interface WeatherForecast { provider: string; lat: number; lng: number; timeZone: string; current: WeatherPoint; hourly: WeatherPoint[]; daily: WeatherDay[]; fetchedAt: string; }
 /** Observation stored along a live track (/api/trips/{id}/weather). */
 export interface WeatherObservation extends Omit<WeatherPoint, 'precipitationChance'> { id: number; lat: number; lng: number; }
@@ -92,17 +94,31 @@ export const fmtWeekday = (date: string) => new Date(date + 'T12:00:00').toLocal
         }
       </table>
       <div class="muted small">{{ 'weather.position' | translate }}: {{ pos(f) }} · {{ 'weather.source' | translate }}: {{ f.provider }}</div>
+      @if (tides(); as t) {
+        <div class="tides">
+          <div><mat-icon inline>waves</mat-icon> <b>{{ 'weather.tides' | translate }}</b> <span class="muted small">{{ t.stationName }} · {{ t.distanceKm | number:'1.0-0' }} km · {{ t.datum }}</span></div>
+          <div class="tide-row">
+            @for (e of nextTides(); track e.time) {
+              <div class="tide"><div class="muted small">{{ weekday(e.time.slice(0, 10)) }}</div><div>{{ e.high ? 'HW' : 'NW' }} {{ hour(e.time) }}</div><div class="small">{{ e.levelM | number:'1.1-2' }} m</div></div>
+            }
+          </div>
+          <div class="muted tiny">{{ t.attribution.split('. Source')[0] }}</div>
+        </div>
+      }
     } @else if (error()) { <p class="muted">{{ error() }}</p> } @else { <p class="muted">{{ 'common.loading' | translate }}</p> }`,
   styles: `
     .current { display: flex; gap: 10px; align-items: center; } .big { font-size: 48px; width: 48px; height: 48px; } .temp { font-size: 20px; } .grow { flex: 1; }
     .hours { display: flex; gap: 2px; overflow-x: auto; margin: 8px 0; } .hour { min-width: 46px; text-align: center; padding: 4px 2px; border-radius: 4px; background: #f4f7fa; }
     .days { width: 100%; border-collapse: collapse; } .days td { padding: 3px 4px; border-bottom: 1px solid #eee; white-space: nowrap; }
-    .small { font-size: 12px; } mat-icon[inline] { vertical-align: middle; }
+    .small { font-size: 12px; } .tiny { font-size: 10px; } mat-icon[inline] { vertical-align: middle; }
+    .tides { margin-top: 8px; border-top: 1px solid #eee; padding-top: 6px; } .tide-row { display: flex; gap: 2px; overflow-x: auto; } .tide { min-width: 70px; text-align: center; padding: 4px 2px; border-radius: 4px; background: #eef4fa; }
   `,
 })
 export class WeatherCard {
   forecast = input<WeatherForecast | null>(null);
   error = input<string | null>(null);
+  tides = input<TideForecast | null>(null);
+  nextTides = computed(() => (this.tides()?.extremes ?? []).filter(e => new Date(e.time).getTime() > Date.now() - 3600_000).slice(0, 8));
   hours = computed(() => this.forecast()?.hourly.slice(0, 24) ?? []);
   info = weatherCodeInfo; compass = compass; bft = beaufort; hour = fmtHour; weekday = fmtWeekday;
   arrow = (deg: number | null) => deg == null ? '' : `rotate(${(deg + 180) % 360}deg)`; // wind blows *from* deg: arrow points where it goes
@@ -114,7 +130,7 @@ export class WeatherCard {
   imports: [MatDialogModule, MatButtonModule, WeatherCard, TranslatePipe],
   template: `
     <h2 mat-dialog-title>{{ 'weather.forecast' | translate }}</h2>
-    <mat-dialog-content><app-weather-card [forecast]="forecast()" [error]="error()" /></mat-dialog-content>
+    <mat-dialog-content><app-weather-card [forecast]="forecast()" [error]="error()" [tides]="tides()" /></mat-dialog-content>
     <mat-dialog-actions align="end"><button mat-button mat-dialog-close>{{ 'common.close' | translate }}</button></mat-dialog-actions>`,
 })
 export class WeatherDialog {
@@ -122,7 +138,13 @@ export class WeatherDialog {
   readonly data = inject<{ lat: number; lng: number }>(MAT_DIALOG_DATA);
   forecast = signal<WeatherForecast | null>(null);
   error = signal<string | null>(null);
-  constructor() { loadForecast(this.api, '/api/weather', { lat: this.data.lat, lng: this.data.lng }, this.forecast, this.error); }
+  tides = signal<TideForecast | null>(null);
+  constructor() { loadForecast(this.api, '/api/weather', { lat: this.data.lat, lng: this.data.lng }, this.forecast, this.error); loadTides(this.api, '/api/weather/tides', { lat: this.data.lat, lng: this.data.lng }, this.tides); }
+}
+
+export function loadTides(api: Api, url: string, params: Record<string, number> | undefined, tides: { set(v: TideForecast | null): void }): void {
+  tides.set(null);
+  api.get<TideForecast | null>(url, params).subscribe({ next: t => tides.set(t ?? null), error: () => tides.set(null) });
 }
 
 export function loadForecast(api: Api, url: string, params: Record<string, number> | undefined, forecast: { set(v: WeatherForecast | null): void }, error: { set(v: string | null): void }): void {

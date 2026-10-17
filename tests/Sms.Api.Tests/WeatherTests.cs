@@ -37,8 +37,33 @@ public sealed class FakeOverlayProvider : IWeatherOverlayProvider
     public Task<byte[]?> TileAsync(string layer, int z, int x, int y, CancellationToken ct) => Task.FromResult(layer == "radar" ? Png : null);
 }
 
+/// <summary>Fixed tide table for a station 2 km away; stations farther than maxKm yield null like the real provider.</summary>
+public sealed class FakeTideProvider : ITideProvider
+{
+    public string Name => "FakeTides";
+    public Task<TideForecast?> ForecastAsync(double lat, double lng, double maxKm, CancellationToken ct)
+    {
+        if (lat > 60) return Task.FromResult<TideForecast?>(null);
+        var t = DateTimeOffset.UtcNow.Date;
+        return Task.FromResult<TideForecast?>(new TideForecast(Name, "fake/kiel", "Kiel", lat, lng, 2.0, "MSL", "© test", true, [new(t.AddHours(3), -0.1, false), new(t.AddHours(9), 0.12, true)]));
+    }
+}
+
 public class WeatherTests(ApiFixture f) : IClassFixture<ApiFixture>
 {
+    [Fact]
+    public async Task Harbour_tides_come_from_the_provider_or_answer_no_content()
+    {
+        var anon = f.Anonymous();
+        var harbour = (await anon.GetFromJsonAsync<JsonElement>("/api/harbours?q=Kiel%20D"))[0].GetProperty("id").GetGuid();
+        var t = await anon.GetFromJsonAsync<JsonElement>($"/api/harbours/{harbour}/tides");
+        Assert.Equal("Kiel", t.GetProperty("stationName").GetString());
+        Assert.Equal(2, t.GetProperty("extremes").GetArrayLength());
+        Assert.True(t.GetProperty("extremes")[1].GetProperty("high").GetBoolean());
+        Assert.Equal(HttpStatusCode.NoContent, (await anon.GetAsync("/api/weather/tides?lat=70&lng=10")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await anon.GetAsync($"/api/harbours/{Guid.NewGuid()}/tides")).StatusCode);
+    }
+
     private static async Task<Guid> IdOf(HttpResponseMessage r) { r.EnsureSuccessStatusCode(); return (await r.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid(); }
 
     [Fact]

@@ -19,7 +19,7 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
         var kept = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap")).RootElement;
         Assert.Equal("http://localhost:5161/basemap", kept.GetProperty("sources").GetProperty("openmaptiles").GetProperty("url").GetString());
         Assert.True(kept.GetProperty("sources").TryGetProperty("ne2_shaded", out _));
-        Assert.Equal(2, kept.GetProperty("layers").GetArrayLength());
+        Assert.Equal(4, kept.GetProperty("layers").GetArrayLength()); // + pier-area, pier
         Assert.Equal("OpenFreeMap Liberty (self-hosted)", kept.GetProperty("name").GetString());
         Assert.Contains("openfreemap.org/fonts", kept.GetProperty("glyphs").GetString()); // glyphs stay remote without an assets base
         var proxied = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", true, "http://localhost:5173/api/map")).RootElement;
@@ -30,13 +30,13 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
         var detail = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", true, null, "http://localhost:5161/basemap-detail")).RootElement;
         Assert.Equal("http://localhost:5161/basemap-detail", detail.GetProperty("sources").GetProperty("openmaptiles_detail").GetProperty("url").GetString());
         var ids = detail.GetProperty("layers").EnumerateArray().Select(l => l.GetProperty("id").GetString()).ToList();
-        Assert.Equal(["shade", "water", "water-detail"], ids);
+        Assert.Equal(["shade", "water", "water-detail", "pier-area", "pier"], ids); // the pier rules follow the last transportation line layer, here the end
         var clone = detail.GetProperty("layers")[2];
         Assert.Equal("openmaptiles_detail", clone.GetProperty("source").GetString()); Assert.Equal(13, clone.GetProperty("minzoom").GetDouble());
 
         var offline = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", keepRemoteRaster: false)).RootElement;
         Assert.False(offline.GetProperty("sources").TryGetProperty("ne2_shaded", out _));
-        Assert.Single(offline.GetProperty("layers").EnumerateArray());
+        Assert.Equal(3, offline.GetProperty("layers").GetArrayLength());
         Assert.Equal("water", offline.GetProperty("layers")[0].GetProperty("id").GetString());
     }
 

@@ -25,7 +25,7 @@ public sealed class ApiFixture : IAsyncLifetime
         await _db.StartAsync();
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
-            b.ConfigureTestServices(s => { s.AddSingleton<Sms.Api.IAisPositionProvider, FakeAisProvider>(); s.AddSingleton<Sms.Api.IWeatherProvider, FakeWeatherProvider>(); s.AddSingleton<Sms.Api.IWeatherOverlayProvider, FakeOverlayProvider>(); });
+            b.ConfigureTestServices(s => { s.AddSingleton<Sms.Api.IAisPositionProvider, FakeAisProvider>(); s.AddSingleton<Sms.Api.IWeatherProvider, FakeWeatherProvider>(); s.AddSingleton<Sms.Api.IWeatherOverlayProvider, FakeOverlayProvider>(); s.AddSingleton<Sms.Api.ITideProvider, FakeTideProvider>(); });
             b.UseEnvironment("Development");
             b.UseSetting("ConnectionStrings:sms", _db.GetConnectionString());
             b.UseSetting("Media:RootPath", Path.Combine(Path.GetTempPath(), "sms-tests-media"));

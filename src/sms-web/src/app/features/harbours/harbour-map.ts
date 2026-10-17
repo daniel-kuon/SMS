@@ -21,7 +21,7 @@ import { Harbour, HarbourMarker, NearbyPort, Wifi } from '../../core/models';
 import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
 import { UploadZone } from '../../shared/shared';
-import { loadForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
+import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
 
 const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
 
@@ -62,7 +62,7 @@ const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: numb
               </table>
             </mat-tab>
             <mat-tab [label]="'weather.title' | translate">
-              <app-weather-card [forecast]="weather()" [error]="weatherError()" />
+              <app-weather-card [forecast]="weather()" [error]="weatherError()" [tides]="tides()" />
             </mat-tab>
             <mat-tab [label]="'harbour.ships' | translate">
               @if (visits().length === 0) { <p class="muted">{{ 'harbour.noVisits' | translate }}</p> }
@@ -113,6 +113,7 @@ export class HarbourMapPage {
   visits = signal<{ shipId: string; name: string; visits: number; lastVisit: string; lastTripId: string | null; lastTripName: string | null }[]>([]);
   weather = signal<WeatherForecast | null>(null);
   weatherError = signal<string | null>(null);
+  tides = signal<TideForecast | null>(null);
   fmt = fmtDate;
   position = (h: HarbourMarker) => formatPosition(h.lat, h.lng);
   skipperGuideUrl = (h: HarbourMarker) => `https://www.skipperguide.de/index.php?search=${encodeURIComponent(h.name)}`;
@@ -175,6 +176,7 @@ export class HarbourMapPage {
       this.api.get<{ ports: NearbyPort[] }>('/api/routing/nearby-ports', { harbour: id, maxNm: 60, limit: 30 }).subscribe(r => this.nearby.set(r.ports));
       this.api.get<ReturnType<HarbourMapPage['visits']>>(`/api/harbours/${id}/visits`).subscribe(v => this.visits.set(v));
       loadForecast(this.api, `/api/harbours/${id}/weather`, undefined, this.weather, this.weatherError);
+      loadTides(this.api, `/api/harbours/${id}/tides`, undefined, this.tides);
     });
   }
 
@@ -251,6 +253,7 @@ export class HarbourMapPage {
       this.harbour.set({ id: '', name: `${lat.toFixed(3)}, ${lng.toFixed(3)}`, lat, lng, category: null, country: null, website: null, description: null, phone: null, vhfChannel: null, facilities: {}, source: 'User', osmType: null, osmId: null, wifis: [], reviews: [], averageRating: null, photoUrls: [] });
       this.nearby.set(r.ports);
       loadForecast(this.api, '/api/weather', { lat, lng }, this.weather, this.weatherError);
+      loadTides(this.api, '/api/weather/tides', { lat, lng }, this.tides);
     });
   }
 

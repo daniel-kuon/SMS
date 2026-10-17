@@ -114,7 +114,6 @@ public static class MapStyleEndpoints
             // lean tiles (z ≤ 12, overzoomed) everywhere; the detail set adds every OpenMapTiles layer again from z13 (buildings, shops, side streets, piers) where it has tiles
             sources["openmaptiles_detail"] = new JsonObject { ["type"] = "vector", ["url"] = detailTilesUrl };
             var vectorSource = sources.First(s => s.Value!["type"]?.GetValue<string>() == "vector" && s.Key != "openmaptiles_detail").Key;
-            var piers = false;
             for (var i = 0; i < all.Count; i++)
             {
                 var l = all[i]!.AsObject();
@@ -124,13 +123,18 @@ public static class MapStyleEndpoints
                 clone["minzoom"] = Math.Max(l["minzoom"]?.GetValue<double>() ?? 0, 13);
                 if (clone["maxzoom"] is JsonValue mz && mz.GetValue<double>() <= 13) continue;
                 all.Insert(++i, clone);
-                if (!piers && l["source-layer"]?.GetValue<string>() == "transportation")
-                {
-                    piers = true; // Liberty has no rule for piers; harbour piers ("Stege") matter here
-                    all.Insert(++i, JsonNode.Parse("""{"id":"pier-detail","type":"line","source":"openmaptiles_detail","source-layer":"transportation","minzoom":13,"filter":["==",["get","class"],"pier"],"paint":{"line-color":"#9e9e9e","line-width":["interpolate",["linear"],["zoom"],13,1,17,5]}}""")!);
-                    all.Insert(++i, JsonNode.Parse("""{"id":"pier-area-detail","type":"fill","source":"openmaptiles_detail","source-layer":"landuse","minzoom":13,"filter":["==",["get","class"],"pier"],"paint":{"fill-color":"#e0e0e0"}}""")!);
-                }
             }
+        }
+        // Liberty has no rule for piers; harbour piers ("Stege") matter here – on the main source whenever it carries z13+ (full builds)
+        if (style["layers"] is JsonArray ls && ls.All(l => l?["id"]?.GetValue<string>() != "pier"))
+        {
+            var src = sources.First(s => s.Value!["type"]?.GetValue<string>() == "vector" && s.Key != "openmaptiles_detail").Key;
+            var hit = ls.Select((l, i) => (l, i)).LastOrDefault(x => x.l?["source-layer"]?.GetValue<string>() == "transportation" && x.l?["type"]?.GetValue<string>() == "line");
+            var anchor = hit.l is null ? ls.Count - 1 : hit.i; // after the roads, or at the end when the style has none
+            var pierArea = JsonNode.Parse("""{"id":"pier-area","type":"fill","source-layer":"landuse","minzoom":13,"filter":["==",["get","class"],"pier"],"paint":{"fill-color":"#e0e0e0"}}""")!.AsObject();
+            var pier = JsonNode.Parse("""{"id":"pier","type":"line","source-layer":"transportation","minzoom":13,"filter":["==",["get","class"],"pier"],"paint":{"line-color":"#9e9e9e","line-width":["interpolate",["linear"],["zoom"],13,1,17,5]}}""")!.AsObject();
+            pierArea["source"] = src; pier["source"] = src;
+            ls.Insert(anchor + 1, pierArea); ls.Insert(anchor + 2, pier);
         }
         style["name"] = (style["name"]?.GetValue<string>() ?? "Liberty") + " (self-hosted)";
         return style.ToJsonString(new JsonSerializerOptions { WriteIndented = false });

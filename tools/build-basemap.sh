@@ -36,9 +36,11 @@ if [ -f "$PBF" ]; then SRC=(--osm_path="/osm/${AREA}-latest.osm.pbf" --download)
 XMX="${JAVA_XMX:-4g}"; STORAGE=()
 # Europe: the in-memory node map (array/ram) needs > 100 GB; the memory-mapped sparse map runs in ~ 30 GB heap, slower but safe
 if [ "$AREA" = "europe" ]; then XMX="${JAVA_XMX:-32g}"; STORAGE=(--storage=mmap --nodemap_type=sparsearray --nodemap_storage=mmap); fi
+# Planetiler writes into the volume; the file reaches media/tiles only when complete (a stub left by a killed run makes Martin refuse to start)
 MSYS_NO_PATHCONV=1 docker run --rm -e JAVA_TOOL_OPTIONS="-Xmx$XMX" \
   -v "$HOST/media/tiles:/data" -v "$HOST/media/cache/osm:/osm" -v "$HOST/media/cache/planetiler-tmp:/poly" -v sms-planetiler-tmp:/tmp-data ghcr.io/onthegomap/planetiler:latest \
-  "${SRC[@]}" --area="$AREA" --output="/data/$OUT" --force --tmpdir=/tmp-data/tmp "${STORAGE[@]}" "${EXTRA[@]}"
+  "${SRC[@]}" --area="$AREA" --output="/tmp-data/$OUT.part" --force --tmpdir=/tmp-data/tmp "${STORAGE[@]}" "${EXTRA[@]}"
+MSYS_NO_PATHCONV=1 docker run --rm -v sms-planetiler-tmp:/tmp-data -v "$HOST/media/tiles:/data" alpine sh -c "mv /tmp-data/$OUT.part /data/$OUT"
 rm -f media/cache/planetiler-tmp/area.poly
 docker run --rm -v sms-planetiler-tmp:/tmp-data alpine sh -c "rm -rf /tmp-data/tmp" >/dev/null 2>&1 || true
 ls -la "media/tiles/$OUT"

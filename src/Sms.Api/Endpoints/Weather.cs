@@ -27,6 +27,21 @@ public static class WeatherEndpoints
             return fc is null ? Results.Problem(statusCode: 502, title: "Wetterdienst nicht erreichbar.") : Results.Ok(fc);
         }).WithTags("Weather");
 
+        // tides: nearest station within Tides:MaxStationKm (Baltic harbours often have none that matters, then 204)
+        api.MapGet("/harbours/{id:guid}/tides", async (Guid id, SmsDbContext db, ITideProvider tides, IConfiguration cfg, CancellationToken ct) =>
+        {
+            var h = await db.Harbours.AsNoTracking().Where(x => x.Id == id).Select(x => new { x.Location }).FirstOrDefaultAsync(ct);
+            if (h is null) return Results.NotFound();
+            var fc = await tides.ForecastAsync(h.Location.Y, h.Location.X, cfg.GetValue("Tides:MaxStationKm", 60.0), ct);
+            return fc is null ? Results.NoContent() : Results.Ok(fc);
+        }).WithTags("Weather");
+        g.MapGet("/tides", async (double lat, double lng, ITideProvider tides, IConfiguration cfg, CancellationToken ct) =>
+        {
+            if (lat is < -90 or > 90 || lng is < -180 or > 180) return Invalid("lat", "Ungültige Position.");
+            var fc = await tides.ForecastAsync(lat, lng, cfg.GetValue("Tides:MaxStationKm", 60.0), ct);
+            return fc is null ? Results.NoContent() : Results.Ok(fc);
+        }).RequireRateLimiting("ingest");
+
         // observations recorded at live positions (same visibility as the track)
         api.MapGet("/trips/{tripId:guid}/weather", async (Guid tripId, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
         {
