@@ -38,6 +38,12 @@ public static class WeatherEndpoints
             var cutoff = isCrew ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow.AddMinutes(-trip.PublicPositionDelayMinutes);
             var rows = await db.WeatherObservations.AsNoTracking().Where(o => o.TripId == tripId && o.Time <= cutoff).OrderBy(o => o.Time)
                 .Select(o => new { o.Id, o.Time, o.Location, o.TemperatureC, o.WindKn, o.WindDirDeg, o.GustKn, o.PressureHpa, o.PrecipitationMm, o.WeatherCode, o.CloudCover, o.WaveHeightM, o.WaveDirDeg, o.WavePeriodS }).ToListAsync(ct);
+            // like the track (spec 12 §12.5): positions inside the ship's privacy zones are not shown to non-crew viewers
+            if (!isCrew)
+            {
+                var zones = await db.PrivacyZones.AsNoTracking().Where(z => z.ShipId == trip.ShipId).Select(z => new { z.Center, z.RadiusM }).ToListAsync(ct);
+                rows = rows.Where(o => !zones.Any(z => Sms.Domain.Tracking.TrackMath.Haversine(o.Location.Y, o.Location.X, z.Center.Y, z.Center.X) <= z.RadiusM)).ToList();
+            }
             return Results.Ok(rows.Select(o => new { o.Id, o.Time, lat = o.Location.Y, lng = o.Location.X, o.TemperatureC, o.WindKn, o.WindDirDeg, o.GustKn, o.PressureHpa, o.PrecipitationMm, o.WeatherCode, o.CloudCover, o.WaveHeightM, o.WaveDirDeg, o.WavePeriodS }));
         }).WithTags("Weather");
 

@@ -87,6 +87,7 @@ builder.Services.AddScoped<SeaRouter>();
 builder.Services.AddSingleton<TrackProcessor>();
 builder.Services.AddScoped<Notifier>();
 builder.Services.AddHttpClient<EcbRates>();
+builder.Services.AddTransient<IExchangeRates>(sp => sp.GetRequiredService<EcbRates>());
 builder.Services.AddHostedService<EcbRateJob>();
 builder.Services.ConfigureHttpJsonOptions(o =>
 {

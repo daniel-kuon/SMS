@@ -41,7 +41,7 @@ public static class CostEndpoints
             return Results.Ok(new { categories = Categories, items = items.Select(e => ToDto(e, names)) });
         });
 
-        trips.MapPost("/expenses", async (Guid tripId, ExpenseUpsert req, SmsDbContext db, CurrentUser current, Access access, EcbRates rates, Notifier notifier, CancellationToken ct) =>
+        trips.MapPost("/expenses", async (Guid tripId, ExpenseUpsert req, SmsDbContext db, CurrentUser current, Access access, IExchangeRates rates, Notifier notifier, CancellationToken ct) =>
         {
             var me = await access.CrewAsync(tripId, ct);
             if (me is null) return Results.Forbid();
@@ -57,7 +57,7 @@ public static class CostEndpoints
             return Results.Created($"/api/expenses/{expense.Id}", new { expense.Id });
         });
 
-        api.MapPut("/expenses/{id:guid}", async (Guid id, ExpenseUpsert req, SmsDbContext db, CurrentUser current, Access access, EcbRates rates, CancellationToken ct) =>
+        api.MapPut("/expenses/{id:guid}", async (Guid id, ExpenseUpsert req, SmsDbContext db, CurrentUser current, Access access, IExchangeRates rates, CancellationToken ct) =>
         {
             var expense = await db.Expenses.Include(e => e.Shares).Include(e => e.Trip).FirstOrDefaultAsync(e => e.Id == id, ct);
             if (expense is null) return Results.NotFound();
@@ -204,7 +204,7 @@ public static class CostEndpoints
             return Results.File(pdf.Save(), "application/pdf"); // inline: opens in the browser's viewer, save from there
         });
 
-        api.MapGet("/exchange-rates", async (string from, string to, DateOnly? date, EcbRates rates, CancellationToken ct) =>
+        api.MapGet("/exchange-rates", async (string from, string to, DateOnly? date, IExchangeRates rates, CancellationToken ct) =>
         {
             var r = await rates.GetRateAsync(from.ToUpperInvariant(), to.ToUpperInvariant(), date ?? DateOnly.FromDateTime(DateTime.UtcNow), ct);
             return r is null ? Results.NotFound(new { message = "Kein Kurs verfügbar – bitte manuell eingeben." }) : Results.Ok(new { rate = r.Value.rate, rateDate = r.Value.rateDate, source = RateSource.Ecb });
@@ -213,7 +213,7 @@ public static class CostEndpoints
 
     private static string Csv(string? s) => s is null ? "" : "\"" + s.Replace("\"", "\"\"") + "\"";
 
-    private static async Task<IResult?> ApplyAsync(Expense e, ExpenseUpsert r, Trip trip, CrewMember me, SmsDbContext db, EcbRates rates, CancellationToken ct)
+    private static async Task<IResult?> ApplyAsync(Expense e, ExpenseUpsert r, Trip trip, CrewMember me, SmsDbContext db, IExchangeRates rates, CancellationToken ct)
     {
         if (r.Amount <= 0) return Invalid("amount", "Betrag muss positiv sein.");
         if (r.Currency is not { Length: 3 }) return Invalid("currency", "ISO-4217-Code (3 Buchstaben).");

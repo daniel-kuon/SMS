@@ -51,7 +51,7 @@ No feature code talks to a third party directly; every provider sits behind one 
 | AIS positions | `IAisPositionProvider` (`Ais.cs`) | aisstream.io, MarineTraffic (per-ship choice) | per ship, keys encrypted with Data Protection |
 | Base map tiles/style | `MapStyleEndpoints` (`/api/map/style.json`, fonts, sprites) | OpenFreeMap (remote) or self-hosted Planetiler + Martin | `Map:*` |
 | Sea-mark / harbour / waterway source | `Overpass` (`Overpass.cs`) and `PbfImportJob` | Overpass mirrors, Geofabrik PBF | `Overpass:Endpoints`, `Import:AllowedHosts` |
-| Exchange rates | `EcbRates` (single class, ECB XML) | European Central Bank | — |
+| Exchange rates | `IExchangeRates` (`EcbRates.cs`) | European Central Bank reference rates (XML) | — |
 | E-mail | `IEmailSender` (ASP.NET Identity) | SMTP (Mailpit in dev) | `SMTP_ENDPOINT` |
 | Telemetry | OpenTelemetry exporters | SigNoz (OTLP) | Aspire |
 

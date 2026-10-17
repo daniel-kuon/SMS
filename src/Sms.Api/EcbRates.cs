@@ -7,8 +7,17 @@ using Sms.Infrastructure;
 
 namespace Sms.Api;
 
+/// <summary>Exchange-rate source for cost conversion; the ECB client is the only implementation today, swap by registration.</summary>
+public interface IExchangeRates
+{
+    /// <summary>Rate from → to for the payment date; null when a currency is not covered.</summary>
+    Task<(decimal rate, DateOnly rateDate)?> GetRateAsync(string from, string to, DateOnly date, CancellationToken ct);
+    /// <summary>Pulls the provider's rates into the ExchangeRates table (history = full bootstrap); returns the number of rows added.</summary>
+    Task<int> ImportAsync(bool history, CancellationToken ct);
+}
+
 /// <summary>ECB euro reference rates (spec 09 §9.2): daily import, historical bootstrap, rate lookup with fallback to the latest earlier rate.</summary>
-public sealed class EcbRates(HttpClient http, IServiceScopeFactory scopes, ILogger<EcbRates> logger)
+public sealed class EcbRates(HttpClient http, IServiceScopeFactory scopes, ILogger<EcbRates> logger) : IExchangeRates
 {
     public const string DailyUrl = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml";
     public const string HistoryUrl = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.xml";
@@ -57,7 +66,7 @@ public sealed class EcbRates(HttpClient http, IServiceScopeFactory scopes, ILogg
 }
 
 /// <summary>Bootstraps the ECB history once, then refreshes daily after the ~16:00 CET publication.</summary>
-public sealed class EcbRateJob(EcbRates rates, IServiceScopeFactory scopes, ILogger<EcbRateJob> logger) : BackgroundService
+public sealed class EcbRateJob(IExchangeRates rates, IServiceScopeFactory scopes, ILogger<EcbRateJob> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken ct)
     {

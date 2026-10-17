@@ -88,6 +88,13 @@ public class WeatherTests(ApiFixture f) : IClassFixture<ApiFixture>
         var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
         Assert.Equal(3, await db.WeatherObservations.CountAsync(o => o.ShipId == ship && o.TripId == trip));
 
+        // a privacy zone around the first two positions hides them from strangers but not from the skipper
+        (await skipper.PostAsJsonAsync($"/api/ships/{ship}/privacy-zones", new { name = "home", lat = 54.343, lng = 10.163, radiusM = 800 })).EnsureSuccessStatusCode();
+        var outside = await anon.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/weather");
+        Assert.Single(outside.EnumerateArray());
+        Assert.Equal(54.370, outside[0].GetProperty("lat").GetDouble(), 3);
+        Assert.Equal(3, (await skipper.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/weather")).GetArrayLength());
+
         // a private track hides the observations from strangers but not from the skipper
         (await skipper.PutAsJsonAsync($"/api/trips/{trip}", new { name = "Wx trip", startDate = "2026-10-10", endDate = "2026-10-20", visibility = "Public", status = "Active", trackVisibility = "Crew", publicPositionDelayMinutes = 0 })).EnsureSuccessStatusCode();
         Assert.Equal(0, (await anon.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/weather")).GetArrayLength());
