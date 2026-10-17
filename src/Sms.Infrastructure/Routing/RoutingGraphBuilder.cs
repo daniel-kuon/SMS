@@ -29,6 +29,11 @@ public sealed class RoutingOptions
     public double PassageCostFactor { get; set; } = 0.8;
     /// <summary>Extra cost (metres) for passing a lock, roughly the time a mile takes.</summary>
     public double LockPenaltyM { get; set; } = 1852;
+    /// <summary>Open water within this distance of a derived fairway counts as unmarked/shallow: grid edges there cost ×ChannelPenaltyFactor (0 = off).</summary>
+    public double ChannelPreferenceM { get; set; } = 1500;
+    /// <summary>Interior passage vertices link to a water node this close, so fairways and canals can be joined along their length (ends use HarbourAccessM).</summary>
+    public double PassageLinkM { get; set; } = 600;
+    public double ChannelPenaltyFactor { get; set; } = 1.5;
     public double MaxRouteNm { get; set; } = 500;
 
     public sealed class RegionBox { public double MinLng { get; set; } = 9.3; public double MinLat { get; set; } = 53.8; public double MaxLng { get; set; } = 12.6; public double MaxLat { get; set; } = 55.4; }
@@ -114,6 +119,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var accessDeg = o.HarbourAccessM / WaterGraphTiler.MPerDegLat;
 
         // 3. tile by tile: land from PostGIS (clipped), quadtree, edges, straight into COPY
+        // derived fairways (buoy chains) make the water next to them expensive, spec 10 §10.5 step 3
+        var fairways = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
         var tiler = new WaterGraphTiler(Geo.Factory, regionEnv, o.StartCellM, o.MinCellM, o.CoastPenaltyFactor, o.TileCells);
         var tileNo = 0;
         Report("grid", $"{tiler.Tiles.Count} tiles of {o.TileCells}×{o.TileCells} start cells");
@@ -140,7 +147,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                     foreach (var n in result.Nodes) { await w.StartRowAsync(c); await w.WriteAsync(version, NpgsqlDbType.Integer, c); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, c); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, c); }
                     await w.CompleteAsync(c);
                 }
-                await WriteEdgesAsync(conn, version, result.Edges, c);
+                await WriteEdgesAsync(conn, version, ChannelPreference.Apply(result.Edges, fairways, o.ChannelPreferenceM, o.ChannelPenaltyFactor), c);
                 foreach (var h in harbourIndex.Query(result.Tile.Envelope))
                     if (result.Nearest(h.X, h.Y, accessDeg) is { } near) access.Add((h.Id, near.Id, Haversine(h.Y, h.X, near.Y, near.X)));
                 if (result.Nodes.Count > 0 || tileNo % 25 == 0)
@@ -153,6 +160,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var nextId = tiler.NextId;
         var extraNodes = new List<GraphNode>(); var extraEdges = new List<GraphEdge>();
         var shared = new Dictionary<(long, long), long>();
+        var linked = new HashSet<long>(); // one grid link per passage node
         long NodeAt(Coordinate p)
         {
             var key = ((long)Math.Round(p.X * 1e6), (long)Math.Round(p.Y * 1e6));
@@ -170,9 +178,10 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 var p = ls.GetCoordinateN(i);
                 var id = NodeAt(p);
                 if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); extraEdges.Add(new GraphEdge(pv, id, Haversine(q.Y, q.X, p.Y, p.X) * o.PassageCostFactor, Geo.Factory.CreateLineString([q, p]))); }
-                if (i == 0 || i == ls.NumPoints - 1)
+                var linkM = i == 0 || i == ls.NumPoints - 1 ? o.HarbourAccessM : o.PassageLinkM;
+                if (linkM > 0 && linked.Add(id))
                 {
-                    var near = await NearestNodeAsync(conn, version, p.X, p.Y, o.HarbourAccessM, ct);
+                    var near = await NearestNodeAsync(conn, version, p.X, p.Y, linkM, ct);
                     if (near is { } n) extraEdges.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
                 }
                 prev = id;
@@ -240,16 +249,21 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         await w.CompleteAsync(ct);
     }
 
+    /// <summary>Nearest node within maxM: bounding box in degrees (uses the GiST index; a geography cast would not), exact distance checked afterwards.</summary>
     private static async Task<GraphNode?> NearestNodeAsync(NpgsqlConnection conn, int version, double x, double y, double maxM, CancellationToken ct)
     {
+        var dLat = maxM / WaterGraphTiler.MPerDegLat; var dLng = dLat / Math.Max(0.1, Math.Cos(y * Math.PI / 180));
         await using var cmd = new NpgsqlCommand("""
             SELECT id, ST_X(geom), ST_Y(geom) FROM routing_node
-            WHERE graph_version = @v AND ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(@x, @y), 4326)::geography, @m)
+            WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
             ORDER BY geom <-> ST_SetSRID(ST_MakePoint(@x, @y), 4326) LIMIT 1
             """, conn);
-        cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y); cmd.Parameters.AddWithValue("m", maxM);
+        cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y);
+        cmd.Parameters.AddWithValue("x1", x - dLng); cmd.Parameters.AddWithValue("y1", y - dLat); cmd.Parameters.AddWithValue("x2", x + dLng); cmd.Parameters.AddWithValue("y2", y + dLat);
         await using var r = await cmd.ExecuteReaderAsync(ct);
-        return await r.ReadAsync(ct) ? new GraphNode(r.GetInt64(0), r.GetDouble(1), r.GetDouble(2), false) : null;
+        if (!await r.ReadAsync(ct)) return null;
+        var n = new GraphNode(r.GetInt64(0), r.GetDouble(1), r.GetDouble(2), false);
+        return Haversine(y, x, n.Y, n.X) <= maxM ? n : null;
     }
 
     private async Task<string> EnsureLandPolygonsAsync(RoutingOptions o, CancellationToken ct)
