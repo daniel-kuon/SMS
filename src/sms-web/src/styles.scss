@@ -34,3 +34,12 @@ html, body { height: 100%; margin: 0; font-family: Roboto, sans-serif; backgroun
 
 // sea-mark popups (core/map.ts)
 .seamark-popup { font-size: 13px; line-height: 1.4; } .seamark-popup .pos { margin: 6px 0; } .seamark-popup .links { display: flex; gap: 8px; align-items: center; } .seamark-popup button { font-size: 12px; }
+
+/* weather overlay map control (core/map.ts) */
+.weather-overlay-ctrl { position: relative; }
+.weather-overlay-button { min-width: 36px; height: 29px; padding: 0 6px; font-size: 14px; border: 0; background: #fff; cursor: pointer; border-radius: 4px; }
+.weather-overlay-button.active { color: #1565c0; font-weight: 600; }
+.weather-overlay-panel { position: absolute; right: 0; top: 32px; background: #fff; border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.3); padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 130px; font-size: 13px; }
+.weather-overlay-panel[hidden] { display: none; }
+.weather-overlay-panel label { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+.weather-overlay-panel .muted { font-size: 11px; color: #777; }

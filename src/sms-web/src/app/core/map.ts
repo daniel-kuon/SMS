@@ -36,28 +36,97 @@ export async function createMap(container: HTMLElement, options: Partial<MapOpti
   return map;
 }
 
-/** Weather raster layers (rain radar, wind, …) proxied by the API; the user picks one in a small control, none by default. */
+/**
+ * Weather overlays. Four groups the user can combine (rain, waves, wind, temperature). With the provider's GL credentials
+ * (Xweather MapsGL) they render client-side as animated particles / colour fields; otherwise the API's raster tiles are used.
+ */
 export interface OverlayLayer { id: string; name: string; attribution: string; }
-export function setWeatherOverlay(map: MlMap, layer: OverlayLayer | null): void {
-  if (map.getLayer('weather-overlay')) map.removeLayer('weather-overlay');
-  if (map.getSource('weather-overlay')) map.removeSource('weather-overlay');
-  if (!layer) return;
-  map.addSource('weather-overlay', { type: 'raster', tiles: [`${location.origin}/api/weather/overlay/${layer.id}/{z}/{x}/{y}.png`], tileSize: 256, maxzoom: 12, attribution: layer.attribution });
-  const before = map.getLayer('seamark-points') ? 'seamark-points' : undefined;
-  map.addLayer({ id: 'weather-overlay', type: 'raster', source: 'weather-overlay', paint: { 'raster-opacity': 0.65 } }, before);
+export interface OverlayGroup { id: string; name: string; gl: string[]; glFallback?: string[]; raster: string; }
+export const OVERLAY_GROUPS: OverlayGroup[] = [
+  { id: 'rain', name: 'Regen', gl: ['radar'], raster: 'radar' },
+  { id: 'waves', name: 'Wellen', gl: ['wave-particles'], glFallback: ['wave-heights'], raster: 'wave-heights' },
+  { id: 'wind', name: 'Wind', gl: ['wind-speeds', 'wind-particles'], raster: 'wind-speeds' },
+  { id: 'temperature', name: 'Temperatur', gl: ['temperatures'], raster: 'temperatures' },
+];
+const OVERLAY_STORAGE = 'sms.weatherOverlays';
+interface GlController { on(name: string, cb: () => void): void; isReady?: boolean; addWeatherLayer(id: string, overrides?: unknown): unknown; removeWeatherLayer(id: string): void; hasWeatherLayer(id: string): boolean; }
+
+export class WeatherOverlays {
+  readonly selected = new Set<string>();
+  private gl?: Promise<GlController | null>;
+  private readonly glLayers = new Map<string, string[]>();
+  constructor(private readonly map: MlMap, private readonly layers: OverlayLayer[], private access: { clientId: string; clientSecret: string } | null) {
+    try { for (const id of JSON.parse(localStorage.getItem(OVERLAY_STORAGE) ?? '[]') as string[]) if (OVERLAY_GROUPS.some(g => g.id === id)) this.selected.add(id); } catch { /* ignore */ }
+  }
+  get mode(): 'gl' | 'raster' { return this.access ? 'gl' : 'raster'; }
+
+  async apply(): Promise<void> {
+    try { localStorage.setItem(OVERLAY_STORAGE, JSON.stringify([...this.selected])); } catch { /* ignore */ }
+    const gl = this.access ? await this.controller() : null;
+    for (const g of OVERLAY_GROUPS) {
+      const on = this.selected.has(g.id);
+      if (gl) this.applyGl(gl, g, on); else this.applyRaster(g, on);
+    }
+  }
+
+  private applyRaster(g: OverlayGroup, on: boolean): void {
+    const map = this.map, id = `weather-${g.id}`;
+    const has = !!map.getLayer(id);
+    if (on === has) return;
+    if (!on) { map.removeLayer(id); map.removeSource(id); return; }
+    const layer = this.layers.find(l => l.id === g.raster); if (!layer) return;
+    map.addSource(id, { type: 'raster', tiles: [`${location.origin}/api/weather/overlay/${layer.id}/{z}/{x}/{y}.png`], tileSize: 256, maxzoom: 12, attribution: layer.attribution });
+    map.addLayer({ id, type: 'raster', source: id, paint: { 'raster-opacity': 0.65 } }, map.getLayer('seamark-points') ? 'seamark-points' : undefined);
+  }
+
+  private applyGl(gl: GlController, g: OverlayGroup, on: boolean): void {
+    const current = this.glLayers.get(g.id) ?? [];
+    if (on === current.length > 0) return;
+    if (!on) { for (const id of current) if (gl.hasWeatherLayer(id)) gl.removeWeatherLayer(id); this.glLayers.delete(g.id); return; }
+    const added: string[] = [];
+    const tryAdd = (ids: string[]) => { for (const id of ids) { try { gl.addWeatherLayer(id, id.endsWith('-particles') ? undefined : { paint: { opacity: 0.55 } }); added.push(id); } catch (e) { console.warn('MapsGL layer failed', id, e); } } };
+    tryAdd(g.gl);
+    if (added.length === 0 && g.glFallback) tryAdd(g.glFallback);
+    this.glLayers.set(g.id, added);
+  }
+
+  /** Lazy-loads the MapsGL SDK (1.7 MB) the first time a GL overlay is switched on. */
+  private controller(): Promise<GlController | null> {
+    return this.gl ??= (async () => {
+      try {
+        const sdk = await import('@xweather/mapsgl');
+        // MapLibre 6 moved the transform to the camera; MapsGL 1.10 still reads map.transform (fov) at construction
+        const m = this.map as unknown as { transform?: unknown; _camera?: { transform?: unknown } };
+        if (!('transform' in m)) Object.defineProperty(m, 'transform', { get: () => m._camera?.transform, configurable: true });
+        const account = new sdk.Account(this.access!.clientId, this.access!.clientSecret);
+        const c = new sdk.MaplibreMapController(this.map as never, { account, units: { temperature: 'C', speed: 'kts', pressure: 'hPa', distance: 'km', height: 'm' } } as never) as unknown as GlController;
+        await new Promise<void>(res => (c.isReady ? res() : c.on('load', () => res())));
+        return c;
+      } catch (e) { console.warn('MapsGL unavailable, using raster tiles', e); this.access = null; return null; }
+    })();
+  }
 }
+
+/** Map control: a "Wetter" button opening a checklist of the overlay groups (several may be active). */
 export function addWeatherOverlayControl(map: MlMap): void {
-  fetch('/api/weather/overlay/layers').then(r => r.json() as Promise<{ configured: boolean; layers: OverlayLayer[] }>).then(cfg => {
+  fetch('/api/weather/overlay/layers').then(r => r.json() as Promise<{ configured: boolean; layers: OverlayLayer[]; mapsGl: { clientId: string; clientSecret: string } | null }>).then(cfg => {
     if (!cfg.configured || !cfg.layers.length) return;
-    const select = document.createElement('select');
-    select.className = 'weather-overlay-select'; select.title = 'Wetter-Overlay'; select.setAttribute('aria-label', 'Wetter-Overlay');
-    const none = document.createElement('option'); none.value = ''; none.textContent = '☁ Wetter: aus'; select.appendChild(none);
-    for (const l of cfg.layers) { const o = document.createElement('option'); o.value = l.id; o.textContent = l.name; select.appendChild(o); }
-    select.onchange = () => setWeatherOverlay(map, cfg.layers.find(l => l.id === select.value) ?? null);
-    map.addControl({
-      onAdd: () => { const div = document.createElement('div'); div.className = 'maplibregl-ctrl maplibregl-ctrl-group'; div.appendChild(select); return div; },
-      onRemove: () => { select.parentElement?.remove(); },
-    }, 'top-right');
+    const overlays = new WeatherOverlays(map, cfg.layers, cfg.mapsGl);
+    (map as unknown as { weatherOverlays?: WeatherOverlays }).weatherOverlays = overlays; // e2e/debug hook
+    const wrap = document.createElement('div'); wrap.className = 'maplibregl-ctrl maplibregl-ctrl-group weather-overlay-ctrl';
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'weather-overlay-button'; button.title = 'Wetter-Overlays'; button.setAttribute('aria-label', 'Wetter-Overlays');
+    const panel = document.createElement('div'); panel.className = 'weather-overlay-panel'; panel.hidden = true;
+    const refresh = () => { button.textContent = overlays.selected.size ? `☁ ${overlays.selected.size}` : '☁'; button.classList.toggle('active', overlays.selected.size > 0); };
+    for (const g of OVERLAY_GROUPS) {
+      const label = document.createElement('label'); const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = g.id; cb.checked = overlays.selected.has(g.id);
+      cb.onchange = () => { if (cb.checked) overlays.selected.add(g.id); else overlays.selected.delete(g.id); refresh(); void overlays.apply(); };
+      label.append(cb, document.createTextNode(' ' + g.name)); panel.appendChild(label);
+    }
+    const note = document.createElement('div'); note.className = 'muted'; note.textContent = overlays.mode === 'gl' ? 'Xweather MapsGL' : 'Xweather (Kacheln)'; panel.appendChild(note);
+    button.onclick = () => { panel.hidden = !panel.hidden; };
+    map.addControl({ onAdd: () => { wrap.append(button, panel); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
+    refresh();
+    if (overlays.selected.size) void overlays.apply();
   }).catch(() => { /* no overlay without the API */ });
 }
 

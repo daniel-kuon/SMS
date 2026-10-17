@@ -47,7 +47,7 @@ public static class WeatherEndpoints
             return Results.Ok(rows.Select(o => new { o.Id, o.Time, lat = o.Location.Y, lng = o.Location.X, o.TemperatureC, o.WindKn, o.WindDirDeg, o.GustKn, o.PressureHpa, o.PrecipitationMm, o.WeatherCode, o.CloudCover, o.WaveHeightM, o.WaveDirDeg, o.WavePeriodS }));
         }).WithTags("Weather");
 
-        g.MapGet("/overlay/layers", (IWeatherOverlayProvider overlay) => Results.Ok(new { provider = overlay.Name, configured = overlay.Configured, layers = overlay.Layers }));
+        g.MapGet("/overlay/layers", (IWeatherOverlayProvider overlay) => Results.Ok(new { provider = overlay.Name, configured = overlay.Configured, layers = overlay.Layers, mapsGl = overlay.MapsGl }));
 
         // tiles are proxied so the provider key stays on the server; short browser cache, provider-side 10-minute buckets
         g.MapGet("/overlay/{layer}/{z:int}/{x:int}/{y:int}.png", async (string layer, int z, int x, int y, IWeatherOverlayProvider overlay, HttpResponse response, CancellationToken ct) =>

@@ -35,7 +35,8 @@
               }
             ],
             "styles": [
-              "src/styles.scss"
+              "src/styles.scss",
+              "node_modules/@xweather/mapsgl/dist/mapsgl.css"
             ]
           },
           "configurations": {

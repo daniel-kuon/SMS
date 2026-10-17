@@ -18,9 +18,12 @@ import type { GeoJSONSource, MapMouseEvent } from 'maplibre-gl';
 import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, NearbyPort, Wifi } from '../../core/models';
-import { bounds, createMap, maplibregl, MlMap } from '../../core/map';
+import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
+import { haversineM } from '../../core/track-playback';
 import { UploadZone } from '../../shared/shared';
 import { loadForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
+
+const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
 
 @Component({
   imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone, MatListModule, RouterLink, WeatherCard],
@@ -137,6 +140,7 @@ export class HarbourMapPage {
 
     map.on('moveend', () => this.refresh());
     map.on('click', 'harbour-points', e => { const id = e.features?.[0]?.properties?.['id']; if (id) this.select(id); });
+    map.on('click', e => { if (map.queryRenderedFeatures(e.point, { layers: ['harbour-points', 'harbour-clusters'] }).length === 0) this.clickPoint(e.lngLat.lat, e.lngLat.lng); });
     map.on('click', 'harbour-clusters', e => { const f = e.features?.[0]; if (f) map.easeTo({ center: (f.geometry as GeoPoint).coordinates as [number, number], zoom: map.getZoom() + 2 }); });
     map.on('mouseenter', 'harbour-points', e => { map.getCanvas().style.cursor = 'pointer'; const id = e.features?.[0]?.properties?.['id']; if (id) this.hoverHarbour(id); });
     map.on('mouseleave', 'harbour-points', () => { map.getCanvas().style.cursor = ''; this.hideRoute(); });
@@ -178,9 +182,34 @@ export class HarbourMapPage {
   close(): void { this.hideRoute(true); this.router.navigate(['/']); }
 
   private hoverHarbour(id: string): void {
-    const p = this.nearby().find(n => n.harbourId === id);
-    if (p) { this.hovered = id; this.showRoute(p); }
+    const h = this.harbour(); const m = this.harbours.get(id);
+    if (!h || !m || id === h.id) return;
+    const p = this.nearby().find(n => n.harbourId === id)
+      ?? { harbourId: id, name: m.name, lat: m.lat, lng: m.lng, distanceNm: straightNm(h, m), straightLineNm: straightNm(h, m), etaHours: 0, method: 'straight-line' };
+    this.hovered = id; this.showRoute(p);
   }
+
+  /** Click on open water/land while a harbour is selected: pinned route from the harbour to that point with its distance. */
+  private clickPoint(lat: number, lng: number): void {
+    const h = this.harbour(); const map = this.map;
+    if (!h || !map) return;
+    const to = { lat, lng };
+    this.pinned = false; this.hovered = null;
+    this.draw([[h.lng, h.lat], [lng, lat]], straightNm(h, to), true);
+    this.pinned = true; this.prevBounds = undefined;
+    this.pointPopup?.remove();
+    this.pointPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat([lng, lat]).setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie) …`)).addTo(map);
+    this.pointPopup.on('close', () => { if (this.pinned) this.hideRoute(true); });
+    this.api.get<{ distanceNm: number; straightLineNm: number; geometry: { coordinates: number[][] }; method: string }>('/api/routing/route', { from: `${h.lat},${h.lng}`, to: `${lat},${lng}` }).subscribe({
+      next: r => {
+        if (!this.pointPopup?.isOpen()) return;
+        this.pinned = false; this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line'); this.pinned = true;
+        this.pointPopup.setDOMContent(textEl(r.method === 'straight-line' ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${r.straightLineNm} sm`));
+      },
+      error: () => this.pointPopup?.setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie)`)),
+    });
+  }
+  private pointPopup?: maplibregl.Popup;
 
   /** Legacy behaviour (05 §5.2): hover draws the route with a "<n> sm" label and fits the map if needed. */
   showRoute(p: NearbyPort): void {
@@ -203,6 +232,7 @@ export class HarbourMapPage {
   }
   hideRoute(force = false): void {
     if (this.pinned && !force) return;
+    if (force) { const p = this.pointPopup; this.pointPopup = undefined; p?.remove(); }
     this.hovered = null;
     (this.map?.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
     if (this.prevBounds) { const b = this.prevBounds; this.prevBounds = undefined; setTimeout(() => this.map?.fitBounds(b, { duration: 300 }), 100); }

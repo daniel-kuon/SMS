@@ -36,7 +36,7 @@ public sealed class RoutingOptions
     public double ChannelPenaltyFactor { get; set; } = 1.5;
     public double MaxRouteNm { get; set; } = 500;
 
-    public sealed class RegionBox { public double MinLng { get; set; } = 9.3; public double MinLat { get; set; } = 53.8; public double MaxLng { get; set; } = 12.6; public double MaxLat { get; set; } = 55.4; }
+    public sealed class RegionBox { public double MinLng { get; set; } = 7.6; public double MinLat { get; set; } = 53.3; public double MaxLng { get; set; } = 12.6; public double MaxLat { get; set; } = 55.4; }
 }
 
 public sealed record BuildProgress(string Phase, string Message, DateTimeOffset At);

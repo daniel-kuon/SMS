@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Api;
 using Sms.Infrastructure;
@@ -31,6 +32,7 @@ public sealed class FakeOverlayProvider : IWeatherOverlayProvider
     public static readonly byte[] Png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
     public string Name => "FakeOverlay";
     public bool Configured => true;
+    public OverlayGlAccess? MapsGl => null;
     public IReadOnlyList<OverlayLayer> Layers { get; } = [new("radar", "Regenradar", "© test")];
     public Task<byte[]?> TileAsync(string layer, int z, int x, int y, CancellationToken ct) => Task.FromResult(layer == "radar" ? Png : null);
 }
@@ -117,6 +119,7 @@ public class WeatherTests(ApiFixture f) : IClassFixture<ApiFixture>
         var layers = await anon.GetFromJsonAsync<JsonElement>("/api/weather/overlay/layers");
         Assert.True(layers.GetProperty("configured").GetBoolean());
         Assert.Equal("radar", layers.GetProperty("layers")[0].GetProperty("id").GetString());
+        Assert.Equal(JsonValueKind.Null, layers.GetProperty("mapsGl").ValueKind);
         var tile = await anon.GetAsync("/api/weather/overlay/radar/8/136/82.png");
         tile.EnsureSuccessStatusCode();
         Assert.Equal("image/png", tile.Content.Headers.ContentType?.MediaType);
@@ -132,5 +135,10 @@ public class WeatherTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.False(p.Configured);
         Assert.Contains(p.Layers, l => l.Id == "radar");
         Assert.Null(p.TileAsync("radar", 8, 136, 82, CancellationToken.None).Result);
+        Assert.Null(p.MapsGl);
+        var withKey = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Xweather:ClientId"] = "id", ["Xweather:ClientSecret"] = "s" }).Build();
+        Assert.Equal(new OverlayGlAccess("id", "s"), new XweatherOverlayProvider(null!, new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()), withKey).MapsGl);
+        var off = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Xweather:ClientId"] = "id", ["Xweather:ClientSecret"] = "s", ["Xweather:MapsGl"] = "false" }).Build();
+        Assert.Null(new XweatherOverlayProvider(null!, new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()), off).MapsGl);
     }
 }
