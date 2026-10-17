@@ -15,6 +15,9 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { drafts, isNetworkError, OfflineQueue } from '../../core/offline';
 import { EntryCrew, LogbookDefaults, LogbookEntry, Paged, Ship } from '../../core/models';
+import { TranslateService } from '@ngx-translate/core';
+
+interface WeatherSummary { samples: number; windBft: number; windKn: number; windDirection: string | null; gustKn: number | null; weather: string; seaState: string; waveHeightM: number | null; temperatureC: number | null; }
 import { confirm, fmtDateTime, HarbourSelect, VisibilityPicker } from '../../shared/shared';
 
 const WIND = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
@@ -81,7 +84,7 @@ export class LogbookPage {
 
 /** Entry dialog with the legacy fields (04 §4.6) plus weather/sea state/sails; defaults from the previous entry (05 §5.4). */
 @Component({
-  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe, HarbourSelect, VisibilityPicker],
+  imports: [FormsModule, MatDialogModule, MatButtonModule, MatIconModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe, HarbourSelect, VisibilityPicker],
   template: `
     <h2 mat-dialog-title>{{ data.entry ? ('common.edit' | translate) : ('logbook.newEntry' | translate) }}</h2>
     <mat-dialog-content class="form-grid" (input)="saveDraft()" (change)="saveDraft()">
@@ -98,6 +101,7 @@ export class LogbookPage {
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.windSpeed' | translate }}</mat-label><input matInput [(ngModel)]="m.windSpeed" placeholder="4 Bft" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.weather' | translate }}</mat-label><input matInput [(ngModel)]="m.weather" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.seaState' | translate }}</mat-label><input matInput [(ngModel)]="m.seaState" /></mat-form-field>
+      @if (data.tripId) { <div class="full"><button mat-stroked-button type="button" (click)="weatherFromTrack()" [disabled]="!m.departedAt || !m.arrivedAt"><mat-icon>air</mat-icon> {{ 'logbook.weatherFromTrack' | translate }}</button> @if (weatherHint()) { <span class="muted"> {{ weatherHint() }}</span> }</div> }
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.distance' | translate }}</mat-label><input matInput type="number" step="0.1" [(ngModel)]="m.sailedDistanceNm" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.sails' | translate }}</mat-label><input matInput [(ngModel)]="m.sailsNotes" /></mat-form-field>
       <div class="full"><b>{{ 'logbook.crew' | translate }}:</b>
@@ -110,7 +114,7 @@ export class LogbookPage {
     <mat-dialog-actions align="end"><button mat-button mat-dialog-close>{{ 'common.cancel' | translate }}</button><button mat-flat-button (click)="save()">{{ 'common.save' | translate }}</button></mat-dialog-actions>`,
 })
 export class EntryDialog {
-  data = inject<{ shipId: string; tripId: string | null; entry?: LogbookEntry; suggestion?: { departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number } }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api); private auth = inject(AuthService);
+  data = inject<{ shipId: string; tripId: string | null; entry?: LogbookEntry; suggestion?: { departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number } }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api); private auth = inject(AuthService); private translate = inject(TranslateService);
   wind = WIND; error = signal(''); startName = signal<string | null>(this.data.entry?.startHarbour ?? null); endName = signal<string | null>(this.data.entry?.endHarbour ?? null);
   crew: (EntryCrew & { selected: boolean })[] = []; guest = '';
   private offline = inject(OfflineQueue); restored = signal(false);
@@ -134,6 +138,19 @@ export class EntryDialog {
         if (s.startHarbourId) { this.m.startHarbourId = s.startHarbourId; this.startName.set(s.startHarbourName); }
         if (s.endHarbourId) { this.m.endHarbourId = s.endHarbourId; this.endName.set(s.endHarbourName); }
       }
+    });
+  }
+  weatherHint = signal('');
+  /** Wind, weather and sea state condensed from the weather recorded along the live track of this leg. */
+  weatherFromTrack(): void {
+    const from = new Date(this.m.departedAt).toISOString(), to = new Date(this.m.arrivedAt).toISOString();
+    this.api.get<WeatherSummary | null>(`/api/trips/${this.data.tripId}/weather/summary`, { from, to }).subscribe({
+      next: s => {
+        if (!s) { this.weatherHint.set(this.translate.instant('logbook.noWeatherData')); return; }
+        this.m.windDirection = s.windDirection; this.m.windSpeed = `${s.windBft} Bft`; this.m.weather = s.weather; this.m.seaState = s.seaState;
+        this.weatherHint.set(this.translate.instant('logbook.weatherApplied', { n: s.samples })); this.saveDraft();
+      },
+      error: e => this.weatherHint.set(errorMessage(e)),
     });
   }
   addGuest(): void { if (this.guest.trim()) { this.crew.push({ crewMemberId: null, userId: null, name: this.guest.trim(), selected: true }); this.guest = ''; this.saveDraft(); } }

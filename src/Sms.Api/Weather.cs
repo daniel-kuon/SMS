@@ -130,6 +130,39 @@ public sealed class XweatherOverlayProvider(IHttpClientFactory http, IMemoryCach
     }
 }
 
+/// <summary>What a logbook entry needs from the observations of a leg: Beaufort, dominant direction, weather text, sea state (Douglas).</summary>
+public sealed record WeatherSummary(int Samples, int WindBft, double WindKn, WindDirection? WindDirection, double? GustKn, string Weather, string SeaState, double? WaveHeightM, double? TemperatureC)
+{
+    public static WeatherSummary? From(IReadOnlyList<WeatherObservation> obs)
+    {
+        if (obs.Count == 0) return null;
+        var winds = obs.Where(o => o.WindKn is not null).Select(o => o.WindKn!.Value).ToList();
+        var windKn = winds.Count > 0 ? winds.Average() : 0;
+        double sx = 0, sy = 0;
+        foreach (var o in obs.Where(o => o.WindDirDeg is not null)) { var r = o.WindDirDeg!.Value * Math.PI / 180; sx += Math.Sin(r) * (o.WindKn ?? 1); sy += Math.Cos(r) * (o.WindKn ?? 1); }
+        WindDirection? dir = sx == 0 && sy == 0 ? null : (WindDirection)(((int)Math.Round((((Math.Atan2(sx, sy) * 180 / Math.PI) % 360) + 360) % 360 / 22.5)) % 16);
+        var temps = obs.Where(o => o.TemperatureC is not null).Select(o => o.TemperatureC!.Value).ToList();
+        var codes = obs.Where(o => o.WeatherCode is not null).GroupBy(o => Group(o.WeatherCode!.Value)).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).Select(g => g.Key).ToList();
+        var weather = codes.Count > 0 ? WeatherText(codes[0]) : "";
+        if (temps.Count > 0) weather = $"{weather}{(weather.Length > 0 ? ", " : "")}{Math.Round(temps.Average())} °C";
+        var waves = obs.Where(o => o.WaveHeightM is not null).Select(o => o.WaveHeightM!.Value).ToList();
+        double? waveMax = waves.Count > 0 ? waves.Max() : null;
+        return new WeatherSummary(obs.Count, Beaufort(windKn), Math.Round(windKn, 1), dir, obs.Max(o => o.GustKn), weather, waveMax is { } w ? SeaStateText(w) : "", waveMax, temps.Count > 0 ? Math.Round(temps.Average(), 1) : null);
+    }
+
+    public static int Beaufort(double kn) { double[] limits = [1, 3, 6, 10, 16, 21, 27, 33, 40, 47, 55, 63]; var i = Array.FindIndex(limits, l => kn < l); return i < 0 ? 12 : i; }
+    /// <summary>WMO weather code → group key (higher = worse).</summary>
+    private static int Group(int c) => c == 0 ? 0 : c <= 2 ? 1 : c == 3 ? 2 : c <= 48 ? 3 : c <= 57 ? 4 : c <= 67 ? 5 : c <= 77 ? 6 : c <= 82 ? 7 : c <= 86 ? 8 : 9;
+    private static string WeatherText(int g) => g switch { 0 => "klar", 1 => "heiter", 2 => "bedeckt", 3 => "Nebel", 4 => "Niesel", 5 => "Regen", 6 => "Schnee", 7 => "Schauer", 8 => "Schneeschauer", _ => "Gewitter" };
+    /// <summary>Douglas sea scale from the significant wave height.</summary>
+    public static string SeaStateText(double m)
+    {
+        var (n, t) = m < 0.1 ? (0, "spiegelglatt") : m <= 0.5 ? (2, "schwach bewegt") : m <= 1.25 ? (3, "leicht bewegt") : m <= 2.5 ? (4, "mäßig bewegt") : m <= 4 ? (5, "grob") : m <= 6 ? (6, "sehr grob") : m <= 9 ? (7, "hoch") : m <= 14 ? (8, "sehr hoch") : (9, "außergewöhnlich hoch");
+        if (m >= 0.1 && m <= 0.1) (n, t) = (1, "ruhig");
+        return $"{n} – {t} ({m.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)} m)";
+    }
+}
+
 /// <summary>Stores the weather at received live positions, at most once per 15 min / 1 nm per ship (spec: live tracking weather).</summary>
 public sealed class WeatherRecorder(IWeatherProvider weather, IServiceScopeFactory scopes, ILogger<WeatherRecorder> logger)
 {

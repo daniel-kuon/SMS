@@ -97,10 +97,34 @@ public class WeatherTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(54.370, outside[0].GetProperty("lat").GetDouble(), 3);
         Assert.Equal(3, (await skipper.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/weather")).GetArrayLength());
 
+        // the skipper can condense the observations of a leg into logbook values; strangers cannot
+        var summary = await skipper.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/weather/summary?from=2026-10-12T07:00:00Z&to=2026-10-12T09:00:00Z");
+        Assert.Equal(3, summary.GetProperty("samples").GetInt32());
+        Assert.Equal(4, summary.GetProperty("windBft").GetInt32());
+        Assert.Equal("WSW", summary.GetProperty("windDirection").GetString());
+        Assert.Equal("bedeckt, 14 °C", summary.GetProperty("weather").GetString());
+        Assert.StartsWith("3 – leicht bewegt", summary.GetProperty("seaState").GetString());
+        Assert.Equal(HttpStatusCode.NoContent, (await skipper.GetAsync($"/api/trips/{trip}/weather/summary?from=2026-10-13T07:00:00Z&to=2026-10-13T09:00:00Z")).StatusCode); // no observations: empty answer
+        Assert.Equal(HttpStatusCode.Forbidden, (await anon.GetAsync($"/api/trips/{trip}/weather/summary?from=2026-10-12T07:00:00Z&to=2026-10-12T09:00:00Z")).StatusCode);
+
         // a private track hides the observations from strangers but not from the skipper
         (await skipper.PutAsJsonAsync($"/api/trips/{trip}", new { name = "Wx trip", startDate = "2026-10-10", endDate = "2026-10-20", visibility = "Public", status = "Active", trackVisibility = "Crew", publicPositionDelayMinutes = 0 })).EnsureSuccessStatusCode();
         Assert.Equal(0, (await anon.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/weather")).GetArrayLength());
         Assert.Equal(3, (await skipper.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/weather")).GetArrayLength());
+    }
+
+    [Fact]
+    public void Summary_averages_wind_vectorially_and_names_the_worst_common_weather()
+    {
+        static Sms.Domain.WeatherObservation O(double kn, double dir, int code, double? wave) => new() { WindKn = kn, WindDirDeg = dir, WeatherCode = code, WaveHeightM = wave, TemperatureC = 10 };
+        var s = WeatherSummary.From([O(20, 350, 61, 1.3), O(22, 10, 61, 2.0), O(18, 5, 3, null)])!;
+        Assert.Equal(Sms.Domain.WindDirection.N, s.WindDirection); // 350° and 10° average to north, not to 180°
+        Assert.Equal(5, s.WindBft); Assert.Equal(20, s.WindKn);
+        Assert.Equal("Regen, 10 °C", s.Weather);
+        Assert.Equal("4 – mäßig bewegt (2.0 m)", s.SeaState);
+        Assert.Null(WeatherSummary.From([]));
+        Assert.Equal(0, WeatherSummary.Beaufort(0.5)); Assert.Equal(12, WeatherSummary.Beaufort(70));
+        Assert.StartsWith("0 – spiegelglatt", WeatherSummary.SeaStateText(0.05));
     }
 
     [Fact]

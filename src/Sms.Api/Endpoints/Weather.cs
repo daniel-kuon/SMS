@@ -47,6 +47,16 @@ public static class WeatherEndpoints
             return Results.Ok(rows.Select(o => new { o.Id, o.Time, lat = o.Location.Y, lng = o.Location.X, o.TemperatureC, o.WindKn, o.WindDirDeg, o.GustKn, o.PressureHpa, o.PrecipitationMm, o.WeatherCode, o.CloudCover, o.WaveHeightM, o.WaveDirDeg, o.WavePeriodS }));
         }).WithTags("Weather");
 
+        // crew only: condensed observations of a time window, to prefill a logbook entry (wind, weather, sea state)
+        api.MapGet("/trips/{tripId:guid}/weather/summary", async (Guid tripId, DateTimeOffset from, DateTimeOffset to, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
+        {
+            var viewer = await Viewer.ForAsync(current, access, ct);
+            if (!viewer.CrewTripIds.Contains(tripId) && !viewer.IsAdmin) return Results.Forbid();
+            if (to < from) return Invalid("to", "Zeitraum endet vor seinem Anfang.");
+            var obs = await db.WeatherObservations.AsNoTracking().Where(o => o.TripId == tripId && o.Time >= from && o.Time <= to).OrderBy(o => o.Time).ToListAsync(ct);
+            return WeatherSummary.From(obs) is { } summary ? Results.Ok(summary) : Results.NoContent();
+        }).WithTags("Weather");
+
         g.MapGet("/overlay/layers", (IWeatherOverlayProvider overlay) => Results.Ok(new { provider = overlay.Name, configured = overlay.Configured, layers = overlay.Layers, mapsGl = overlay.MapsGl }));
 
         // tiles are proxied so the provider key stays on the server; short browser cache, provider-side 10-minute buckets
