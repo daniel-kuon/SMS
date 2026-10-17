@@ -10,6 +10,7 @@ import { MatCardModule } from '@angular/material/card';
 import { TranslatePipe } from '@ngx-translate/core';
 import type { GeoJSONSource, MapLayerMouseEvent } from 'maplibre-gl';
 import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
+import { TrackPath } from '../../core/track-playback';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Day, Leg, Media, Trip } from '../../core/models';
 import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, UploadZone } from '../../shared/shared';
@@ -45,8 +46,16 @@ const DAY_COLORS = ['#e53935', '#8e24aa', '#3949ab', '#039be5', '#00897b', '#7cb
                 <div class="stats"><div><b>{{ o.stats.distanceNm | number:'1.0-1' }}</b><span>sm</span></div><div><b>{{ o.stats.underwayHours }}</b><span>{{ 'trip.underway' | translate }}</span></div><div><b>{{ o.stats.engineHours | number:'1.0-1' }}</b><span>{{ 'ship.engineHours' | translate }}</span></div>
                   <div><b>{{ o.stats.harbours }}</b><span>{{ 'ship.harbours' | translate }}</span></div><div><b>{{ o.stats.nights }}</b><span>{{ 'trip.nights' | translate }}</span></div><div><b>{{ o.stats.photos }}</b><span>{{ 'trip.photos' | translate }}</span></div>
                   @if (o.stats.costsTotal !== null) { <div><b>{{ o.stats.costsTotal | number:'1.2-2' }}</b><span>{{ t.currency }}</span></div> }</div>
+                @if (!path().empty) {
+                  <div class="playback" [attr.aria-label]="'tracking.playback' | translate">
+                    <button mat-icon-button (click)="togglePlay()" [title]="(playing() ? 'tracking.pause' : 'tracking.play') | translate"><mat-icon>{{ playing() ? 'pause' : 'play_arrow' }}</mat-icon></button>
+                    <input type="range" min="0" max="1000" [value]="progress() * 1000" (input)="seek($event)" [attr.aria-label]="'tracking.playback' | translate" />
+                    <button mat-button class="speed" (click)="cycleSpeed()" [title]="'tracking.speed' | translate">{{ speed() }}×</button>
+                    <span class="muted small">{{ playbackLabel() }}</span>
+                  </div>
+                }
                 <mat-list>@for (l of o.legs; track l.id; let i = $index) {
-                  <a mat-list-item [routerLink]="['/logbook', l.id]" (mouseenter)="highlight(i)" (mouseleave)="highlight(-1)"><span matListItemIcon class="dot" [style.background]="color(i)"></span><span matListItemTitle>{{ l.from }} → {{ l.to }}</span><span matListItemLine>{{ fmt(l.day) }} · {{ l.distanceNm | number:'1.0-1' }} sm</span></a> }</mat-list>
+                  <a mat-list-item [routerLink]="['/logbook', l.id]" [class.playing-leg]="playing() && playLeg() === i" (mouseenter)="highlight(i)" (mouseleave)="highlight(-1)"><span matListItemIcon class="dot" [style.background]="color(i)"></span><span matListItemTitle>{{ l.from }} → {{ l.to }}</span><span matListItemLine>{{ fmt(l.day) }} · {{ l.distanceNm | number:'1.0-1' }} sm</span></a> }</mat-list>
                 @if (position(); as pos) { <p class="muted"><mat-icon inline>my_location</mat-icon> {{ 'tracking.lastPosition' | translate }} {{ fmtTime(pos.time) }} @if (pos.sogKn) { · {{ pos.sogKn | number:'1.0-1' }} kn } @if (pos.delayed) { · {{ 'tracking.delayed' | translate }} }</p> }
                 @if (suggestions().length) { <h4>{{ 'tracking.suggestions' | translate }}</h4>
                   @for (s of suggestions(); track s.departedAt) { <div class="row suggestion"><span>{{ fmt(s.day) }}: {{ s.startHarbourName ?? '?' }} → {{ s.endHarbourName ?? '?' }} · {{ s.sailedDistanceNm }} sm</span><button mat-stroked-button (click)="adopt(t, s)">{{ 'tracking.adopt' | translate }}</button></div> } }
@@ -115,6 +124,8 @@ const DAY_COLORS = ['#e53935', '#8e24aa', '#3949ab', '#039be5', '#00897b', '#7cb
     .overview { display: flex; gap: 12px; min-height: 480px; } .map { flex: 2; min-height: 480px; border-radius: 8px; } .side { flex: 1; max-width: 420px; }
     .stats { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0; } .stats div { display: flex; flex-direction: column; } .stats b { font-size: 20px; } .stats span { font-size: 11px; color: #666; }
     .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; } .import { margin: 8px 0; font-size: 13px; } .suggestion { font-size: 13px; padding: 4px 0; border-bottom: 1px solid #eee; }
+    .playback { display: flex; align-items: center; gap: 6px; margin: 4px 0; } .playback input[type=range] { flex: 1; min-width: 80px; } .playback .speed { min-width: 48px; padding: 0 6px; } .small { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 45%; }
+    .playing-leg { background: #e3eef9; } .boat-marker { font-size: 30px; color: #d32f2f; display: inline-block; transition: transform .1s linear; }
     .day { margin: 12px 0; } .day h3 { border-bottom: 2px solid #e3eef9; padding-bottom: 4px; } .entry, .post { margin: 8px 0; }
     @media (max-width: 800px) { .overview { flex-direction: column; } .side { max-width: none; } }`,
 })
@@ -131,6 +142,45 @@ export class TripPage {
   fmt = fmtDate; fmtTime = fmtDateTime;
   private map?: MlMap;
   color = (i: number) => DAY_COLORS[i % DAY_COLORS.length];
+
+  // --- playback (spec 12 §12.3): walk the concatenated legs by distance; 1× = whole trip in 60 s
+  path = signal(new TrackPath([]));
+  playing = signal(false); progress = signal(0); speed = signal(1); playLeg = signal(-1);
+  private boat?: maplibregl.Marker; private boatEl?: HTMLElement; private raf = 0; private lastTs = 0;
+  playbackLabel(): string {
+    const o = this.overview(); const p = this.path().at(this.progress());
+    if (!o || !p) return '';
+    const leg = o.legs[p.legIndex];
+    return `${p.distanceNm.toFixed(1)} / ${this.path().totalNm.toFixed(1)} sm${leg ? ' · ' + this.fmt(leg.day) + (leg.from ? ` ${leg.from} → ${leg.to}` : '') : ''}`;
+  }
+  togglePlay(): void {
+    if (this.playing()) { this.stopPlayback(); return; }
+    if (this.progress() >= 1) this.progress.set(0);
+    this.playing.set(true); this.lastTs = 0;
+    const step = (ts: number) => {
+      if (!this.playing()) return;
+      if (this.lastTs) this.progress.set(Math.min(1, this.progress() + (ts - this.lastTs) / 60000 * this.speed()));
+      this.lastTs = ts;
+      this.renderPlayback();
+      if (this.progress() >= 1) { this.playing.set(false); return; }
+      this.raf = requestAnimationFrame(step);
+    };
+    this.raf = requestAnimationFrame(step);
+  }
+  stopPlayback(): void { this.playing.set(false); cancelAnimationFrame(this.raf); }
+  seek(e: Event): void { this.progress.set(Number((e.target as HTMLInputElement).value) / 1000); this.renderPlayback(); }
+  cycleSpeed(): void { this.speed.set(this.speed() === 1 ? 4 : this.speed() === 4 ? 16 : 1); }
+  private renderPlayback(): void {
+    const map = this.map; const p = this.path().at(this.progress()); if (!map || !p) return;
+    if (!this.boat) {
+      this.boatEl = document.createElement('span'); this.boatEl.className = 'material-symbols-outlined boat-marker'; this.boatEl.textContent = 'navigation';
+      this.boat = new maplibregl.Marker({ element: this.boatEl, rotationAlignment: 'map' }).setLngLat([p.lng, p.lat]).addTo(map);
+    }
+    this.boat.setLngLat([p.lng, p.lat]).setRotation(p.bearingDeg);
+    (map.getSource('trail') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: this.path().trail(this.progress()) } }] });
+    if (p.legIndex !== this.playLeg()) { this.playLeg.set(p.legIndex); this.highlight(p.legIndex, false); }
+    if (this.playing() && !map.getBounds().contains([p.lng, p.lat])) map.panTo([p.lng, p.lat]);
+  }
 
   constructor() { effect(() => { this.id(); this.reload(); }); effect(() => { const i = TABS.indexOf(this.tab() ?? 'overview'); this.tabIndex.set(i < 0 ? 0 : i); }); }
 
@@ -154,11 +204,15 @@ export class TripPage {
       map.addLayer({ id: 'legs-solid', type: 'line', source: 'legs', filter: ['==', ['get', 'recorded'], true], paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['boolean', ['feature-state', 'hl'], false], 8, 4], 'line-opacity': ['case', ['boolean', ['feature-state', 'dim'], false], 0.35, 1] } });
       map.addSource('stops', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addLayer({ id: 'stops', type: 'circle', source: 'stops', paint: { 'circle-color': '#1976d2', 'circle-radius': 6, 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
+      map.addSource('trail', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({ id: 'trail', type: 'line', source: 'trail', paint: { 'line-color': '#d32f2f', 'line-width': 5, 'line-opacity': 0.8 } });
       map.addLayer({ id: 'stop-labels', type: 'symbol', source: 'stops', layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-anchor': 'left', 'text-offset': [0.8, 0], 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#1b4d7a', 'text-halo-color': '#fff', 'text-halo-width': 1.5 } });
       map.on('mouseenter', 'legs-solid', e => this.showLegTooltip(e)); map.on('mouseenter', 'legs-dashed', e => this.showLegTooltip(e));
       map.on('mouseleave', 'legs-solid', () => this.legPopup?.remove()); map.on('mouseleave', 'legs-dashed', () => this.legPopup?.remove());
     }
     const map = this.map;
+    this.stopPlayback(); this.path.set(new TrackPath(o.legs)); this.progress.set(0); this.playLeg.set(-1); this.boat?.remove(); this.boat = undefined;
+    (map.getSource('trail') as GeoJSONSource).setData({ type: 'FeatureCollection', features: [] });
     const recorded = (src: string) => src === 'GpsLive' || src === 'GpsFile' || src === 'Ais' || src === 'Mixed';
     (map.getSource('legs') as GeoJSONSource).setData({ type: 'FeatureCollection', features: o.legs.map((l, i) => ({ type: 'Feature', id: i, properties: { color: this.color(i), recorded: recorded(l.source), label: `${l.from ? l.from + ' → ' + l.to + ': ' : ''}${l.distanceNm} sm (${l.source})` }, geometry: { type: 'LineString', coordinates: l.coordinates } })) });
     (map.getSource('stops') as GeoJSONSource).setData({ type: 'FeatureCollection', features: o.stops.map(s => ({ type: 'Feature', properties: { label: `${s.name} (${s.nights}×)` }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } })) });
@@ -187,10 +241,10 @@ export class TripPage {
     this.legPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false }).setLngLat(e.lngLat).setDOMContent(textEl(label)).addTo(this.map);
   }
 
-  highlight(i: number): void {
+  highlight(i: number, zoom = true): void {
     const map = this.map; const o = this.overview(); if (!map || !o) return;
     o.legs.forEach((_, j) => map.setFeatureState({ source: 'legs', id: j }, { hl: j === i, dim: i >= 0 && j !== i }));
-    if (i >= 0 && o.legs[i].coordinates.length) map.fitBounds(bounds(o.legs[i].coordinates.map(c => [c[0], c[1]] as [number, number])), { padding: 80, maxZoom: 13 });
+    if (zoom && i >= 0 && o.legs[i].coordinates.length) map.fitBounds(bounds(o.legs[i].coordinates.map(c => [c[0], c[1]] as [number, number])), { padding: 80, maxZoom: 13 });
   }
   go(i: number): void { this.router.navigate(['/trips', this.id(), TABS[i]], { replaceUrl: true }); if (i === 0) setTimeout(() => this.drawMap(), 100); }
   totalNm(): number { return this.legs().reduce((s, l) => s + (l.distanceNm ?? 0), 0); }
