@@ -371,6 +371,23 @@ public class RoutingCorrection : Entity
     public double? ClearanceM { get; set; }
 }
 
+/// <summary>Spec 12 §12.1 C: AIS provider settings per ship; the API key is stored data-protection encrypted and never returned.</summary>
+public class ShipAisConfig
+{
+    public Guid ShipId { get; set; }
+    public string Provider { get; set; } = "AisStream";
+    public string? ApiKeyEncrypted { get; set; }
+    public string? Mmsi { get; set; }
+    public int PollIntervalMinutes { get; set; } = 30;
+    public bool Enabled { get; set; }
+    public DateTimeOffset? LastPolledAt { get; set; }
+    public string? LastError { get; set; }
+    public int CallsThisMonth { get; set; }
+    public string? CallsMonth { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public Guid? UpdatedById { get; set; }
+}
+
 /// <summary>Cache of computed harbour-to-harbour sea routes per graph version (spec 10 §10.2).</summary>
 public class RouteCache
 {

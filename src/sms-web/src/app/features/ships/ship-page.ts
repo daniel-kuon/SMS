@@ -20,9 +20,10 @@ import { TripEditDialog } from '../trips/trip-dialogs';
 import { TaskList } from '../trips/task-list';
 import { FollowButton } from '../social/social';
 import { ShipSiteEditor } from '../cms/ship-site';
+import { AisConfigCard } from './ais-config';
 
 @Component({
-  imports: [DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatListModule, MatFormFieldModule, MatInputModule, MatSelectModule, TranslatePipe, UploadZone, TaskList, FollowButton, ShipSiteEditor],
+  imports: [DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatListModule, MatFormFieldModule, MatInputModule, MatSelectModule, TranslatePipe, UploadZone, TaskList, FollowButton, ShipSiteEditor, AisConfigCard],
   template: `
     @if (ship(); as s) {
     <div class="page">
@@ -74,7 +75,8 @@ import { ShipSiteEditor } from '../cms/ship-site';
 
         @if (s.myRole) { <mat-card appearance="outlined" class="span2"><mat-card-content><h3>{{ 'ship.tasks' | translate }}</h3><app-task-list [url]="'/api/ships/' + s.id + '/tasks'" /></mat-card-content></mat-card> }
 
-        @if (s.myRole === 'Owner') { <mat-card appearance="outlined" class="span2"><mat-card-content><app-ship-site-editor [shipId]="s.id" /></mat-card-content></mat-card> }
+        @if (s.myRole === 'Owner') { <mat-card appearance="outlined" class="span2"><mat-card-content><app-ship-site-editor [shipId]="s.id" /></mat-card-content></mat-card>
+          <mat-card appearance="outlined" class="span2"><mat-card-content><app-ais-config [shipId]="s.id" /></mat-card-content></mat-card> }
         @if (s.myRole) { <mat-card appearance="outlined" class="span2"><mat-card-content>
           <h3>{{ 'tracking.devices' | translate }}</h3>
           <p class="muted">{{ 'tracking.hint' | translate }}</p>

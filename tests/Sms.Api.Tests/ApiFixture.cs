@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Domain;
 using Sms.Infrastructure;
@@ -24,6 +25,7 @@ public sealed class ApiFixture : IAsyncLifetime
         await _db.StartAsync();
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
+            b.ConfigureTestServices(s => s.AddSingleton<Sms.Api.IAisPositionProvider, FakeAisProvider>());
             b.UseEnvironment("Development");
             b.UseSetting("ConnectionStrings:sms", _db.GetConnectionString());
             b.UseSetting("Media:RootPath", Path.Combine(Path.GetTempPath(), "sms-tests-media"));
@@ -48,6 +50,7 @@ public sealed class ApiFixture : IAsyncLifetime
         await _db.DisposeAsync();
     }
 
+    public IServiceProvider Services => _factory.Services;
     public HttpClient Anonymous() => Client();
 
     /// <summary>Signed-in client for the seeded platform admin (Development seed).</summary>

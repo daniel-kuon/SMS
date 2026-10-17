@@ -259,6 +259,8 @@ public class FeatureTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(JsonValueKind.Array, suggestions.ValueKind);
         // privacy zone around the start hides those points for the public
         (await skipper.PostAsJsonAsync($"/api/ships/{ship}/privacy-zones", new { name = "Home", lat = 54.34, lng = 10.16, radiusM = 1500 })).EnsureSuccessStatusCode();
+        var zones = await skipper.GetFromJsonAsync<JsonElement>($"/api/ships/{ship}/privacy-zones");
+        Assert.Equal(54.34, zones[0].GetProperty("lat").GetDouble(), 6);
         var publicTrack = await anon.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/track");
         var live = publicTrack.GetProperty("features").EnumerateArray().First(x => x.GetProperty("properties").GetProperty("source").GetString() == "GpsLive");
         var crewTrack = await skipper.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/track");

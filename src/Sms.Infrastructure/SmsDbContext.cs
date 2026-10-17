@@ -36,6 +36,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
     public DbSet<HarbourReview> HarbourReviews => Set<HarbourReview>();
     public DbSet<ContentPage> ContentPages => Set<ContentPage>();
     public DbSet<RoutingCorrection> RoutingCorrections => Set<RoutingCorrection>();
+    public DbSet<ShipAisConfig> ShipAisConfigs => Set<ShipAisConfig>();
     public DbSet<RouteCache> RouteCaches => Set<RouteCache>();
     public DbSet<Seamark> Seamarks => Set<Seamark>();
     public DbSet<ShipPage> ShipPages => Set<ShipPage>();
@@ -188,6 +189,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.Property(s => s.TagsJson).HasColumnType("jsonb");
         });
         m.Entity<RoutingCorrection>(e => e.Property(c => c.Geometry).HasColumnType("geometry(Geometry,4326)"));
+        m.Entity<ShipAisConfig>(e => { e.HasKey(c => c.ShipId); e.HasOne<Ship>().WithOne().HasForeignKey<ShipAisConfig>(c => c.ShipId).OnDelete(DeleteBehavior.Cascade); e.Property(c => c.Provider).HasMaxLength(40); e.Property(c => c.Mmsi).HasMaxLength(20); });
         m.Entity<RouteCache>(e =>
         {
             e.HasKey(r => new { r.FromHarbourId, r.ToHarbourId, r.GraphVersion });

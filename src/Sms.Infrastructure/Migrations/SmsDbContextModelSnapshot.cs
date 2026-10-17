@@ -1347,6 +1347,55 @@ namespace Sms.Infrastructure.Migrations
                     b.ToTable("Ships");
                 });
 
+            modelBuilder.Entity("Sms.Domain.ShipAisConfig", b =>
+                {
+                    b.Property<Guid>("ShipId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ApiKeyEncrypted")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("CallsMonth")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<int>("CallsThisMonth")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<DateTimeOffset?>("LastPolledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Mmsi")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<int>("PollIntervalMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedById")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("ShipId");
+
+                    b.ToTable("ShipAisConfigs");
+                });
+
             modelBuilder.Entity("Sms.Domain.ShipInvitation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2446,6 +2495,15 @@ namespace Sms.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("HomeHarbour");
+                });
+
+            modelBuilder.Entity("Sms.Domain.ShipAisConfig", b =>
+                {
+                    b.HasOne("Sms.Domain.Ship", null)
+                        .WithOne()
+                        .HasForeignKey("Sms.Domain.ShipAisConfig", "ShipId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Sms.Domain.ShipInvitation", b =>

@@ -213,7 +213,8 @@ public static class TrackingEndpoints
         // --- privacy zones (owners)
         ships.MapGet("/privacy-zones", async (Guid shipId, SmsDbContext db, Access access, CancellationToken ct) =>
             await access.IsShipMemberAsync(shipId, null, ct)
-                ? Results.Ok(await db.PrivacyZones.AsNoTracking().Where(z => z.ShipId == shipId).Select(z => new { z.Id, z.Name, lat = z.Center.Y, lng = z.Center.X, z.RadiusM }).ToListAsync(ct))
+                ? Results.Ok((await db.PrivacyZones.AsNoTracking().Where(z => z.ShipId == shipId).Select(z => new { z.Id, z.Name, z.Center, z.RadiusM }).ToListAsync(ct))
+                    .Select(z => new { z.Id, z.Name, lat = z.Center.Y, lng = z.Center.X, z.RadiusM })) // geography has no ST_X/ST_Y: read coordinates in memory
                 : Results.Forbid());
         ships.MapPost("/privacy-zones", async (Guid shipId, PrivacyZoneUpsert req, SmsDbContext db, Access access, CurrentUser current, CancellationToken ct) =>
         {
