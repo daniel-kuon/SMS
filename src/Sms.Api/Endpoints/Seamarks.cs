@@ -27,7 +27,8 @@ public static class SeamarkEndpoints
             var query = $"[out:json][timeout:300];nwr[\"seamark:type\"]({bbox});out center tags;";
             using var doc = await Overpass.QueryAsync(http, cfg, query, ct);
             if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen oder eine Overpass-JSON-Datei hochladen.");
-            return Results.Ok(await ImportAsync(doc, db, ct));
+            var r = await ImportAsync(doc, db, ct);
+            return Results.Ok(new { r.created, r.updated, r.skipped });
         }).RequireAuthorization().WithTags("Admin");
 
         // Same import from an uploaded Overpass JSON file (osmium/overpass exports; also used by tests).
@@ -44,12 +45,13 @@ public static class SeamarkEndpoints
             catch (JsonException) { return Invalid("file", "Kein Overpass-JSON (Datei ist kein JSON)."); }
             using var owned = doc;
             if (!doc.RootElement.TryGetProperty("elements", out _)) return Invalid("file", "Kein Overpass-JSON (elements fehlt).");
-            return Results.Ok(await ImportAsync(doc, db, ct));
+            var r = await ImportAsync(doc, db, ct);
+            return Results.Ok(new { r.created, r.updated, r.skipped });
         }).RequireAuthorization().WithTags("Admin");
     }
 
     /// <summary>Upserts all elements with seamark:type; returns counts.</summary>
-    public static async Task<object> ImportAsync(JsonDocument doc, SmsDbContext db, CancellationToken ct)
+    public static async Task<(int created, int updated, int skipped)> ImportAsync(JsonDocument doc, SmsDbContext db, CancellationToken ct)
     {
         {
             var elements = doc.RootElement.GetProperty("elements").EnumerateArray().ToList();
@@ -79,7 +81,7 @@ public static class SeamarkEndpoints
                 mark.ImportedAt = DateTimeOffset.UtcNow;
             }
             await db.SaveChangesAsync(ct);
-            return new { created, updated, skipped };
+            return (created, updated, skipped);
         }
     }
 

@@ -8,6 +8,7 @@ using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
 
+public sealed record WaterwayImportResult(int Created, int Removed, int Bridges, int Locks, IReadOnlyList<object> Lines);
 public record CorrectionUpsert(CorrectionKind Kind, Geometry Geometry, string? Note, bool Active = true, double? ClearanceM = null);
 
 /// <summary>Spec 10 §10.4. Falls back to straight lines (method "straight-line") while no graph is built.</summary>
@@ -130,7 +131,7 @@ public static class RoutingEndpoints
             if (bbox.Split(',').Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
             using var doc = await Overpass.QueryAsync(http, cfg, string.Format(Waterways.OverpassQuery, bbox), ct);
             if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen oder eine Overpass-JSON-Datei hochladen.");
-            return Results.Ok(await ImportWaterwaysAsync(doc, db, current, ct));
+            return Results.Ok(await ImportWaterwaysAsync(doc, db, current.Id, ct));
         });
         admin.MapPost("/import-waterways-file", async (HttpRequest http, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
         {
@@ -145,7 +146,7 @@ public static class RoutingEndpoints
             catch (JsonException) { return Invalid("file", "Kein Overpass-JSON (Datei ist kein JSON)."); }
             using var owned = doc;
             if (!doc.RootElement.TryGetProperty("elements", out _)) return Invalid("file", "Kein Overpass-JSON (elements fehlt).");
-            return Results.Ok(await ImportWaterwaysAsync(doc, db, current, ct));
+            return Results.Ok(await ImportWaterwaysAsync(doc, db, current.Id, ct));
         });
 
         // Spec 10 §10.5 step 2: fairway centrelines from the lateral marks already imported into the Seamarks table.
@@ -171,6 +172,17 @@ public static class RoutingEndpoints
             return Results.Ok(new { marks = marks.Count, created = fairways.Count, removed = old.Count, lines = fairways.Select(f => new { f.Pairs, points = f.Line.NumPoints, lengthNm = Math.Round(LengthNm(f.Line), 1) }) });
         });
 
+        // Spec 10 §10.1: Europe-wide import from a Geofabrik PBF extract (background job with progress).
+        admin.MapPost("/import-pbf", async (PbfImportRequest req, CurrentUser current, PbfImportJob job, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (string.IsNullOrWhiteSpace(req.Url)) return Invalid("url", "URL oder Pfad der .osm.pbf-Datei angeben.");
+            if (!req.Seamarks && !req.Harbours && !req.Waterways) return Invalid("seamarks", "Mindestens eine Datenart wählen.");
+            return job.TryStart(req, current.Id) ? Results.Accepted("/api/admin/routing/import-pbf/status") : Results.Problem(statusCode: 409, title: "Ein Import läuft bereits.");
+        });
+        admin.MapGet("/import-pbf/status", async (CurrentUser current, PbfImportJob job, CancellationToken ct) =>
+            await current.IsAdminAsync(ct) ? Results.Ok(new { running = job.IsRunning, progress = job.Progress }) : Results.Forbid());
+
         admin.MapGet("/unreachable-harbours", async (CurrentUser current, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
@@ -184,31 +196,31 @@ public static class RoutingEndpoints
     }
 
     /// <summary>Replaces derived passages that lie inside the imported data's extent, keeps manual ones and derived ones elsewhere.</summary>
-    private static async Task<object> ImportWaterwaysAsync(JsonDocument doc, SmsDbContext db, CurrentUser current, CancellationToken ct)
+    public static async Task<WaterwayImportResult> ImportWaterwaysAsync(JsonDocument doc, SmsDbContext db, Guid? userId, CancellationToken ct)
     {
         var ways = Waterways.Parse(doc, Geo.Factory);
         var obstacles = Waterways.ParseObstacles(doc);
-        if (ways.Count == 0 && obstacles.Count == 0) return new { created = 0, removed = 0, bridges = 0, locks = 0, lines = Array.Empty<object>() };
+        if (ways.Count == 0 && obstacles.Count == 0) return new WaterwayImportResult(0, 0, 0, 0, []);
         if (ways.Count == 0)
         {
-            foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, current));
+            foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, userId));
             await db.SaveChangesAsync(ct);
-            return new { created = 0, removed = 0, bridges = obstacles.Count(x => !x.IsLock), locks = obstacles.Count(x => x.IsLock), lines = Array.Empty<object>() };
+            return new WaterwayImportResult(0, 0, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), []);
         }
         var extent = Geo.Factory.ToGeometry(new Envelope(ways.Select(w => w.Line.EnvelopeInternal).Aggregate(new Envelope(), (e, x) => { e.ExpandToInclude(x); return e; })));
         extent.SRID = 4326;
         var old = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct);
         db.RoutingCorrections.RemoveRange(old);
         foreach (var w in ways)
-            db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = current.Id });
-        foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, current));
+            db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = userId });
+        foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, userId));
         await db.SaveChangesAsync(ct);
-        return new { created = ways.Count, removed = old.Count, bridges = obstacles.Count(x => !x.IsLock), locks = obstacles.Count(x => x.IsLock), lines = ways.Select(w => new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }) };
+        return new WaterwayImportResult(ways.Count, old.Count, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), ways.Select(w => (object)new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }).ToList());
     }
 
-    private static RoutingCorrection ToCorrection(Obstacle ob, CurrentUser current) => new()
+    private static RoutingCorrection ToCorrection(Obstacle ob, Guid? userId) => new()
     {
-        Kind = ob.IsLock ? CorrectionKind.Lock : CorrectionKind.Bridge, Source = CorrectionSource.Derived, Geometry = Geo.Point(ob.Lat, ob.Lng), ClearanceM = ob.ClearanceM, Active = true, CreatedById = current.Id,
+        Kind = ob.IsLock ? CorrectionKind.Lock : CorrectionKind.Bridge, Source = CorrectionSource.Derived, Geometry = Geo.Point(ob.Lat, ob.Lng), ClearanceM = ob.ClearanceM, Active = true, CreatedById = userId,
         Note = ob.IsLock ? $"Schleuse{(ob.Name is null ? "" : " " + ob.Name)}" : $"Brücke{(ob.Name is null ? "" : " " + ob.Name)}{(ob.ClearanceM is { } c ? $" – Durchfahrtshöhe {c.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} m" : "")}",
     };
 

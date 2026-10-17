@@ -62,6 +62,13 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
           <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="waterwayBbox" /></mat-form-field>
             <button mat-stroked-button (click)="importWaterways()" [disabled]="busy()">{{ 'admin.import' | translate }}</button>
             <label class="muted">{{ 'admin.orFile' | translate }} <input type="file" accept=".json" (change)="importWaterwaysFile($event)" /></label></div>
+          <h4>{{ 'admin.pbf' | translate }}</h4>
+          <p class="muted">{{ 'admin.pbfHint' | translate }}</p>
+          <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>URL / Pfad (.osm.pbf)</mat-label><input matInput [(ngModel)]="pbf.url" /></mat-form-field>
+            <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="pbf.bbox" placeholder="optional" /></mat-form-field></div>
+          <div class="row"><mat-checkbox [(ngModel)]="pbf.seamarks">{{ 'admin.seamarks' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.harbours">{{ 'admin.importOsm' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.waterways">{{ 'admin.waterways' | translate }}</mat-checkbox>
+            <button mat-flat-button (click)="startPbf()" [disabled]="pbfStatus()?.running || !pbf.url">{{ (pbfStatus()?.running ? 'admin.routingBuilding' : 'admin.import') | translate }}</button></div>
+          @if (pbfStatus(); as ps) { <ul class="progress">@for (p of ps.progress.slice(-6); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul> }
           <app-routing-corrections />
           <ul class="progress">@for (p of r.progress.slice(-8); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul>
         }
@@ -101,7 +108,7 @@ export class AdminPage {
   setTenant(): void { tenantPreview.set(this.tenantHost.trim() || null); location.href = '/'; }
   routing = signal<RoutingStatus | null>(null);
   private timer?: ReturnType<typeof setInterval>;
-  constructor() { this.loadPage(); this.loadAllPages(); this.loadSeamarks(); this.loadRouting(); this.loadReports(); this.timer = setInterval(() => { if (this.routing()?.building) this.loadRouting(); }, 5000); }
+  constructor() { this.loadPage(); this.loadAllPages(); this.loadSeamarks(); this.loadRouting(); this.loadReports(); this.loadPbf(); this.timer = setInterval(() => { if (this.pbfStatus()?.running) { this.loadPbf(); this.loadSeamarks(); } if (this.routing()?.building) this.loadRouting(); }, 5000); }
   ngOnDestroy(): void { clearInterval(this.timer); }
   reports = signal<{ id: string; targetType: string; targetId: string; reporter: string; reason: string; status: string }[]>([]);
   loadReports(): void { this.api.get<typeof this.reports extends () => infer T ? T : never>('/api/admin/reports').subscribe(r => this.reports.set(r)); }
@@ -109,6 +116,12 @@ export class AdminPage {
   loadRouting(): void { this.api.get<RoutingStatus>('/api/routing/status').subscribe(r => this.routing.set(r)); }
   rebuild(): void { this.api.post('/api/admin/routing/rebuild', {}).subscribe({ next: () => setTimeout(() => this.loadRouting(), 500), error: e => this.result.set(errorMessage(e)) }); }
   waterwayBbox = '54.2,9.1,54.5,10.2';
+  pbf = { url: 'https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf', bbox: '', seamarks: true, harbours: true, waterways: true };
+  pbfStatus = signal<{ running: boolean; progress: { phase: string; message: string; at: string }[] } | null>(null);
+  loadPbf(): void { this.api.get<NonNullable<ReturnType<AdminPage['pbfStatus']>>>('/api/admin/routing/import-pbf/status').subscribe(s => this.pbfStatus.set(s)); }
+  startPbf(): void {
+    this.api.post('/api/admin/routing/import-pbf', { ...this.pbf, bbox: this.pbf.bbox || null }).subscribe({ next: () => setTimeout(() => this.loadPbf(), 500), error: e => this.result.set(errorMessage(e)) });
+  }
   deriveFairways(): void {
     this.busy.set(true);
     this.api.post<{ marks: number; created: number; removed: number }>(`/api/admin/routing/derive-fairways?bbox=${encodeURIComponent(this.seamarkBbox)}`, {}).subscribe({

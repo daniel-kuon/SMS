@@ -10,5 +10,6 @@
     <PackageReference Include="Scalar.AspNetCore" />
     <PackageReference Include="NetTopologySuite.IO.GeoJSON4STJ" />
     <PackageReference Include="Ical.Net" />
+    <PackageReference Include="OsmSharp" />
   </ItemGroup>
 </Project>

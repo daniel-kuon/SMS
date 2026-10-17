@@ -72,6 +72,7 @@ builder.Services.AddHttpClient("overpass", c => c.DefaultRequestHeaders.UserAgen
 builder.Services.AddHttpClient("routing");
 builder.Services.AddHttpClient("marinetraffic");
 builder.Services.AddSingleton<AisKeys>();
+builder.Services.AddSingleton<PbfImportJob>();
 builder.Services.AddSingleton<IAisPositionProvider, AisStreamProvider>();
 builder.Services.AddSingleton<IAisPositionProvider, MarineTrafficProvider>();
 builder.Services.AddSingleton<AisPoller>();

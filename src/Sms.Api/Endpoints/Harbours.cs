@@ -146,44 +146,8 @@ public static class HarbourEndpoints
             var query = $"[out:json][timeout:120];(nwr[\"leisure\"=\"marina\"]({bbox});nwr[\"seamark:type\"=\"harbour\"]({bbox});nwr[\"harbour\"=\"yes\"]({bbox}););out center tags;";
             using var doc = await Overpass.QueryAsync(http, cfg, query, ct);
             if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
-            var (created, updated, skipped) = (0, 0, 0);
-            foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
-            {
-                var type = el.GetProperty("type").GetString()!;
-                var osmId = el.GetProperty("id").GetInt64();
-                double lat, lng;
-                if (el.TryGetProperty("center", out var c)) { lat = c.GetProperty("lat").GetDouble(); lng = c.GetProperty("lon").GetDouble(); }
-                else if (el.TryGetProperty("lat", out var la)) { lat = la.GetDouble(); lng = el.GetProperty("lon").GetDouble(); }
-                else { skipped++; continue; }
-                if (!el.TryGetProperty("tags", out var tags) || !tags.TryGetProperty("name", out var nameEl)) { skipped++; continue; }
-                var name = nameEl.GetString()!;
-                var location = Geo.Point(lat, lng);
-                var existing = await db.Harbours.FirstOrDefaultAsync(h => h.OsmType == type && h.OsmId == osmId, ct)
-                               ?? await db.Harbours.FirstOrDefaultAsync(h => h.Location.IsWithinDistance(location, 300) && EF.Functions.ILike(h.Name, name), ct);
-                var facilities = new Dictionary<string, bool>();
-                foreach (var tag in new[] { "fuel", "drinking_water", "power_supply", "toilets", "shower", "slipway", "sanitary_dump_station", "internet_access" })
-                    if (tags.TryGetProperty(tag, out var v) && v.GetString() is { } sv && sv != "no") facilities[tag] = true;
-                var upsert = new HarbourUpsert(name, lat, lng, Tag(tags, "addr:country"), Tag(tags, "website") ?? Tag(tags, "contact:website"), null,
-                    Tag(tags, "seamark:harbour:category") ?? Tag(tags, "leisure"), Tag(tags, "phone") ?? Tag(tags, "contact:phone"),
-                    Tag(tags, "seamark:communication:channel") ?? Tag(tags, "vhf"), facilities);
-                if (existing is null)
-                {
-                    var h = new Harbour { Source = HarbourSource.Osm, OsmType = type, OsmId = osmId, CreatedById = current.Id };
-                    Apply(h, upsert, null);
-                    db.Harbours.Add(h); created++;
-                }
-                else
-                {
-                    // OSM fills empty fields only; user text wins (spec 10.3).
-                    existing.OsmType ??= type; existing.OsmId ??= osmId;
-                    existing.Website ??= upsert.Website; existing.Country ??= upsert.Country; existing.Category ??= upsert.Category;
-                    existing.Phone ??= upsert.Phone; existing.VhfChannel ??= upsert.VhfChannel;
-                    if (string.IsNullOrEmpty(existing.Facilities) && facilities.Count > 0) existing.Facilities = JsonSerializer.Serialize(facilities);
-                    updated++;
-                }
-            }
-            await db.SaveChangesAsync(ct);
-            return Results.Ok(new { created, updated, skipped });
+            var r = await ImportAsync(doc, db, current.Id, ct);
+            return Results.Ok(new { r.created, r.updated, r.skipped });
         }).RequireAuthorization().WithTags("Admin");
 
         api.MapPost("/admin/harbours/{id:guid}/merge-into/{targetId:guid}", async (Guid id, Guid targetId, SmsDbContext db, CurrentUser current, CancellationToken ct) =>
@@ -200,6 +164,49 @@ public static class HarbourEndpoints
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).RequireAuthorization().WithTags("Admin");
+    }
+
+    /// <summary>Upserts OSM harbours (Overpass-style elements); OSM fills empty fields only, user text wins (spec 10.3).</summary>
+    public static async Task<(int created, int updated, int skipped)> ImportAsync(JsonDocument doc, SmsDbContext db, Guid? userId, CancellationToken ct)
+    {
+        var (created, updated, skipped) = (0, 0, 0);
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            var type = el.GetProperty("type").GetString()!;
+            var osmId = el.GetProperty("id").GetInt64();
+            double lat, lng;
+            if (el.TryGetProperty("center", out var c)) { lat = c.GetProperty("lat").GetDouble(); lng = c.GetProperty("lon").GetDouble(); }
+            else if (el.TryGetProperty("lat", out var la)) { lat = la.GetDouble(); lng = el.GetProperty("lon").GetDouble(); }
+            else { skipped++; continue; }
+            if (!el.TryGetProperty("tags", out var tags) || !tags.TryGetProperty("name", out var nameEl)) { skipped++; continue; }
+            var name = nameEl.GetString()!;
+            var location = Geo.Point(lat, lng);
+            var existing = await db.Harbours.FirstOrDefaultAsync(h => h.OsmType == type && h.OsmId == osmId, ct)
+                           ?? await db.Harbours.FirstOrDefaultAsync(h => h.Location.IsWithinDistance(location, 300) && EF.Functions.ILike(h.Name, name), ct);
+            var facilities = new Dictionary<string, bool>();
+            foreach (var tag in new[] { "fuel", "drinking_water", "power_supply", "toilets", "shower", "slipway", "sanitary_dump_station", "internet_access" })
+                if (tags.TryGetProperty(tag, out var v) && v.GetString() is { } sv && sv != "no") facilities[tag] = true;
+            var upsert = new HarbourUpsert(name, lat, lng, Tag(tags, "addr:country"), Tag(tags, "website") ?? Tag(tags, "contact:website"), null,
+                Tag(tags, "seamark:harbour:category") ?? Tag(tags, "leisure"), Tag(tags, "phone") ?? Tag(tags, "contact:phone"),
+                Tag(tags, "seamark:communication:channel") ?? Tag(tags, "vhf"), facilities);
+            if (existing is null)
+            {
+                var h = new Harbour { Source = HarbourSource.Osm, OsmType = type, OsmId = osmId, CreatedById = userId };
+                Apply(h, upsert, null);
+                db.Harbours.Add(h); created++;
+            }
+            else
+            {
+                // OSM fills empty fields only; user text wins (spec 10.3).
+                existing.OsmType ??= type; existing.OsmId ??= osmId;
+                existing.Website ??= upsert.Website; existing.Country ??= upsert.Country; existing.Category ??= upsert.Category;
+                existing.Phone ??= upsert.Phone; existing.VhfChannel ??= upsert.VhfChannel;
+                if (string.IsNullOrEmpty(existing.Facilities) && facilities.Count > 0) existing.Facilities = JsonSerializer.Serialize(facilities);
+                updated++;
+            }
+        }
+        await db.SaveChangesAsync(ct);
+        return (created, updated, skipped);
     }
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);

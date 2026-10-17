@@ -38,6 +38,7 @@
     <PackageVersion Include="SixLabors.ImageSharp" Version="3.1.12" />
     <PackageVersion Include="MetadataExtractor" Version="2.9.3" />
     <PackageVersion Include="Ical.Net" Version="5.2.3" />
+    <PackageVersion Include="OsmSharp" Version="6.2.0" />
     <!-- Tests -->
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
