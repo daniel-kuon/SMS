@@ -91,6 +91,7 @@ public static class TrackingEndpoints
         // --- file import (GPX / KML / NMEA)
         ships.MapPost("/track-imports", async (Guid shipId, HttpRequest http, SmsDbContext db, Access access, CurrentUser current, TrackProcessor processor, CancellationToken ct) =>
         {
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
             var form = await http.ReadFormAsync(ct);
             Guid? tripId = Guid.TryParse(form["tripId"], out var t) ? t : null;
             if (tripId is { } tid0 && !await db.Trips.AnyAsync(x => x.Id == tid0 && x.ShipId == shipId, ct)) return Invalid("tripId", "Törn gehört nicht zum Schiff.");

@@ -135,6 +135,7 @@ public static class RoutingEndpoints
         admin.MapPost("/import-waterways-file", async (HttpRequest http, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
             var form = await http.ReadFormAsync(ct);
             var file = form.Files.FirstOrDefault();
             if (file is null) return Invalid("file", "Overpass-JSON-Datei fehlt.");

@@ -34,6 +34,7 @@ public static class SeamarkEndpoints
         api.MapPost("/admin/seamarks/import-file", async (HttpRequest http, SmsDbContext db, CurrentUser current, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
             var form = await http.ReadFormAsync(ct);
             var file = form.Files.FirstOrDefault();
             if (file is null) return Invalid("file", "Overpass-JSON-Datei fehlt.");

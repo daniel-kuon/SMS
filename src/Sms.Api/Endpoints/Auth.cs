@@ -24,6 +24,7 @@ public static class AuthEndpoints
         g.MapPost("/register", async (RegisterRequest req, UserManager<ApplicationUser> users, SmsDbContext db, MailSender mail, HttpRequest http, IConfiguration cfg, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.DisplayName)) return Invalid("displayName", "Anzeigename fehlt.");
+            if (string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrEmpty(req.Password)) return Invalid("email", "E-Mail und Passwort angeben.");
             var user = new ApplicationUser { UserName = req.Email, Email = req.Email };
             var result = await users.CreateAsync(user, req.Password);
             if (!result.Succeeded) return TypedResults.ValidationProblem(result.Errors.GroupBy(e => e.Code).ToDictionary(x => x.Key, x => x.Select(e => e.Description).ToArray()));
@@ -35,6 +36,7 @@ public static class AuthEndpoints
 
         g.MapPost("/login", async (LoginRequest req, SignInManager<ApplicationUser> signIn, UserManager<ApplicationUser> users) =>
         {
+            if (string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrEmpty(req.Password)) return Invalid("email", "E-Mail und Passwort angeben.");
             var user = await users.FindByEmailAsync(req.Email);
             if (user is null) return Results.Problem(statusCode: 401, title: "E-Mail oder Passwort falsch.");
             var result = await signIn.PasswordSignInAsync(user, req.Password, req.RememberMe, lockoutOnFailure: true);
@@ -58,6 +60,7 @@ public static class AuthEndpoints
 
         g.MapPost("/resend-confirmation", async (ForgotPasswordRequest req, UserManager<ApplicationUser> users, MailSender mail, HttpRequest http, IConfiguration cfg, CancellationToken ct) =>
         {
+            if (string.IsNullOrWhiteSpace(req.Email)) return Invalid("email", "E-Mail-Adresse fehlt.");
             var user = await users.FindByEmailAsync(req.Email);
             if (user is { EmailConfirmed: false }) await SendConfirmationAsync(user, users, mail, http, cfg, ct);
             return Results.Ok();
@@ -65,6 +68,7 @@ public static class AuthEndpoints
 
         g.MapPost("/forgot-password", async (ForgotPasswordRequest req, UserManager<ApplicationUser> users, MailSender mail, HttpRequest http, IConfiguration cfg, CancellationToken ct) =>
         {
+            if (string.IsNullOrWhiteSpace(req.Email)) return Invalid("email", "E-Mail-Adresse fehlt.");
             var user = await users.FindByEmailAsync(req.Email);
             if (user is not null)
             {

@@ -24,6 +24,7 @@ public static class MediaEndpoints
         {
             if (!await access.IsCrewAsync(tripId, ct)) return Results.Forbid();
             var trip = await db.Trips.AsNoTracking().FirstAsync(t => t.Id == tripId, ct);
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
             var form = await http.ReadFormAsync(ct);
             var visibility = Enum.TryParse<Visibility>(form["visibility"], true, out var v) ? v : Visibility.Crew;
             var offset = int.TryParse(form["cameraOffsetMinutes"], out var o) ? o : 0;
@@ -68,6 +69,7 @@ public static class MediaEndpoints
         api.MapPost("/harbours/{harbourId:guid}/photos", async (Guid harbourId, HttpRequest http, SmsDbContext db, CurrentUser current, MediaStorage storage, CancellationToken ct) =>
         {
             if (!await db.Harbours.AnyAsync(h => h.Id == harbourId, ct)) return Results.NotFound();
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
             var form = await http.ReadFormAsync(ct);
             var ids = new List<Guid>();
             foreach (var file in form.Files)
@@ -85,6 +87,7 @@ public static class MediaEndpoints
 
         api.MapPost("/me/avatar", async (HttpRequest http, SmsDbContext db, CurrentUser current, MediaStorage storage, CancellationToken ct) =>
         {
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
             var form = await http.ReadFormAsync(ct);
             var file = form.Files.FirstOrDefault();
             if (file is null || !Allowed.Contains(file.ContentType)) return Invalid("file", "Bild fehlt oder Dateityp nicht unterstützt.");
@@ -101,6 +104,7 @@ public static class MediaEndpoints
         api.MapPost("/ships/{shipId:guid}/photo", async (Guid shipId, HttpRequest http, SmsDbContext db, CurrentUser current, Access access, MediaStorage storage, CancellationToken ct) =>
         {
             if (!await access.IsShipOwnerAsync(shipId, ct)) return Results.Forbid();
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
             var form = await http.ReadFormAsync(ct);
             var file = form.Files.FirstOrDefault();
             if (file is null || !Allowed.Contains(file.ContentType)) return Invalid("file", "Bild fehlt oder Dateityp nicht unterstützt.");

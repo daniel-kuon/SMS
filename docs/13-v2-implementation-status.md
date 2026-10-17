@@ -26,7 +26,7 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | Vector maps | ✅ | MapLibre GL everywhere (harbour map, trip overview); base style OpenFreeMap *Liberty* (vector, no API key); own sea-mark overlay from `Sms.Tiles` |
 | Sea-mark tile server | ✅ | `Sms.Tiles` (separate Aspire resource): `GET /tiles/seamark/{z}/{x}/{y}.mvt` from the `Seamarks` table via `ST_AsMVT`, zoom ≥ 8, memory cache + ETag; admin import of OpenSeaMap data per bounding box (Overpass with mirror fallback) or Overpass-JSON upload |
 | CMS | ✅ | Global content pages as a tree (nav + footer); per-ship websites with sub pages (owner-editable, published/draft, slug paths); domains assigned to ships → the site served on that host shows only the ship's pages and latest logbook (`/api/site`); dev preview via `X-Tenant-Host` |
-| Tests | ✅ | 17 domain tests, 44 API/infrastructure tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 36 Angular vitest specs, 7 Playwright e2e tests (`npm run e2e`, needs the AppHost: web fixed on :5173, Mailpit on :8025) |
+| Tests | ✅ | 17 domain tests, 45 API/infrastructure tests (incl. an endpoint smoke sweep that calls every registered route as anonymous/member/admin with plausible ids and empty bodies and fails on any 500) (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 36 Angular vitest specs, 7 Playwright e2e tests (`npm run e2e`, needs the AppHost: web fixed on :5173, Mailpit on :8025) |
 
 ## Open (follow-ups)
 
@@ -54,6 +54,7 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | Calendar tokens | Data-protection-encrypted ids instead of stored secrets |
 | Routing build | In-process background job (admin button) instead of a separate `Sms.Routing.Builder` CLI; same tables as spec 10 §10.2 so a CLI can be split out later |
 | PDF | `SimplePdf` (≈100 lines, PDF 1.4, standard Helvetica, WinAnsi) writes the cost statement – no PDF library and no font files to ship; switch to PDFsharp/QuestPDF if images or non-Latin text are needed |
+| Robustness | Every route is exercised by `EndpointSmokeTests`; binding/validation must answer 4xx. Found and fixed: null e-mail in auth endpoints (ArgumentNullException from Identity), JSON bodies on multipart upload endpoints (`ReadFormAsync` throws), geography X/Y projected in SQL (privacy zones) |
 | Tile-wise graph build | Land polygons stream from the shapefile straight into `routing_land`; the region is then processed in tiles of `Routing:TileCells`² start cells (`WaterGraphTiler`): each tile loads only its clipped land from PostGIS, builds the quadtree, writes nodes/edges via COPY and stitches to already built neighbours through their retained border cells. Cells fully covered by land are pruned at the top instead of descending to the minimum size. One longitude scale per region (cells widen towards the north); the new version only becomes active at the end |
 | Track segments | Rebuilt per trip after a 20 s debounce (in-process); no separate worker |
 | Maps | Leaflet replaced by MapLibre GL 6. Base style from OpenFreeMap (vector, OpenMapTiles schema); the MapLibre worker is served as a static asset (`/maplibre-gl-worker.mjs`) because Vite's dependency pre-bundling breaks its relative worker URL |
