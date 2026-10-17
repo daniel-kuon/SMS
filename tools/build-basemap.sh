@@ -32,9 +32,10 @@ case "$MODE" in
 esac
 PBF="media/cache/osm/${AREA}-latest.osm.pbf"
 if [ -f "$PBF" ]; then SRC=(--osm_path="/osm/${AREA}-latest.osm.pbf" --download); else SRC=(--download); fi
-# RAM: Europe wants ≥ 32 GB (--storage=ram keeps node locations in memory and halves the temp disk); small areas are fine with 4 GB
+# RAM: Europe wants ≥ 32 GB heap plus page cache for the memory-mapped temp files; small areas are fine with 4 GB
 XMX="${JAVA_XMX:-4g}"; STORAGE=()
-if [ "$AREA" = "europe" ]; then XMX="${JAVA_XMX:-64g}"; STORAGE=(--storage=ram --nodemap_type=array --nodemap_storage=ram); fi
+# Europe: the in-memory node map (array/ram) needs > 100 GB; the memory-mapped sparse map runs in ~ 30 GB heap, slower but safe
+if [ "$AREA" = "europe" ]; then XMX="${JAVA_XMX:-32g}"; STORAGE=(--storage=mmap --nodemap_type=sparsearray --nodemap_storage=mmap); fi
 MSYS_NO_PATHCONV=1 docker run --rm -e JAVA_TOOL_OPTIONS="-Xmx$XMX" \
   -v "$HOST/media/tiles:/data" -v "$HOST/media/cache/osm:/osm" -v "$HOST/media/cache/planetiler-tmp:/poly" -v sms-planetiler-tmp:/tmp-data ghcr.io/onthegomap/planetiler:latest \
   "${SRC[@]}" --area="$AREA" --output="/data/$OUT" --force --tmpdir=/tmp-data/tmp "${STORAGE[@]}" "${EXTRA[@]}"
