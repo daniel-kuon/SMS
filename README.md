@@ -20,11 +20,11 @@ The AppHost starts everything and prints the Aspire dashboard URL:
 
 | Resource | What | Where |
 |----------|------|-------|
-| `web` | Angular app (dev server with proxy to the API) | dashboard → "Sailing portal" |
+| `web` | Angular app (dev server with proxy to the API) | http://localhost:5173 |
 | `api` | ASP.NET Core API, OpenAPI at `/api/docs` | https://localhost:7150 |
 | `tiles` | sea-mark vector tile server (`/tiles/seamark/{z}/{x}/{y}.mvt`, TileJSON at `/tiles/seamark.json`) | http://localhost:5160 (proxied as `/tiles` by the web dev server) |
 | `postgres` / `sms` | PostgreSQL 17 + PostGIS + pgRouting (`pgrouting/pgrouting`) | volume `sms-postgres-data` |
-| `mailpit` | catches confirmation / invitation mails | dashboard → "Mailpit inbox" |
+| `mailpit` | catches confirmation / invitation mails | http://localhost:8025 |
 | `signoz` | SigNoz UI (traces, metrics, logs, APM) | http://localhost:3302 — login `admin@localhost.dev` / `SailingPortal2026!` |
 | `signoz-otel-collector` | OTLP receiver (gRPC + HTTP) fed by API and browser | |
 | `clickhouse`, `zookeeper-1` | SigNoz storage | volumes `sms-signoz-*` |
@@ -55,7 +55,7 @@ src/Sms.Tiles            sea-mark vector tiles (ST_AsMVT) as its own Aspire reso
 src/sms-web              Angular 21 + Material SPA (de/en)
 tests/Sms.Domain.Tests   xunit: costs, visibility, track parsers, CMS tree – `dotnet run --project tests/Sms.Domain.Tests`
 tests/Sms.Api.Tests      integration tests for every endpoint group + authorization matrix + tiles, Testcontainers PostGIS – `dotnet run --project tests/Sms.Api.Tests` (AppHost stopped)
-src/sms-web              `npx ng test --watch=false` (vitest, jsdom)
+src/sms-web              `npx ng test --watch=false` (vitest, jsdom); `npm run e2e` (Playwright against the running AppHost)
 infra/signoz             SigNoz / ClickHouse / collector configuration
 docs/                    specification
 ```

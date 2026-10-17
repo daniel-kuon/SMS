@@ -5,7 +5,7 @@ var signoz = builder.AddSigNoz();
 
 // Mail catcher for confirmation / reset / invitation mails during development.
 var mailpit = builder.AddContainer("mailpit", "axllent/mailpit", "v1.29")
-    .WithHttpEndpoint(targetPort: 8025, name: "http")
+    .WithHttpEndpoint(port: 8025, targetPort: 8025, name: "http") // fixed port: e2e tests read confirmation mails via http://localhost:8025/api/v1
     .WithEndpoint(targetPort: 1025, scheme: "smtp", name: "smtp")
     .WithUrlForEndpoint("http", u => u.DisplayText = "Mailpit inbox");
 
@@ -37,6 +37,7 @@ var web = builder.AddViteApp("web", "../sms-web")
     .WithReference(tiles)
     .WithEnvironment("OTLP_HTTP", signoz.OtlpHttp)
     .WithExternalHttpEndpoints()
+    .WithEndpoint("http", e => e.Port = 5173) // fixed port for bookmarks and the Playwright e2e tests
     .WithUrlForEndpoint("http", u => u.DisplayText = "Sailing portal");
 
 builder.Build().Run();
