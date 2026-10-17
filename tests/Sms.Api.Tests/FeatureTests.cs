@@ -176,6 +176,15 @@ public class FeatureTests(ApiFixture f) : IClassFixture<ApiFixture>
         var csv = await skipper.GetStringAsync($"/api/trips/{trip}/costs/export");
         Assert.Contains("Hafengeld", csv);
         Assert.Contains("XYZ", csv);
+        var pdfResponse = await skipper.GetAsync($"/api/trips/{trip}/costs/export.pdf");
+        pdfResponse.EnsureSuccessStatusCode();
+        Assert.Equal("application/pdf", pdfResponse.Content.Headers.ContentType?.MediaType);
+        var pdf = System.Text.Encoding.Latin1.GetString(await pdfResponse.Content.ReadAsByteArrayAsync());
+        Assert.StartsWith("%PDF-1.4", pdf);
+        Assert.Contains("Hafengeld", pdf); // uncompressed content streams: text is searchable
+        Assert.Contains("Confirmed", pdf);
+        Assert.EndsWith("%%EOF\n", pdf);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Anonymous().GetAsync($"/api/trips/{trip}/costs/export.pdf")).StatusCode);
         (await skipper.PostAsync($"/api/trips/{trip}/costs/lock", null)).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.Conflict, (await skipper.PostAsJsonAsync($"/api/trips/{trip}/expenses", new { amount = 1, currency = "EUR", paidOn = "2026-10-12", category = "x", splitMode = "Equal" })).StatusCode);
         (await skipper.PostAsync($"/api/trips/{trip}/costs/unlock", null)).EnsureSuccessStatusCode();

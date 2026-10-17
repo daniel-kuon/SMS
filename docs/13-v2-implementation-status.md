@@ -13,7 +13,7 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | 4 Trips | ✅ | CRUD, crew (users, guests, "Logbuch schreiben", from/to), invitations (user, e-mail, link), accept/decline, planner legs, iCal feeds per user/ship |
 | 5 Logbook | ✅ | Paged/sorted ship logbook, entry dialog with legacy + new fields, defaults from previous entry and trip crew, entries without trip, visibility-filtered views |
 | 6 Posts / photos / timeline | ✅ | Upload pipeline (ImageSharp thumb/preview/original, EXIF day + GPS, EXIF stripped), day timeline, entry detail with day content, posts with photos, central visibility filter (`Viewer`), authorised media delivery |
-| 7 Costs | ✅ | Split modes, ECB rates of the payment date (daily job + history bootstrap), balances, greedy transfers, settlements report/confirm, lock, CSV export |
+| 7 Costs | ✅ | Split modes, ECB rates of the payment date (daily job + history bootstrap), balances, greedy transfers, settlements report/confirm, lock, CSV and PDF export (expenses, balances, suggested transfers, settlements) |
 | 8 Sea routing | ✅ (region-configurable) | `RoutingGraphBuilder`: OSM land polygons (downloaded once, ≈900 MB) → adaptive quadtree over water → pgRouting tables; `SeaRouter`: A* routes with string-pulling smoothing, driving-distance nearby ports, cache; admin rebuild/status/corrections. Default region western Baltic (build ≈75 s, 72k nodes); Europe = set `Routing:Region` and wait hours |
 | 8a Trip overview | ✅ | Overview map with recorded (solid) or calculated/straight (dashed) legs, harbour stops, photo/post markers with clustering, stats, day list hover, last position, track playback (play/pause, scrubber, 1×/4×/16×; boat marker with heading, travelled trail, current leg highlighted) |
 | 8b Tracking | ✅ (no AIS provider yet) | Devices with one-time tokens, OsmAnd/Traccar, OwnTracks and JSON ingest, GPX/KML/NMEA import, cleaning, per-day segments with source priority, media/post placement on the track, public delay, privacy zones, source override, stop detection → logbook suggestions |
@@ -24,7 +24,7 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | Vector maps | ✅ | MapLibre GL everywhere (harbour map, trip overview); base style OpenFreeMap *Liberty* (vector, no API key); own sea-mark overlay from `Sms.Tiles` |
 | Sea-mark tile server | ✅ | `Sms.Tiles` (separate Aspire resource): `GET /tiles/seamark/{z}/{x}/{y}.mvt` from the `Seamarks` table via `ST_AsMVT`, zoom ≥ 8, memory cache + ETag; admin import of OpenSeaMap data per bounding box (Overpass with mirror fallback) or Overpass-JSON upload |
 | CMS | ✅ | Global content pages as a tree (nav + footer); per-ship websites with sub pages (owner-editable, published/draft, slug paths); domains assigned to ships → the site served on that host shows only the ship's pages and latest logbook (`/api/site`); dev preview via `X-Tenant-Host` |
-| Tests | ✅ | 17 domain tests, 25 API/infrastructure tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 33 Angular vitest specs |
+| Tests | ✅ | 17 domain tests, 29 API/infrastructure tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 33 Angular vitest specs |
 
 ## Open (follow-ups)
 
@@ -34,7 +34,6 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 - Europe-wide OSM harbour **and sea-mark** import (osmium pipeline); the Overpass import works for bounding boxes (≈30 s for Kiel Bay, 5 000 marks).
 - Self-host the base map (OpenFreeMap tiles are a free public service; `Map:StyleUrl` points to any MapLibre style, e.g. a Planetiler/Martin stack next to `Sms.Tiles`).
 - Playwright end-to-end smoke (login → map → ship/trip creation); unit/integration coverage exists.
-- PDF export of costs (CSV exists).
 
 ## Decisions made during implementation
 
@@ -51,6 +50,7 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | Angular | 21 (Node 22.14 on the dev machine is below Angular 22's minimum) |
 | Calendar tokens | Data-protection-encrypted ids instead of stored secrets |
 | Routing build | In-process background job (admin button) instead of a separate `Sms.Routing.Builder` CLI; same tables as spec 10 §10.2 so a CLI can be split out later |
+| PDF | `SimplePdf` (≈100 lines, PDF 1.4, standard Helvetica, WinAnsi) writes the cost statement – no PDF library and no font files to ship; switch to PDFsharp/QuestPDF if images or non-Latin text are needed |
 | Tile-wise graph build | Land polygons stream from the shapefile straight into `routing_land`; the region is then processed in tiles of `Routing:TileCells`² start cells (`WaterGraphTiler`): each tile loads only its clipped land from PostGIS, builds the quadtree, writes nodes/edges via COPY and stitches to already built neighbours through their retained border cells. Cells fully covered by land are pruned at the top instead of descending to the minimum size. One longitude scale per region (cells widen towards the north); the new version only becomes active at the end |
 | Track segments | Rebuilt per trip after a 20 s debounce (in-process); no separate worker |
 | Maps | Leaflet replaced by MapLibre GL 6. Base style from OpenFreeMap (vector, OpenMapTiles schema); the MapLibre worker is served as a static asset (`/maplibre-gl-worker.mjs`) because Vite's dependency pre-bundling breaks its relative worker URL |

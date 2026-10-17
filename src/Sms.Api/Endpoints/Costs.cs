@@ -5,6 +5,7 @@ using Sms.Domain;
 using Sms.Domain.Costs;
 using Sms.Domain.Social;
 using Sms.Infrastructure;
+using Sms.Infrastructure.Pdf;
 using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
@@ -157,6 +158,50 @@ public static class CostEndpoints
             sb.AppendLine("Mitglied;Bezahlt;Anteil;Saldo");
             foreach (var b in balances.Balances) sb.AppendLine($"{Csv(b.Name)};{b.Paid.ToString(inv)};{b.Share.ToString(inv)};{b.Balance.ToString(inv)}");
             return Results.File(Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(sb.ToString())).ToArray(), "text/csv", $"kosten-{trip.Name}.csv");
+        });
+
+        // Spec 07 F: printable statement for the crew – expenses, balances, suggested transfers, settlements.
+        trips.MapGet("/costs/export.pdf", async (Guid tripId, SmsDbContext db, Access access, CancellationToken ct) =>
+        {
+            var me = await access.CrewAsync(tripId, ct);
+            if (me is null) return Results.Forbid();
+            var trip = await db.Trips.AsNoTracking().Include(t => t.Ship).FirstAsync(t => t.Id == tripId, ct);
+            var names = await LogbookEndpoints.CrewNames(db, tripId, ct);
+            var expenses = await db.Expenses.AsNoTracking().Include(e => e.Shares).Where(e => e.TripId == tripId).OrderBy(e => e.PaidOn).ThenBy(e => e.CreatedAt).ToListAsync(ct);
+            var balances = await BalancesAsync(tripId, me.Id, db, ct);
+            var inv = CultureInfo.InvariantCulture;
+            string M(decimal v) => v.ToString("0.00", inv);
+            string N(Guid id) => names.GetValueOrDefault(id, "?");
+            var pdf = new SimplePdf();
+            pdf.Text($"Bordkasse – {trip.Name}", 16, bold: true);
+            pdf.Text($"{trip.Ship.Name} · {trip.StartDate:dd.MM.yyyy} – {trip.EndDate:dd.MM.yyyy} · Währung {trip.Currency} · erstellt {DateTime.UtcNow:dd.MM.yyyy HH:mm} UTC{(trip.CostsLockedAt is { } l ? $" · Abrechnung abgeschlossen {l:dd.MM.yyyy}" : "")}", 9);
+            pdf.Space(8);
+            pdf.Text("Ausgaben", 12, bold: true);
+            pdf.Table(["Datum", "Kategorie", "Beschreibung", "Bezahlt von", "Betrag", $"in {trip.Currency}", "Aufteilung"],
+                expenses.Select(e => (IReadOnlyList<string>)[e.PaidOn.ToString("dd.MM.yyyy"), e.Category, e.Description ?? "", N(e.PaidByCrewMemberId),
+                    $"{M(e.Amount)} {e.Currency}{(e.Currency != trip.Currency ? $" @ {e.ExchangeRate.ToString("0.####", inv)}" : "")}", M(e.AmountInTripCurrency),
+                    string.Join(", ", e.Shares.Select(s => $"{N(s.CrewMemberId)} {M(s.ComputedShare)}"))]),
+                [52, 58, 84, 60, -104, -50, 91]);
+            pdf.Text($"Gesamt: {M(balances.Total)} {trip.Currency}", 10, bold: true, x: SimplePdf.Margin + 290, advance: true);
+            pdf.Space(8);
+            pdf.Text("Salden", 12, bold: true);
+            pdf.Table(["Mitglied", "Bezahlt", "Anteil", "Gezahlt", "Erhalten", "Saldo"],
+                balances.Balances.Select(b => (IReadOnlyList<string>)[b.Name, M(b.Paid), M(b.Share), M(b.Sent), M(b.Received), M(b.Balance)]), [150, -70, -70, -70, -70, -70]);
+            pdf.Space(8);
+            if (balances.SuggestedTransfers.Count > 0)
+            {
+                pdf.Text("Ausgleich (Vorschlag)", 12, bold: true);
+                pdf.Table(["Von", "An", "Betrag"], balances.SuggestedTransfers.Select(t => (IReadOnlyList<string>)[t.From, t.To, M(t.Amount)]), [150, 150, -80]);
+                pdf.Space(8);
+            }
+            if (balances.Settlements.Count > 0)
+            {
+                pdf.Text("Zahlungen", 12, bold: true);
+                pdf.Table(["Datum", "Von", "An", "Betrag", "Status"], balances.Settlements.Select(s => (IReadOnlyList<string>)[s.PaidAt.ToString("dd.MM.yyyy"), s.From, s.To, M(s.Amount), s.Status.ToString()]), [70, 120, 120, -80, 80]);
+            }
+            pdf.Space(12);
+            pdf.Text("Beträge in Fremdwährung mit dem EZB-Referenzkurs des Zahlungstags umgerechnet (bzw. manuell eingegebenem Kurs).", 8);
+            return Results.File(pdf.Save(), "application/pdf"); // inline: opens in the browser's viewer, save from there
         });
 
         api.MapGet("/exchange-rates", async (string from, string to, DateOnly? date, EcbRates rates, CancellationToken ct) =>

@@ -26,6 +26,7 @@ import { confirm, fmtDate, fmtMoney } from '../../shared/shared';
         @if (!b.lockedAt) { <button mat-flat-button (click)="newExpense()"><mat-icon>add</mat-icon> {{ 'costs.newExpense' | translate }}</button> } @else { <span class="chip crew">{{ 'costs.locked' | translate }}</span> }
         @if (trip().me?.role === 'Skipper') { <button mat-stroked-button (click)="lock(!b.lockedAt)">{{ (b.lockedAt ? 'costs.unlock' : 'costs.lock') | translate }}</button> }
         <a mat-stroked-button [href]="'/api/trips/' + trip().id + '/costs/export'" target="_blank"><mat-icon>download</mat-icon> {{ 'costs.export' | translate }}</a>
+        <a mat-stroked-button [href]="'/api/trips/' + trip().id + '/costs/export.pdf'" target="_blank"><mat-icon>picture_as_pdf</mat-icon> {{ 'costs.exportPdf' | translate }}</a>
       </div>
       <div class="cards">
         <mat-card appearance="outlined"><mat-card-content><span class="label">{{ 'costs.total' | translate }}</span><b>{{ money(b.total) }}</b></mat-card-content></mat-card>
