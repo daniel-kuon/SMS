@@ -15,7 +15,7 @@ public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? Clear
 /// </summary>
 public static class Waterways
 {
-    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0}););out center tags;""";
+    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0}););out center tags;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0}););out geom;""";
 
     /// <summary>Navigable for yachts: an explicit boat/motorboat/ship permission, a CEMT class, or a fairway.</summary>
     public static bool IsNavigable(IReadOnlyDictionary<string, string> tags)
@@ -41,6 +41,34 @@ public static class Waterways
             lines.Add((f.CreateLineString(coords), tags.GetValueOrDefault("name")));
         }
         return Merge(lines, f);
+    }
+
+    /// <summary>Fairway areas (seamark:type=fairway): closed ways and the outer rings of multipolygon relations, as polygons.</summary>
+    public static List<(Polygon area, string? name)> ParseFairwayAreas(JsonDocument doc, GeometryFactory f)
+    {
+        var result = new List<(Polygon, string?)>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (!el.TryGetProperty("tags", out var t)) continue;
+            var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+            if (tags.GetValueOrDefault("seamark:type") != "fairway") continue;
+            var name = tags.GetValueOrDefault("seamark:name") ?? tags.GetValueOrDefault("name");
+            var type = el.GetProperty("type").GetString();
+            if (type == "way" && el.TryGetProperty("geometry", out var geom)) { if (Ring(geom, f) is { } ring) result.Add((ring, name)); }
+            else if (type == "relation" && el.TryGetProperty("members", out var members))
+                foreach (var m in members.EnumerateArray())
+                    if (m.GetProperty("type").GetString() == "way" && m.TryGetProperty("role", out var role) && role.GetString() != "inner" && m.TryGetProperty("geometry", out var mg) && Ring(mg, f) is { } ring)
+                        result.Add((ring, name)); // ponytail: inner rings ignored; outer rings split over several ways are skipped
+        }
+        return result;
+    }
+
+    private static Polygon? Ring(JsonElement geometry, GeometryFactory f)
+    {
+        var coords = geometry.EnumerateArray().Select(c => new Coordinate(c.GetProperty("lon").GetDouble(), c.GetProperty("lat").GetDouble())).ToArray();
+        if (coords.Length < 4 || !coords[0].Equals2D(coords[^1])) return null;
+        var poly = f.CreatePolygon(coords);
+        return poly.IsValid ? poly : (Polygon?)(poly.Buffer(0) as Polygon);
     }
 
     /// <summary>Bridges (with vertical clearance where tagged) and locks/gates on the waterways, as points.</summary>

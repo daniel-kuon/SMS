@@ -8,7 +8,7 @@ using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
 
-public sealed record WaterwayImportResult(int Created, int Removed, int Bridges, int Locks, IReadOnlyList<object> Lines);
+public sealed record WaterwayImportResult(int Created, int Removed, int Bridges, int Locks, IReadOnlyList<object> Lines, int FairwayAreas = 0);
 public record CorrectionUpsert(CorrectionKind Kind, Geometry Geometry, string? Note, bool Active = true, double? ClearanceM = null);
 
 /// <summary>Spec 10 §10.4. Falls back to straight lines (method "straight-line") while no graph is built.</summary>
@@ -200,23 +200,32 @@ public static class RoutingEndpoints
     {
         var ways = Waterways.Parse(doc, Geo.Factory);
         var obstacles = Waterways.ParseObstacles(doc);
-        if (ways.Count == 0 && obstacles.Count == 0) return new WaterwayImportResult(0, 0, 0, 0, []);
+        var areas = Waterways.ParseFairwayAreas(doc, Geo.Factory);
+        if (ways.Count == 0 && obstacles.Count == 0 && areas.Count == 0) return new WaterwayImportResult(0, 0, 0, 0, []);
         if (ways.Count == 0)
         {
             foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, userId));
+            foreach (var a in areas) db.RoutingCorrections.Add(ToCorrection(a, userId));
             await db.SaveChangesAsync(ct);
-            return new WaterwayImportResult(0, 0, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), []);
+            return new WaterwayImportResult(0, 0, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), [], areas.Count);
         }
         var extent = Geo.Factory.ToGeometry(new Envelope(ways.Select(w => w.Line.EnvelopeInternal).Aggregate(new Envelope(), (e, x) => { e.ExpandToInclude(x); return e; })));
         extent.SRID = 4326;
-        var old = replaceExisting ? await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct) : [];
+        var old = replaceExisting ? await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct) : [];
         db.RoutingCorrections.RemoveRange(old);
         foreach (var w in ways)
             db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = userId });
         foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, userId));
+        foreach (var a in areas) db.RoutingCorrections.Add(ToCorrection(a, userId));
         await db.SaveChangesAsync(ct);
-        return new WaterwayImportResult(ways.Count, old.Count, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), ways.Select(w => (object)new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }).ToList());
+        return new WaterwayImportResult(ways.Count, old.Count, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), ways.Select(w => (object)new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }).ToList(), areas.Count);
     }
+
+    private static RoutingCorrection ToCorrection((Polygon area, string? name) a, Guid? userId) => new()
+    {
+        Kind = CorrectionKind.Fairway, Source = CorrectionSource.Derived, Geometry = Srid(a.area), Active = true, CreatedById = userId, Note = $"Fahrwasserfläche{(a.name is null ? "" : " " + a.name)}",
+    };
+    private static Geometry Srid(Geometry g) { g.SRID = 4326; return g; }
 
     private static RoutingCorrection ToCorrection(Obstacle ob, Guid? userId) => new()
     {

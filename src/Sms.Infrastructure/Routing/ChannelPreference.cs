@@ -11,9 +11,17 @@ namespace Sms.Infrastructure.Routing;
 /// </summary>
 public static class ChannelPreference
 {
-    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> gridEdges, IReadOnlyList<LineString> fairways, double distanceM, double factor)
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> gridEdges, IReadOnlyList<LineString> fairways, double distanceM, double factor) => Apply(gridEdges, fairways, [], distanceM, factor);
+
+    /// <summary>Fairway areas (OSM polygons): water inside them is never penalised, water within <c>distanceM</c> outside them is.</summary>
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> gridEdges, IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> areas, double distanceM, double factor)
     {
-        if (fairways.Count == 0 || factor <= 1 || distanceM <= 0) return gridEdges.ToList();
+        if ((fairways.Count == 0 && areas.Count == 0) || factor <= 1 || distanceM <= 0) return gridEdges.ToList();
+        var areaIndex = new STRtree<IPreparedGeometry>();
+        foreach (var a in areas) areaIndex.Insert(a.EnvelopeInternal, PreparedGeometryFactory.Prepare(a));
+        areaIndex.Build();
+        var boundaries = fairways.Concat(areas.SelectMany(a => a.ExteriorRing is LineString ring ? [ring] : Array.Empty<LineString>())).ToList();
+        fairways = boundaries;
         var index = new STRtree<(IPreparedGeometry prepared, LineString line)>();
         foreach (var f in fairways) index.Insert(f.EnvelopeInternal, (PreparedGeometryFactory.Prepare(f), f));
         index.Build();
@@ -24,6 +32,7 @@ public static class ChannelPreference
             var mid = e.Geom.Centroid;
             var cosLat = Math.Cos(mid.Y * Math.PI / 180);
             var query = new Envelope(mid.X - degLat / cosLat, mid.X + degLat / cosLat, mid.Y - degLat, mid.Y + degLat);
+            if (areas.Count > 0 && areaIndex.Query(new Envelope(mid.Coordinate)).Any(a => a.Contains(mid))) { result.Add(e); continue; }
             var near = false;
             foreach (var (_, line) in index.Query(query))
             {

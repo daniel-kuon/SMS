@@ -118,7 +118,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (!env.IsNull)
             {
                 var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-                var removed = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ExecuteDeleteAsync(ct);
+                var removed = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ExecuteDeleteAsync(ct);
                 Add("derivedReplaced", removed);
             }
         }
@@ -130,8 +130,8 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (req.Harbours) { var r = await HarbourEndpoints.ImportAsync(Filter(doc, IsHarbour), db, userId, ct); Add("harboursCreated", r.created); Add("harboursUpdated", r.updated); }
             if (req.Waterways)
             {
-                var r = await RoutingEndpoints.ImportWaterwaysAsync(Filter(doc, t => IsWaterway(t) || IsObstacle(t)), db, userId, ct, replaceExisting: false);
-                Add("waterways", r.Created); Add("bridges", r.Bridges); Add("locks", r.Locks);
+                var r = await RoutingEndpoints.ImportWaterwaysAsync(Filter(doc, t => IsWaterway(t) || IsObstacle(t) || IsFairwayArea(t)), db, userId, ct, replaceExisting: false);
+                Add("waterways", r.Created); Add("bridges", r.Bridges); Add("locks", r.Locks); Add("fairwayAreas", r.FairwayAreas);
             }
             db.ChangeTracker.Clear();
             Report("import", $"{Math.Min(i + batch, elements.Count)}/{elements.Count} elements imported ({sw.Elapsed:hh\\:mm\\:ss})");
@@ -143,6 +143,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
     private static string? Classify(OsmSharp.Tags.TagsCollectionBase tags, PbfImportRequest req)
     {
         var d = ToDict(tags);
+        if (req.Waterways && IsFairwayArea(d)) return "waterway"; // an area, not a point mark
         if (req.Seamarks && d.ContainsKey("seamark:type")) return "seamark";
         if (req.Harbours && IsHarbour(d)) return "harbour";
         if (req.Waterways && (IsWaterway(d) || IsObstacle(d))) return "waterway";
@@ -151,6 +152,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
 
     public static bool IsHarbour(IReadOnlyDictionary<string, string> t) => t.GetValueOrDefault("leisure") == "marina" || t.GetValueOrDefault("seamark:type") == "harbour" || t.GetValueOrDefault("harbour") == "yes";
     public static bool IsWaterway(IReadOnlyDictionary<string, string> t) => Waterways.IsNavigable(t);
+    public static bool IsFairwayArea(IReadOnlyDictionary<string, string> t) => t.GetValueOrDefault("seamark:type") == "fairway" && !t.ContainsKey("waterway");
     public static bool IsObstacle(IReadOnlyDictionary<string, string> t) =>
         t.GetValueOrDefault("seamark:type") is "bridge" or "gate" || (t.ContainsKey("bridge") && (t.ContainsKey("seamark:bridge:clearance_height") || t.ContainsKey("bridge:movable"))) || t.GetValueOrDefault("waterway") == "lock_gate" || t.GetValueOrDefault("lock") == "yes";
 
