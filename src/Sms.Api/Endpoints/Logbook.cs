@@ -74,7 +74,7 @@ public static class LogbookEndpoints
             if (Validate(req) is { } problem) return problem;
             var entry = new LogbookEntry { ShipId = shipId, AuthorId = current.RequiredId, CreatedById = current.Id };
             Apply(entry, req, html);
-            await CalculateRouteAsync(entry, router, ct);
+            await CalculateRouteAsync(entry, router, await AirDraftAsync(db, shipId, ct), ct);
             db.LogbookEntries.Add(entry);
             await db.SaveChangesAsync(ct);
             return Results.Created($"/api/logbook/{entry.Id}", new { entry.Id });
@@ -103,7 +103,7 @@ public static class LogbookEndpoints
             if (!await CanEditAsync(e, current, access, ct)) return Results.Forbid();
             if (Validate(req) is { } problem) return problem;
             Apply(e, req with { TripId = e.TripId }, html);
-            await CalculateRouteAsync(e, router, ct);
+            await CalculateRouteAsync(e, router, await AirDraftAsync(db, e.ShipId, ct), ct);
             e.UpdatedById = current.Id;
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
@@ -121,11 +121,13 @@ public static class LogbookEndpoints
     }
 
     /// <summary>Spec 12 §12.1 A: cache the sea route between start and end harbour on the entry (null while no graph exists).</summary>
-    private static async Task CalculateRouteAsync(LogbookEntry e, SeaRouter router, CancellationToken ct)
+    private static async Task<double?> AirDraftAsync(SmsDbContext db, Guid shipId, CancellationToken ct) => (double?)await db.Ships.AsNoTracking().Where(s => s.Id == shipId).Select(s => s.AirDraftM).FirstOrDefaultAsync(ct);
+
+    private static async Task CalculateRouteAsync(LogbookEntry e, SeaRouter router, double? airDraftM, CancellationToken ct)
     {
         try
         {
-            var route = e.StartHarbourId == e.EndHarbourId ? null : await router.RouteAsync(e.StartHarbourId, e.EndHarbourId, ct);
+            var route = e.StartHarbourId == e.EndHarbourId ? null : await router.RouteAsync(e.StartHarbourId, e.EndHarbourId, ct, airDraftM);
             e.CalculatedRoute = route?.Geometry; e.CalculatedDistanceNm = route?.DistanceNm;
         }
         catch (Exception) { e.CalculatedRoute = null; e.CalculatedDistanceNm = null; }

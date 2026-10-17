@@ -1,0 +1,10 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API (fixture)",
+  "elements": [
+    { "type": "way", "id": 11, "tags": { "waterway": "canal", "name": "Testkanal", "CEMT": "IV" },
+      "geometry": [ { "lat": 54.5000, "lon": 9.5000 }, { "lat": 54.5000, "lon": 9.5200 }, { "lat": 54.5000, "lon": 9.5400 } ] },
+    { "type": "node", "id": 12, "lat": 54.5001, "lon": 9.5100, "tags": { "seamark:type": "bridge", "seamark:bridge:clearance_height": "4.5", "name": "Niedrige Brücke" } },
+    { "type": "node", "id": 13, "lat": 54.5000, "lon": 9.5300, "tags": { "waterway": "lock_gate", "name": "Testschleuse" } }
+  ]
+}

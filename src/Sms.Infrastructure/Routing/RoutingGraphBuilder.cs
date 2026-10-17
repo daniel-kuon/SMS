@@ -27,6 +27,8 @@ public sealed class RoutingOptions
     public double CoastPenaltyFactor { get; set; } = 0.2;
     /// <summary>Cost multiplier for passage edges (canals, derived fairways): below 1 routes prefer marked channels. Reported distances come from the geometry and are unaffected.</summary>
     public double PassageCostFactor { get; set; } = 0.8;
+    /// <summary>Extra cost (metres) for passing a lock, roughly the time a mile takes.</summary>
+    public double LockPenaltyM { get; set; } = 1852;
     public double MaxRouteNm { get; set; } = 500;
 
     public sealed class RegionBox { public double MinLng { get; set; } = 9.3; public double MinLat { get; set; } = 53.8; public double MaxLng { get; set; } = 12.6; public double MaxLat { get; set; } = 55.4; }
@@ -176,6 +178,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 prev = id;
             }
         }
+        var obstacles = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+            .Select(c => (c.Geometry.Centroid, c.Kind == CorrectionKind.Lock, c.ClearanceM)).ToList();
+        extraEdges = Obstacles.Apply(extraEdges, obstacles, o.LockPenaltyM);
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
             foreach (var n in extraNodes) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, ct); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, ct); }
@@ -221,7 +226,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     private static async Task WriteEdgesAsync(NpgsqlConnection conn, int version, IReadOnlyList<GraphEdge> edges, CancellationToken ct)
     {
         if (edges.Count == 0) return;
-        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom) FROM STDIN (FORMAT BINARY)", ct);
+        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m) FROM STDIN (FORMAT BINARY)", ct);
         foreach (var e in edges)
         {
             await w.StartRowAsync(ct);
@@ -230,6 +235,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.WriteAsync(e.Geom.StartPoint.X, NpgsqlDbType.Double, ct); await w.WriteAsync(e.Geom.StartPoint.Y, NpgsqlDbType.Double, ct);
             await w.WriteAsync(e.Geom.EndPoint.X, NpgsqlDbType.Double, ct); await w.WriteAsync(e.Geom.EndPoint.Y, NpgsqlDbType.Double, ct);
             await w.WriteAsync(e.Geom, NpgsqlDbType.Geometry, ct);
+            if (e.ClearanceM is { } cl) await w.WriteAsync(cl, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
         }
         await w.CompleteAsync(ct);
     }

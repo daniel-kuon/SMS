@@ -5,6 +5,7 @@ using NetTopologySuite.Operation.Linemerge;
 namespace Sms.Infrastructure.Routing;
 
 public sealed record Waterway(string? Name, LineString Line, int Ways);
+public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? ClearanceM, string? Name);
 
 /// <summary>
 /// Spec 10 §10.5 step 1: OSM waterway centrelines (canals, rivers, fairways with navigability tags) become routing
@@ -13,7 +14,7 @@ public sealed record Waterway(string? Name, LineString Line, int Ways);
 /// </summary>
 public static class Waterways
 {
-    public const string OverpassQuery = "[out:json][timeout:180];way[\"waterway\"~\"^(canal|river|fairway)$\"][\"motorboat\"!~\"no\"][\"boat\"!~\"no\"]({0})->.w;(way.w[\"CEMT\"];way.w[\"ship\"~\"yes|designated\"];way.w[\"boat\"~\"yes|designated\"];way.w[\"motorboat\"~\"yes|designated\"];way.w[\"waterway\"=\"fairway\"];way.w[\"seamark:type\"=\"fairway\"];);out geom;";
+    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0}););out center tags;""";
 
     /// <summary>Navigable for yachts: an explicit boat/motorboat/ship permission, a CEMT class, or a fairway.</summary>
     public static bool IsNavigable(IReadOnlyDictionary<string, string> tags)
@@ -39,6 +40,38 @@ public static class Waterways
             lines.Add((f.CreateLineString(coords), tags.GetValueOrDefault("name")));
         }
         return Merge(lines, f);
+    }
+
+    /// <summary>Bridges (with vertical clearance where tagged) and locks/gates on the waterways, as points.</summary>
+    public static List<Obstacle> ParseObstacles(JsonDocument doc)
+    {
+        var result = new List<Obstacle>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (!el.TryGetProperty("tags", out var t)) continue;
+            var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+            var isBridge = tags.GetValueOrDefault("seamark:type") == "bridge" || (tags.ContainsKey("bridge") && tags.ContainsKey("seamark:bridge:clearance_height"));
+            var isLock = tags.GetValueOrDefault("waterway") == "lock_gate" || tags.GetValueOrDefault("lock") == "yes" || tags.GetValueOrDefault("seamark:type") == "gate";
+            if (!isBridge && !isLock) continue;
+            double lat, lng;
+            if (el.TryGetProperty("center", out var c)) { lat = c.GetProperty("lat").GetDouble(); lng = c.GetProperty("lon").GetDouble(); }
+            else if (el.TryGetProperty("lat", out var la)) { lat = la.GetDouble(); lng = el.GetProperty("lon").GetDouble(); }
+            else continue;
+            result.Add(new Obstacle(isLock && !isBridge, lat, lng, isBridge ? Clearance(tags) : null, tags.GetValueOrDefault("name") ?? tags.GetValueOrDefault("seamark:name")));
+        }
+        return result;
+    }
+
+    /// <summary>First number of seamark:bridge:clearance_height / maxheight ("42", "42.5 m").</summary>
+    public static double? Clearance(IReadOnlyDictionary<string, string> tags)
+    {
+        foreach (var key in new[] { "seamark:bridge:clearance_height", "seamark:bridge:clearance_height_closed", "maxheight" })
+        {
+            if (!tags.TryGetValue(key, out var v)) continue;
+            var m = System.Text.RegularExpressions.Regex.Match(v.Replace(',', '.'), @"\d+(\.\d+)?");
+            if (m.Success && double.TryParse(m.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d)) return d;
+        }
+        return null;
     }
 
     /// <summary>Joins ways that share end points (degree-2 chains); junctions stay separate lines that share a coordinate.</summary>

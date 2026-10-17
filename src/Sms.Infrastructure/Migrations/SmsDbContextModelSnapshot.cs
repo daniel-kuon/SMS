@@ -1100,6 +1100,9 @@ namespace Sms.Infrastructure.Migrations
                     b.Property<bool>("Active")
                         .HasColumnType("boolean");
 
+                    b.Property<double?>("ClearanceM")
+                        .HasColumnType("double precision");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 

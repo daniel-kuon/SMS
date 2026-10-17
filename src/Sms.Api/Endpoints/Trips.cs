@@ -225,7 +225,7 @@ public static class TripEndpoints
             var order = 0;
             foreach (var l in legs)
             {
-                var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct);
+                var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct, (double?)trip.Ship.AirDraftM); // low bridges stay closed for this ship
                 var meters = route is null ? await db.Harbours.Where(h => h.Id == l.FromHarbourId).Select(h => h.Location.Distance(db.Harbours.First(x => x.Id == l.ToHarbourId).Location)).FirstOrDefaultAsync(ct) : 0;
                 db.PlannedLegs.Add(new PlannedLeg { TripId = id, Order = order++, FromHarbourId = l.FromHarbourId, ToHarbourId = l.ToHarbourId, PlannedDate = l.PlannedDate,
                     DistanceNm = route?.DistanceNm ?? Math.Round((decimal)meters / 1852m, 1), RouteGeometry = route?.Geometry });

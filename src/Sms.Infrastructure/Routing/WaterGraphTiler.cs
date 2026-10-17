@@ -5,7 +5,7 @@ using NetTopologySuite.Index.Strtree;
 namespace Sms.Infrastructure.Routing;
 
 public sealed record GraphNode(long Id, double X, double Y, bool IsMin);
-public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom);
+public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null);
 public sealed record GraphTile(Envelope Envelope, double StartDegLng, double StartDegLat);
 
 /// <summary>

@@ -17,7 +17,7 @@ public enum LocationSource { Manual, Exif, Device, Track, Harbour }
 public enum HarbourSource { Osm, User, Legacy }
 public enum TaskScope { Trip, Ship }
 public enum ProfileVisibility { Public, Registered }
-public enum CorrectionKind { Block, Passage }
+public enum CorrectionKind { Block, Passage, Bridge, Lock }
 public enum CorrectionSource { Manual, Derived }
 
 /// <summary>16 compass points (spec 08).</summary>

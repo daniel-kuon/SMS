@@ -13,7 +13,8 @@ import { bounds, createMap, MlMap } from '../../core/map';
 import { Api, errorMessage } from '../../core/api';
 import { haversineM } from '../../core/track-playback';
 
-export interface Correction { id: string; kind: 'Block' | 'Passage'; source: 'Manual' | 'Derived'; geometry: Geometry; note: string | null; active: boolean; createdAt: string; }
+export interface Correction { id: string; kind: 'Block' | 'Passage' | 'Bridge' | 'Lock'; source: 'Manual' | 'Derived'; geometry: Geometry; note: string | null; active: boolean; createdAt: string; clearanceM?: number | null; }
+export const KIND_ICON: Record<Correction['kind'], string> = { Block: 'block', Passage: 'timeline', Bridge: 'vertical_align_top', Lock: 'lock' };
 
 /** Length of a LineString in nautical miles (0 for other geometries). */
 export function lengthNm(g: Geometry): number {
@@ -61,7 +62,7 @@ export function draftGeometry(kind: 'Block' | 'Passage', points: [number, number
       <tbody>
         @for (c of items(); track c.id) {
           <tr [class.inactive]="!c.active">
-            <td><mat-icon [title]="c.kind">{{ c.kind === 'Block' ? 'block' : 'timeline' }}</mat-icon></td>
+            <td><mat-icon [title]="c.kind">{{ icon[c.kind] }}</mat-icon></td>
             <td><a (click)="zoomTo(c)">{{ c.note || c.kind }}</a></td>
             <td>{{ c.source }}</td>
             <td>{{ c.geometry.type === 'LineString' ? (lengthNm(c.geometry) | number:'1.0-1') : '' }}</td>
@@ -81,7 +82,7 @@ export class RoutingCorrections {
   mapEl = viewChild<ElementRef<HTMLDivElement>>('map');
   items = signal<Correction[]>([]); error = signal('');
   drawing = signal<'Block' | 'Passage' | null>(null); points = signal<[number, number][]>([]); note = '';
-  lengthNm = lengthNm;
+  lengthNm = lengthNm; icon = KIND_ICON;
   private map?: MlMap;
 
   constructor() {
@@ -98,6 +99,7 @@ export class RoutingCorrections {
     map.addLayer({ id: 'corr-blocks', type: 'fill', source: 'corrections', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#d32f2f', 'fill-opacity': ['case', ['get', 'active'], 0.35, 0.12] } });
     map.addLayer({ id: 'corr-lines', type: 'line', source: 'corrections', filter: ['==', ['geometry-type'], 'LineString'],
       paint: { 'line-color': ['case', ['==', ['get', 'source'], 'Derived'], '#fb8c00', '#1976d2'], 'line-width': 3, 'line-opacity': ['case', ['get', 'active'], 0.9, 0.35], 'line-dasharray': [2, 1] } });
+    map.addLayer({ id: 'corr-points', type: 'circle', source: 'corrections', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 5, 'circle-color': ['case', ['==', ['get', 'kind'], 'Lock'], '#6d4c41', '#7b1fa2'], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5, 'circle-opacity': ['case', ['get', 'active'], 1, 0.4] } });
     map.addSource('draft', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addLayer({ id: 'draft-line', type: 'line', source: 'draft', paint: { 'line-color': '#333', 'line-width': 2 } });
     map.addLayer({ id: 'draft-points', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 5, 'circle-color': '#333' } });
@@ -124,11 +126,11 @@ export class RoutingCorrections {
   }
 
   toggle(c: Correction, active: boolean): void {
-    this.api.put(`/api/admin/routing/corrections/${c.id}`, { kind: c.kind, geometry: c.geometry, note: c.note, active }).subscribe({ next: () => this.load(), error: e => this.error.set(errorMessage(e)) });
+    this.api.put(`/api/admin/routing/corrections/${c.id}`, { kind: c.kind, geometry: c.geometry, note: c.note, active, clearanceM: c.clearanceM ?? null }).subscribe({ next: () => this.load(), error: e => this.error.set(errorMessage(e)) });
   }
   remove(c: Correction): void { this.api.delete(`/api/admin/routing/corrections/${c.id}`).subscribe({ next: () => this.load(), error: e => this.error.set(errorMessage(e)) }); }
   zoomTo(c: Correction): void {
-    const coords: [number, number][] = c.geometry.type === 'LineString' ? c.geometry.coordinates as [number, number][] : c.geometry.type === 'Polygon' ? c.geometry.coordinates[0] as [number, number][] : [];
+    const coords: [number, number][] = c.geometry.type === 'LineString' ? c.geometry.coordinates as [number, number][] : c.geometry.type === 'Polygon' ? c.geometry.coordinates[0] as [number, number][] : c.geometry.type === 'Point' ? [c.geometry.coordinates as [number, number]] : [];
     if (coords.length && this.map) this.map.fitBounds(bounds(coords), { padding: 40, maxZoom: 13 });
   }
 }

@@ -8,7 +8,7 @@ using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
 
-public record CorrectionUpsert(CorrectionKind Kind, Geometry Geometry, string? Note, bool Active = true);
+public record CorrectionUpsert(CorrectionKind Kind, Geometry Geometry, string? Note, bool Active = true, double? ClearanceM = null);
 
 /// <summary>Spec 10 §10.4. Falls back to straight lines (method "straight-line") while no graph is built.</summary>
 public static class RoutingEndpoints
@@ -57,7 +57,7 @@ public static class RoutingEndpoints
             return Results.Ok(new { method, disclaimer = Disclaimer, attribution = Attribution, ports });
         });
 
-        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
+        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
         {
             RouteResult? r = null;
             Point? a = null, b = null;
@@ -66,12 +66,12 @@ public static class RoutingEndpoints
                 a = await db.Harbours.AsNoTracking().Where(h => h.Id == f).Select(h => h.Location).FirstOrDefaultAsync(ct);
                 b = await db.Harbours.AsNoTracking().Where(h => h.Id == t).Select(h => h.Location).FirstOrDefaultAsync(ct);
                 if (a is null || b is null) return Results.NotFound();
-                r = await router.RouteAsync(f, t, ct);
+                r = await router.RouteAsync(f, t, ct, airDraft);
             }
             else if (TryParsePoint(from, out var pa) && TryParsePoint(to, out var pb))
             {
                 a = pa; b = pb;
-                r = await router.RouteAsync(pa, pb, ct);
+                r = await router.RouteAsync(pa, pb, ct, airDraft);
             }
             else return Invalid("from", "fromHarbour/toHarbour oder from=lat,lng&to=lat,lng angeben.");
 
@@ -104,8 +104,9 @@ public static class RoutingEndpoints
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             if (req.Kind == CorrectionKind.Block && req.Geometry is not Polygon) return Invalid("geometry", "Block braucht ein Polygon.");
             if (req.Kind == CorrectionKind.Passage && req.Geometry is not LineString) return Invalid("geometry", "Passage braucht eine LineString.");
+            if (req.Kind is CorrectionKind.Bridge or CorrectionKind.Lock && req.Geometry is not Point) return Invalid("geometry", "Brücke/Schleuse braucht einen Punkt.");
             req.Geometry.SRID = 4326;
-            var c = new RoutingCorrection { Kind = req.Kind, Geometry = req.Geometry, Note = req.Note, Active = req.Active, CreatedById = current.Id };
+            var c = new RoutingCorrection { Kind = req.Kind, Geometry = req.Geometry, Note = req.Note, Active = req.Active, ClearanceM = req.ClearanceM, CreatedById = current.Id };
             db.RoutingCorrections.Add(c);
             await db.SaveChangesAsync(ct);
             return Results.Created($"/api/admin/routing/corrections/{c.Id}", new { c.Id });
@@ -116,7 +117,7 @@ public static class RoutingEndpoints
             var c = await db.RoutingCorrections.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (c is null) return Results.NotFound();
             req.Geometry.SRID = 4326;
-            c.Kind = req.Kind; c.Geometry = req.Geometry; c.Note = req.Note; c.Active = req.Active; c.UpdatedById = current.Id;
+            c.Kind = req.Kind; c.Geometry = req.Geometry; c.Note = req.Note; c.Active = req.Active; c.ClearanceM = req.ClearanceM; c.UpdatedById = current.Id;
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         });
@@ -185,16 +186,30 @@ public static class RoutingEndpoints
     private static async Task<object> ImportWaterwaysAsync(JsonDocument doc, SmsDbContext db, CurrentUser current, CancellationToken ct)
     {
         var ways = Waterways.Parse(doc, Geo.Factory);
-        if (ways.Count == 0) return new { created = 0, removed = 0, lines = 0 };
+        var obstacles = Waterways.ParseObstacles(doc);
+        if (ways.Count == 0 && obstacles.Count == 0) return new { created = 0, removed = 0, bridges = 0, locks = 0, lines = Array.Empty<object>() };
+        if (ways.Count == 0)
+        {
+            foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, current));
+            await db.SaveChangesAsync(ct);
+            return new { created = 0, removed = 0, bridges = obstacles.Count(x => !x.IsLock), locks = obstacles.Count(x => x.IsLock), lines = Array.Empty<object>() };
+        }
         var extent = Geo.Factory.ToGeometry(new Envelope(ways.Select(w => w.Line.EnvelopeInternal).Aggregate(new Envelope(), (e, x) => { e.ExpandToInclude(x); return e; })));
         extent.SRID = 4326;
-        var old = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct);
+        var old = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct);
         db.RoutingCorrections.RemoveRange(old);
         foreach (var w in ways)
             db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = current.Id });
+        foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, current));
         await db.SaveChangesAsync(ct);
-        return new { created = ways.Count, removed = old.Count, lines = ways.Select(w => new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }) };
+        return new { created = ways.Count, removed = old.Count, bridges = obstacles.Count(x => !x.IsLock), locks = obstacles.Count(x => x.IsLock), lines = ways.Select(w => new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }) };
     }
+
+    private static RoutingCorrection ToCorrection(Obstacle ob, CurrentUser current) => new()
+    {
+        Kind = ob.IsLock ? CorrectionKind.Lock : CorrectionKind.Bridge, Source = CorrectionSource.Derived, Geometry = Geo.Point(ob.Lat, ob.Lng), ClearanceM = ob.ClearanceM, Active = true, CreatedById = current.Id,
+        Note = ob.IsLock ? $"Schleuse{(ob.Name is null ? "" : " " + ob.Name)}" : $"Brücke{(ob.Name is null ? "" : " " + ob.Name)}{(ob.ClearanceM is { } c ? $" – Durchfahrtshöhe {c.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} m" : "")}",
+    };
 
     private static double LengthNm(LineString l)
     {

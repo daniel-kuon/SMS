@@ -367,6 +367,8 @@ public class RoutingCorrection : Entity
     public Geometry Geometry { get; set; } = null!;
     public string? Note { get; set; }
     public bool Active { get; set; } = true;
+    /// <summary>Bridge: vertical clearance in metres (null = unknown, no restriction). Passages under it are closed for ships with a larger air draft.</summary>
+    public double? ClearanceM { get; set; }
 }
 
 /// <summary>Cache of computed harbour-to-harbour sea routes per graph version (spec 10 §10.2).</summary>

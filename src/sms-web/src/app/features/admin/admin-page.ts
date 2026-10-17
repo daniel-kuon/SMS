@@ -117,14 +117,14 @@ export class AdminPage {
   }
   importWaterways(): void {
     this.busy.set(true);
-    this.api.post<{ created: number; removed: number }>(`/api/admin/routing/import-waterways?bbox=${encodeURIComponent(this.waterwayBbox)}`, {}).subscribe({
-      next: r => { this.busy.set(false); this.result.set(`${r.created} Wasserstraßen importiert (${r.removed} ersetzt) – Routing-Graph neu bauen, damit sie wirken.`); this.loadRouting(); },
+    this.api.post<{ created: number; removed: number; bridges: number; locks: number }>(`/api/admin/routing/import-waterways?bbox=${encodeURIComponent(this.waterwayBbox)}`, {}).subscribe({
+      next: r => { this.busy.set(false); this.result.set(`${r.created} Wasserstraßen, ${r.bridges} Brücken, ${r.locks} Schleusen importiert (${r.removed} ersetzt) – Routing-Graph neu bauen, damit sie wirken.`); this.loadRouting(); },
       error: e => { this.busy.set(false); this.result.set(errorMessage(e)); } });
   }
   importWaterwaysFile(e: Event): void {
     const file = (e.target as HTMLInputElement).files?.[0]; if (!file) return;
-    this.api.upload<{ created: number; removed: number }>('/api/admin/routing/import-waterways-file', [file]).subscribe({
-      next: r => { this.result.set(`${r.created} Wasserstraßen importiert (${r.removed} ersetzt) – Routing-Graph neu bauen, damit sie wirken.`); this.loadRouting(); }, error: err => this.result.set(errorMessage(err)) });
+    this.api.upload<{ created: number; removed: number; bridges: number; locks: number }>('/api/admin/routing/import-waterways-file', [file]).subscribe({
+      next: r => { this.result.set(`${r.created} Wasserstraßen, ${r.bridges} Brücken, ${r.locks} Schleusen importiert (${r.removed} ersetzt) – Routing-Graph neu bauen, damit sie wirken.`); this.loadRouting(); }, error: err => this.result.set(errorMessage(err)) });
   }
   importOsm(): void {
     this.busy.set(true); this.result.set('');
