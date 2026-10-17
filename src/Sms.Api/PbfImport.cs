@@ -33,7 +33,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         _ = Task.Run(async () =>
         {
             try { await RunAsync(req, userId, CancellationToken.None); }
-            catch (Exception ex) { Report("failed", ex.Message); logger.LogError(ex, "PBF import failed"); }
+            catch (Exception ex) { Report("failed", ex is InvalidOperationException ? ex.Message : "Import fehlgeschlagen – Details im Log."); logger.LogError(ex, "PBF import failed"); }
             finally { Interlocked.Exchange(ref _running, 0); }
         });
         return true;
@@ -154,18 +154,47 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         return p.Length == 4 ? new Box(p[0], p[1], p[2], p[3]) : null;
     }
 
+    /// <summary>Import directory for cached extracts (the only place local file names are resolved against).</summary>
+    public string ImportDir => Path.GetFullPath(Path.Combine(cfg["Routing:CachePath"] ?? "media/cache", "osm"));
+
+    /// <summary>
+    /// The source must be an https URL on an allow-listed host (Import:AllowedHosts, default download.geofabrik.de)
+    /// or the bare file name of an extract already in the import directory – an admin form must not become an
+    /// SSRF or local-file-read primitive. Returns the error message or null.
+    /// </summary>
+    public string? Validate(string urlOrPath)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrPath)) return "URL oder Dateiname einer .osm.pbf-Datei angeben.";
+        if (Uri.TryCreate(urlOrPath, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https")
+        {
+            var allowed = cfg.GetSection("Import:AllowedHosts").Get<string[]>() is { Length: > 0 } a ? a : ["download.geofabrik.de"];
+            if (uri.Scheme != "https") return "Nur https-Downloads.";
+            if (!allowed.Contains(uri.Host.TrimEnd('.'), StringComparer.OrdinalIgnoreCase)) return $"Host nicht erlaubt (Import:AllowedHosts): {string.Join(", ", allowed)}.";
+            if (!uri.AbsolutePath.EndsWith(".osm.pbf", StringComparison.OrdinalIgnoreCase)) return "Erwartet eine .osm.pbf-Datei.";
+            return null;
+        }
+        if (urlOrPath != Path.GetFileName(urlOrPath) || !urlOrPath.EndsWith(".osm.pbf", StringComparison.OrdinalIgnoreCase)) return "Lokale Dateien: nur der Dateiname einer Datei im Importverzeichnis.";
+        return File.Exists(Path.Combine(ImportDir, urlOrPath)) ? null : "Datei nicht im Importverzeichnis.";
+    }
+
     private async Task<string> EnsureFileAsync(string urlOrPath, CancellationToken ct)
     {
-        if (File.Exists(urlOrPath)) { Report("file", $"Using {urlOrPath}"); return urlOrPath; }
-        if (!Uri.TryCreate(urlOrPath, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")) throw new InvalidOperationException("URL oder Pfad einer .osm.pbf-Datei angeben.");
-        var dir = Path.GetFullPath(Path.Combine(cfg["Routing:CachePath"] ?? "media/cache", "osm"));
+        if (Validate(urlOrPath) is { } error) throw new InvalidOperationException(error);
+        var dir = ImportDir;
         Directory.CreateDirectory(dir);
+        if (!Uri.TryCreate(urlOrPath, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+        {
+            var local = Path.GetFullPath(Path.Combine(dir, urlOrPath));
+            if (!local.StartsWith(dir, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Ungültiger Dateiname.");
+            Report("file", $"Using {Path.GetFileName(local)}"); return local;
+        }
         var path = Path.Combine(dir, Path.GetFileName(uri.LocalPath));
-        if (File.Exists(path) && new FileInfo(path).Length > 0) { Report("file", $"Using cached {path}"); return path; }
+        if (File.Exists(path) && new FileInfo(path).Length > 0) { Report("file", $"Using cached {Path.GetFileName(path)}"); return path; }
         Report("file", $"Downloading {uri}…");
-        var client = http.CreateClient("routing");
-        client.Timeout = TimeSpan.FromHours(6);
-        await using (var src = await client.GetStreamAsync(uri, ct))
+        using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromHours(6) }; // no redirects: the allow-listed host must serve the file itself
+        using var resp = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!resp.IsSuccessStatusCode) throw new InvalidOperationException($"Download fehlgeschlagen ({(int)resp.StatusCode}).");
+        await using (var src = await resp.Content.ReadAsStreamAsync(ct))
         await using (var dst = File.Create(path + ".part"))
             await src.CopyToAsync(dst, ct);
         File.Move(path + ".part", path, overwrite: true);

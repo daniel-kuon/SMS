@@ -176,7 +176,7 @@ public static class RoutingEndpoints
         admin.MapPost("/import-pbf", async (PbfImportRequest req, CurrentUser current, PbfImportJob job, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
-            if (string.IsNullOrWhiteSpace(req.Url)) return Invalid("url", "URL oder Pfad der .osm.pbf-Datei angeben.");
+            if (job.Validate(req.Url) is { } error) return Invalid("url", error);
             if (!req.Seamarks && !req.Harbours && !req.Waterways) return Invalid("seamarks", "Mindestens eine Datenart wählen.");
             return job.TryStart(req, current.Id) ? Results.Accepted("/api/admin/routing/import-pbf/status") : Results.Problem(statusCode: 409, title: "Ein Import läuft bereits.");
         });

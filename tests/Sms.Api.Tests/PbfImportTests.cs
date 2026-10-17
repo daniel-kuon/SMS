@@ -75,5 +75,9 @@ public class PbfImportTests(ApiFixture f) : IClassFixture<ApiFixture>
         var status = await admin.GetFromJsonAsync<JsonElement>("/api/admin/routing/import-pbf/status");
         Assert.False(status.GetProperty("running").GetBoolean());
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/routing/import-pbf", new { url = "" })).StatusCode);
+        // only allow-listed https hosts and bare file names inside the import directory (no SSRF / local file reads)
+        foreach (var bad in new[] { "http://download.geofabrik.de/europe/x.osm.pbf", "https://169.254.169.254/latest/meta-data", "https://evil.example.com/x.osm.pbf", @"C:\Windows\win.ini", "../../appsettings.json", "missing.osm.pbf" })
+            Assert.Equal(System.Net.HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/routing/import-pbf", new { url = bad })).StatusCode);
+        Assert.Null(job.Validate("https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf"));
     }
 }
