@@ -37,7 +37,7 @@ app.MapGet("/tiles/seamark/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, in
         await using var cmd = db.CreateCommand("""
             WITH b AS (SELECT ST_TileEnvelope(@z, @x, @y) AS geom),
             q AS (
-                SELECT s."OsmId" AS osm_id, s."Type" AS type, s."Category" AS category, s."Name" AS name, s."Colour" AS colour, s."Shape" AS shape, s."Light" AS light,
+                SELECT s."OsmId" AS osm_id, s."OsmType" AS osm_type, s."Type" AS type, s."Category" AS category, s."Name" AS name, s."Colour" AS colour, s."Shape" AS shape, s."Light" AS light,
                        ST_AsMVTGeom(s."Location", b.geom, 4096, 64, true) AS geom
                 FROM "Seamarks" s, b
                 WHERE s."Location" && ST_Expand(b.geom, (ST_XMax(b.geom) - ST_XMin(b.geom)) / 64)

@@ -75,6 +75,19 @@ public static class HarbourEndpoints
             return Results.NoContent();
         }).RequireAuthorization();
 
+        // Ships that visited (visibility-filtered logbook entries ending or starting here), newest first.
+        g.MapGet("/{id:guid}/visits", async (Guid id, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
+        {
+            var viewer = await Viewer.ForAsync(current, access, ct);
+            var rows = await db.LogbookEntries.AsNoTracking().Include(l => l.Ship).Include(l => l.Trip).Include(l => l.StartHarbour).Include(l => l.EndHarbour)
+                .Where(l => l.EndHarbourId == id || l.StartHarbourId == id).Where(viewer.Logbook())
+                .Select(l => new { l.ShipId, ShipName = l.Ship.Name, ShipVisibility = l.Ship.Visibility, l.TripId, TripName = l.Trip != null ? l.Trip.Name : null, At = l.EndHarbourId == id ? l.ArrivedAt : l.DepartedAt })
+                .ToListAsync(ct);
+            var ships = rows.GroupBy(r => r.ShipId).Select(g => new { shipId = g.Key, name = g.First().ShipName, visits = g.Count(), lastVisit = g.Max(r => r.At), lastTripId = g.OrderByDescending(r => r.At).First().TripId, lastTripName = g.OrderByDescending(r => r.At).First().TripName })
+                .OrderByDescending(s => s.lastVisit).Take(50).ToList();
+            return Results.Ok(ships);
+        });
+
         g.MapGet("/{id:guid}/revisions", async (Guid id, SmsDbContext db, CancellationToken ct) =>
         {
             var revs = await db.HarbourRevisions.AsNoTracking().Where(r => r.HarbourId == id).OrderByDescending(r => r.ChangedAt).Take(50).ToListAsync(ct);

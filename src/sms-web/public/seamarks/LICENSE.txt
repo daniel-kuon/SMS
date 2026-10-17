@@ -1,0 +1,3 @@
+Sea-mark symbols from the OpenSeaMap renderer (https://github.com/OpenSeaMap/renderer, continued at
+https://github.com/OpenNauticalChart/renderer), searender/symbols. OpenSeaMap content is licensed CC BY-SA 2.0;
+the symbol paths are used unchanged and coloured/combined at runtime (see src/app/core/seamark-icons.ts).

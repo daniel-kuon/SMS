@@ -1,5 +1,6 @@
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MlMap, MapOptions, StyleSpecification } from 'maplibre-gl';
+import { formatPosition, registerSeamarkIcons, seamarkIconExpression, seamarkTypeLabel } from './seamark-icons';
 
 /** Public map configuration served by the API (/api/config). */
 export interface MapConfig { mapStyleUrl: string; seamarkTilesUrl: string; attribution: string; }
@@ -30,6 +31,7 @@ export async function createMap(container: HTMLElement, options: Partial<MapOpti
   map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: cfg.attribution }));
   await new Promise<void>(res => (map.loaded() ? res() : map.once('load', () => res())));
   addSeamarkOverlay(map, cfg.seamarkTilesUrl);
+  (window as unknown as { smsMap?: MlMap }).smsMap = map; // debugging/e2e hook: the current map instance
   return map;
 }
 
@@ -49,16 +51,21 @@ export function addSeamarkOverlay(map: MlMap, tilesUrl: string): void {
     ['in', ['get', 'type'], ['literal', ['light_major', 'light_minor', 'light']]], '#ff9800',
     ['in', ['get', 'type'], ['literal', ['harbour', 'anchorage', 'mooring']]], '#1976d2',
     '#78909c'];
+  // zoom 8–10: coloured dots (dense), from zoom 11: the OpenSeaMap symbols composed per mark (seamark-icons.ts)
   map.addLayer({
-    id: 'seamark-points', type: 'circle', source: 'seamark', 'source-layer': 'seamark', minzoom: 8,
-    paint: {
-      'circle-color': colour,
-      'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.5, 12, 4, 16, 8],
-      'circle-stroke-color': ['case', ['in', ['get', 'type'], ['literal', ['buoy_safe_water', 'buoy_cardinal', 'beacon_cardinal']]], '#d32f2f', '#ffffff'],
-      'circle-stroke-width': 1.2,
-      'circle-opacity': 0.95,
-    },
+    id: 'seamark-points', type: 'circle', source: 'seamark', 'source-layer': 'seamark', minzoom: 8, maxzoom: 11,
+    paint: { 'circle-color': colour, 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.5, 11, 4], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1, 'circle-opacity': 0.95 },
   });
+  registerSeamarkIcons(map);
+  map.addLayer({
+    id: 'seamark-icons', type: 'symbol', source: 'seamark', 'source-layer': 'seamark', minzoom: 11,
+    layout: { 'icon-image': seamarkIconExpression, 'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.45, 14, 0.8, 17, 1.1], 'icon-anchor': 'bottom', 'icon-allow-overlap': true, 'icon-ignore-placement': true },
+  });
+  for (const layer of ['seamark-points', 'seamark-icons']) {
+    map.on('click', layer, e => { const f = e.features?.[0]; if (f) showSeamarkPopup(map, f.properties as Record<string, unknown>, e.lngLat); });
+    map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
+  }
   map.addLayer({
     id: 'seamark-light-halo', type: 'circle', source: 'seamark', 'source-layer': 'seamark', minzoom: 8,
     filter: ['in', ['get', 'type'], ['literal', ['light_major', 'light_minor']]],
@@ -72,6 +79,26 @@ export function addSeamarkOverlay(map: MlMap, tilesUrl: string): void {
     },
     paint: { 'text-color': '#263238', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
   });
+}
+
+/** Popup with the mark's properties, its chart position and a link to the OSM object (all text nodes, no HTML parsing). */
+export function showSeamarkPopup(map: MlMap, p: Record<string, unknown>, lngLat: maplibregl.LngLat): void {
+  const lang = localStorage.getItem('lang') === 'en' ? 'en' : 'de';
+  const root = document.createElement('div'); root.className = 'seamark-popup';
+  const title = document.createElement('b'); title.textContent = String(p['name'] ?? seamarkTypeLabel(String(p['type'] ?? ''), lang)); root.append(title);
+  const line = (label: string, value: unknown) => { if (value === null || value === undefined || value === '') return; const d = document.createElement('div'); d.append(textEl(label + ': ', 'span'), textEl(String(value), 'span')); root.append(d); };
+  if (p['name']) line(lang === 'en' ? 'Type' : 'Typ', seamarkTypeLabel(String(p['type'] ?? ''), lang));
+  line(lang === 'en' ? 'Category' : 'Kategorie', p['category']); line(lang === 'en' ? 'Shape' : 'Form', p['shape']); line(lang === 'en' ? 'Colour' : 'Farbe', p['colour']); line(lang === 'en' ? 'Light' : 'Feuer', p['light']);
+  const pos = document.createElement('div'); pos.className = 'pos';
+  const lat = Number(lngLat.lat.toFixed(5)), lng = Number(lngLat.lng.toFixed(5));
+  pos.append(textEl(formatPosition(lat, lng), 'b'), document.createElement('br'), textEl(`${lat}, ${lng}`, 'span'));
+  root.append(pos);
+  const links = document.createElement('div'); links.className = 'links';
+  if (p['osm_id']) { const a = document.createElement('a'); a.href = `https://www.openstreetmap.org/${p['osm_type'] ?? 'node'}/${p['osm_id']}`; a.target = '_blank'; a.rel = 'noreferrer'; a.textContent = 'OpenStreetMap'; links.append(a); }
+  const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = lang === 'en' ? 'Copy position' : 'Position kopieren';
+  copy.onclick = () => { void navigator.clipboard?.writeText(`${lat}, ${lng}`); copy.textContent = '✔'; };
+  links.append(copy); root.append(links);
+  new maplibregl.Popup({ offset: 12, maxWidth: '280px' }).setLngLat(lngLat).setDOMContent(root).addTo(map);
 }
 
 /** HTML element with user text for popups/markers (never parsed as HTML). */

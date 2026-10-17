@@ -1,6 +1,9 @@
 import { Component, computed, effect, ElementRef, inject, input, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
+import { MatListModule } from '@angular/material/list';
+import { formatPosition } from '../../core/seamark-icons';
+import { fmtDate } from '../../shared/shared';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatDialog, MatDialogModule, MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
@@ -19,7 +22,7 @@ import { bounds, createMap, maplibregl, MlMap } from '../../core/map';
 import { UploadZone } from '../../shared/shared';
 
 @Component({
-  imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone],
+  imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone, MatListModule, RouterLink],
   template: `
     <div class="layout">
       <div #map class="map"></div>
@@ -29,7 +32,12 @@ import { UploadZone } from '../../shared/shared';
             @if (auth.me() && h.id) { <button mat-icon-button (click)="edit(h)"><mat-icon>edit</mat-icon></button> }
             <button mat-icon-button (click)="close()"><mat-icon>close</mat-icon></button></div>
           <div class="muted">{{ h.country }} · {{ h.category }} @if (h.averageRating) { · ★ {{ h.averageRating }} }</div>
-          @if (h.website) { <div><a [href]="h.website" target="_blank" rel="noreferrer">{{ h.website }}</a></div> }
+          <div class="links">
+            @if (h.website) { <a mat-stroked-button [href]="h.website" target="_blank" rel="noreferrer"><mat-icon>language</mat-icon> {{ 'harbour.website' | translate }}</a> }
+            <a mat-stroked-button [href]="skipperGuideUrl(h)" target="_blank" rel="noreferrer"><mat-icon>menu_book</mat-icon> SkipperGuide</a>
+            @if (h.osmId) { <a mat-stroked-button [href]="'https://www.openstreetmap.org/' + h.osmType + '/' + h.osmId" target="_blank" rel="noreferrer"><mat-icon>public</mat-icon> OSM</a> }
+            <span class="muted pos">{{ position(h) }}</span>
+          </div>
           @if (h.phone) { <div>{{ 'harbour.phone' | translate }}: {{ h.phone }}</div> }
           @if (h.vhfChannel) { <div>{{ 'harbour.vhf' | translate }}: {{ h.vhfChannel }}</div> }
           @if (facilities(); as f) { <div class="chips">@for (k of f; track k) { <span class="chip">{{ k }}</span> }</div> }
@@ -48,6 +56,12 @@ import { UploadZone } from '../../shared/shared';
                 <tr mat-header-row *matHeaderRowDef="['name','distanceNm','etaHours','route']"></tr>
                 <tr mat-row *matRowDef="let p; columns: ['name','distanceNm','etaHours','route']" (mouseenter)="hovered = p.harbourId; showRoute(p)" (mouseleave)="hovered = null; hideRoute()"></tr>
               </table>
+            </mat-tab>
+            <mat-tab [label]="'harbour.ships' | translate">
+              @if (visits().length === 0) { <p class="muted">{{ 'harbour.noVisits' | translate }}</p> }
+              <mat-list>@for (v of visits(); track v.shipId) {
+                <a mat-list-item [routerLink]="['/ships', v.shipId]"><mat-icon matListItemIcon>sailing</mat-icon><span matListItemTitle>{{ v.name }}</span>
+                  <span matListItemLine>{{ v.visits }}× · {{ 'harbour.lastVisit' | translate }} {{ fmt(v.lastVisit) }} @if (v.lastTripName) { · {{ v.lastTripName }} }</span></a> }</mat-list>
             </mat-tab>
             <mat-tab [label]="'harbour.wifi' | translate">
               @if (!auth.me()) { <p class="muted">{{ 'harbour.wifiLoginHint' | translate }}</p> }
@@ -74,7 +88,7 @@ import { UploadZone } from '../../shared/shared';
     .map { flex: 1; min-height: 60vh; }
     .panel { width: 0; overflow: hidden; transition: width .2s; background: white; box-shadow: -2px 0 8px rgba(0,0,0,.15); }
     .panel.open { width: 420px; max-width: 100vw; padding: 12px; overflow-y: auto; }
-    .panel h2 { margin: 0; font-size: 20px; }
+    .panel h2 { margin: 0; font-size: 20px; } .links { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; } .links .pos { font-size: 12px; }
     .review { padding: 6px 0; border-bottom: 1px solid #eee; }
     .full-width { width: 100%; }
     @media (max-width: 800px) { .layout { flex-direction: column; } .panel.open { width: 100%; } }
@@ -89,6 +103,10 @@ export class HarbourMapPage {
   mapEl = viewChild.required<ElementRef<HTMLDivElement>>('map');
   harbour = signal<Harbour | null>(null);
   nearby = signal<NearbyPort[]>([]);
+  visits = signal<{ shipId: string; name: string; visits: number; lastVisit: string; lastTripId: string | null; lastTripName: string | null }[]>([]);
+  fmt = fmtDate;
+  position = (h: HarbourMarker) => formatPosition(h.lat, h.lng);
+  skipperGuideUrl = (h: HarbourMarker) => `https://www.skipperguide.de/index.php?search=${encodeURIComponent(h.name)}`;
   facilities = computed(() => { const f = this.harbour()?.facilities; return f ? Object.keys(f).filter(k => f[k]) : null; });
   hovered: string | null = null;
   private map?: MlMap;
@@ -146,6 +164,7 @@ export class HarbourMapPage {
       this.pinned = false; this.hideRoute(true);
       if (this.map) { this.map.easeTo({ center: [h.lng, h.lat] }); this.setHarbourData(); }
       this.api.get<{ ports: NearbyPort[] }>('/api/routing/nearby-ports', { harbour: id, maxNm: 60, limit: 30 }).subscribe(r => this.nearby.set(r.ports));
+      this.api.get<ReturnType<HarbourMapPage['visits']>>(`/api/harbours/${id}/visits`).subscribe(v => this.visits.set(v));
     });
   }
 
