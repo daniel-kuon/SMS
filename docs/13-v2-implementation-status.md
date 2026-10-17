@@ -28,7 +28,8 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | OSM extract import | ✅ | Admin: Geofabrik `.osm.pbf` URL or path → background job (OsmSharp, two streaming passes) → Overpass-style batches → the existing sea-mark, harbour and waterway/bridge/lock importers; optional bounding box; progress on the admin page. Schleswig-Holstein: 10 276 sea marks, 266 harbours, 280 waterways, 97 bridges, 103 locks in 16 s |
 | Sea-mark tile server | ✅ | `Sms.Tiles` (separate Aspire resource): `GET /tiles/seamark/{z}/{x}/{y}.mvt` from the `Seamarks` table via `ST_AsMVT`, zoom ≥ 8, memory cache + ETag; admin import of OpenSeaMap data per bounding box (Overpass with mirror fallback) or Overpass-JSON upload |
 | CMS | ✅ | Global content pages as a tree (nav + footer); per-ship websites with sub pages (owner-editable, published/draft, slug paths); domains assigned to ships → the site served on that host shows only the ship's pages and latest logbook (`/api/site`); dev preview via `X-Tenant-Host` |
-| Tests | ✅ | 17 domain tests, 48 API/infrastructure tests (incl. an endpoint smoke sweep that calls every registered route as anonymous/member/admin with plausible ids and empty bodies and fails on any 500) (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 42 Angular vitest specs, 7 Playwright e2e tests (`npm run e2e`, needs the AppHost: web fixed on :5173, Mailpit on :8025) |
+| Weather | ✅ | Harbour panel tab + map context menu "Wettervorhersage hier" (current, 48 h hourly, 7 days, waves where a marine model exists); observations stored at live-tracking positions, debounced 1 nm / 15 min per ship (`GET /api/trips/{id}/weather`, track visibility); raster overlay (radar, satellite, wind, temperature, wave height, pressure) picked in a map control, tiles proxied by the API so the provider key never reaches the browser |
+| Tests | ✅ | 17 domain tests, 56 API/infrastructure tests (incl. an endpoint smoke sweep that calls every registered route as anonymous/member/admin with plausible ids and empty bodies and fails on any 500) (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 46 Angular vitest specs, 7 Playwright e2e tests (`npm run e2e`, needs the AppHost: web fixed on :5173, Mailpit on :8025) |
 
 ## Open (follow-ups)
 
@@ -38,6 +39,21 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 - **14 canals, rest**: opening bridges (closed clearance vs. opening times), fairway areas (`seamark:type=fairway` polygons) as geometry source.
 - Europe-wide run of the PBF import (`europe-latest.osm.pbf` ≈ 28 GB): the job streams the file twice and keeps only the matches in memory, so it should fit, but it has only been run on the Schleswig-Holstein extract (15 M objects, 16 s).
 - (done: Playwright e2e smoke – `npm run e2e` in `src/sms-web` against the running AppHost: map + sea marks, register/confirm/login, ship + trip, logbook entry + overview, costs with CSV/PDF, ship website + domain tenant mode.)
+
+## External services (all behind an interface, swap by registration)
+
+No feature code talks to a third party directly; every provider sits behind one C# type in `Sms.Api` and is registered in `Program.cs`, so a different vendor is a new class plus one registration line. Tests register fakes through `ConfigureTestServices`.
+
+| Service | Abstraction | Current provider | Config |
+|---------|-------------|------------------|--------|
+| Weather data | `IWeatherProvider` (`Weather.cs`) | Open-Meteo free tier (forecast + marine API, 15 min cache per 0.05°) | `Weather:OpenMeteoUrl`, `Weather:OpenMeteoMarineUrl` |
+| Weather map overlay | `IWeatherOverlayProvider` (`Weather.cs`) | Vaisala Xweather raster maps, proxied as `/api/weather/overlay/{layer}/{z}/{x}/{y}.png` | `Xweather:ClientId` / `Xweather:ClientSecret` from **user secrets** (never committed; `dotnet user-secrets set` in `src/Sms.Api`); unconfigured → the map control is hidden |
+| AIS positions | `IAisPositionProvider` (`Ais.cs`) | aisstream.io, MarineTraffic (per-ship choice) | per ship, keys encrypted with Data Protection |
+| Base map tiles/style | `MapStyleEndpoints` (`/api/map/style.json`, fonts, sprites) | OpenFreeMap (remote) or self-hosted Planetiler + Martin | `Map:*` |
+| Sea-mark / harbour / waterway source | `Overpass` (`Overpass.cs`) and `PbfImportJob` | Overpass mirrors, Geofabrik PBF | `Overpass:Endpoints`, `Import:AllowedHosts` |
+| Exchange rates | `EcbRates` (single class, ECB XML) | European Central Bank | — |
+| E-mail | `IEmailSender` (ASP.NET Identity) | SMTP (Mailpit in dev) | `SMTP_ENDPOINT` |
+| Telemetry | OpenTelemetry exporters | SigNoz (OTLP) | Aspire |
 
 ## Decisions made during implementation
 
@@ -62,4 +78,5 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | Sea marks | Stored as `geometry(Point,3857)` with the raw OSM tags (jsonb) and the few attributes the style needs; tiles cut in SQL (`ST_AsMVT`) by a separate minimal-API project so the tile server can scale/cache independently of the API |
 | Tenancy | Resolved per request from `Host`/`X-Forwarded-Host` against `ShipDomains`; no separate Angular build — the SPA asks `/api/site` on start and switches routes (`canMatch`) |
 | Passage cost | `PassageCostFactor` is 1.0: a discount made routes ride cheap OSM fairway lines to their ends (Kiel → Heiligenhafen 38.2 instead of 35.9 nm). Channel preference (penalty on open water next to buoyed fairways) steers instead. Point snapping prefers grid nodes over passage vertices (`routing_meta.grid_nodes`), otherwise a click next to a fairway line routed to the line's end |
+| Weather | Observations are recorded by the ingest endpoints (OsmAnd/OwnTracks/points), not by a background job: the fix is the trigger, and the 1 nm / 15 min debounce is checked against the ship's last observation in the DB. The forecast is cached per 0.05° cell for 15 minutes so a harbour panel, a context-menu request and live tracking near the same spot cost one Open-Meteo call. Xweather tiles are proxied (10-minute memory buckets) because the URL carries the secret |
 | Overpass | Public instances are often overloaded (406/504); `Overpass:Endpoints` lists mirrors tried in order, without the standard resilience handler (its 10 s attempt timeout killed every query) |

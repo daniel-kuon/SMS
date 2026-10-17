@@ -60,7 +60,7 @@ public static class TrackingEndpoints
 
         // --- ingest (token auth, rate limited; no cookies involved)
         var ingest = api.MapGroup("/tracking").WithTags("Tracking").RequireRateLimiting("ingest");
-        ingest.MapMethods("/osmand", ["GET", "POST"], async (HttpRequest http, SmsDbContext db, TrackProcessor processor, CancellationToken ct) =>
+        ingest.MapMethods("/osmand", ["GET", "POST"], async (HttpRequest http, SmsDbContext db, TrackProcessor processor, WeatherRecorder weatherRecorder, CancellationToken ct) =>
         {
             var q = http.Query.ToDictionary(k => k.Key, k => (string?)k.Value.ToString());
             if (http.HasFormContentType) foreach (var f in await http.ReadFormAsync(ct)) q[f.Key] = f.Value.ToString();
@@ -69,22 +69,24 @@ public static class TrackingEndpoints
             if (device is null) return Results.Unauthorized();
             if (TrackParsers.ParseOsmAnd(q) is not { } fix) return Invalid("lat", "lat/lon fehlen.");
             await Store(db, processor, device, [fix], ct);
+            await weatherRecorder.RecordAsync(device.ShipId, device.TripId ?? await TripOfAsync(db, device.ShipId, fix.Time, ct), fix, ct);
             return Results.Ok();
         });
-        ingest.MapPost("/owntracks", async (HttpRequest http, SmsDbContext db, TrackProcessor processor, CancellationToken ct) =>
+        ingest.MapPost("/owntracks", async (HttpRequest http, SmsDbContext db, TrackProcessor processor, WeatherRecorder weatherRecorder, CancellationToken ct) =>
         {
             var token = http.Query["token"].FirstOrDefault() ?? http.Headers["X-Device-Token"].FirstOrDefault() ?? BasicPassword(http);
             var device = await DeviceAsync(db, token, ct);
             if (device is null) return Results.Unauthorized();
             using var doc = await JsonDocument.ParseAsync(http.Body, cancellationToken: ct);
-            if (TrackParsers.ParseOwnTracks(doc.RootElement) is { } fix) await Store(db, processor, device, [fix], ct);
+            if (TrackParsers.ParseOwnTracks(doc.RootElement) is { } fix) { await Store(db, processor, device, [fix], ct); await weatherRecorder.RecordAsync(device.ShipId, device.TripId ?? await TripOfAsync(db, device.ShipId, fix.Time, ct), fix, ct); }
             return Results.Json(Array.Empty<object>()); // OwnTracks expects a JSON array response
         });
-        ingest.MapPost("/points", async (PointsBatch req, SmsDbContext db, TrackProcessor processor, CancellationToken ct) =>
+        ingest.MapPost("/points", async (PointsBatch req, SmsDbContext db, TrackProcessor processor, WeatherRecorder weatherRecorder, CancellationToken ct) =>
         {
             var device = await DeviceAsync(db, req.DeviceToken, ct);
             if (device is null) return Results.Unauthorized();
             var added = await Store(db, processor, device, req.Points.Select(p => new TrackFix(p.T, p.Lat, p.Lon, p.Sog, p.Cog, p.Acc)), ct);
+            if (req.Points.Count > 0) { var latest = req.Points.MaxBy(p => p.T)!; await weatherRecorder.RecordAsync(device.ShipId, device.TripId ?? await TripOfAsync(db, device.ShipId, latest.T, ct), new TrackFix(latest.T, latest.Lat, latest.Lon, latest.Sog, latest.Cog, latest.Acc), ct); }
             return Results.Ok(new { added });
         });
 
@@ -236,6 +238,13 @@ public static class TrackingEndpoints
         if (string.IsNullOrWhiteSpace(token)) return null;
         var hash = TrackProcessor.HashToken(token.Trim());
         return await db.TrackingDevices.FirstOrDefaultAsync(d => d.TokenHash == hash && d.Active, ct);
+    }
+
+    /// <summary>Trip the position falls into (same rule as the track processor): an Active/Planned/Completed trip of the ship covering that day.</summary>
+    private static async Task<Guid?> TripOfAsync(SmsDbContext db, Guid shipId, DateTimeOffset at, CancellationToken ct)
+    {
+        var day = DateOnly.FromDateTime(at.UtcDateTime);
+        return await db.Trips.AsNoTracking().Where(t => t.ShipId == shipId && t.Status != TripStatus.Cancelled && t.StartDate <= day && t.EndDate >= day).OrderByDescending(t => t.Status == TripStatus.Active).Select(t => (Guid?)t.Id).FirstOrDefaultAsync(ct);
     }
 
     private static async Task<int> Store(SmsDbContext db, TrackProcessor processor, TrackingDevice device, IEnumerable<TrackFix> fixes, CancellationToken ct)

@@ -20,9 +20,10 @@ import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, NearbyPort, Wifi } from '../../core/models';
 import { bounds, createMap, maplibregl, MlMap } from '../../core/map';
 import { UploadZone } from '../../shared/shared';
+import { loadForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
 
 @Component({
-  imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone, MatListModule, RouterLink],
+  imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone, MatListModule, RouterLink, WeatherCard],
   template: `
     <div class="layout">
       <div #map class="map"></div>
@@ -56,6 +57,9 @@ import { UploadZone } from '../../shared/shared';
                 <tr mat-header-row *matHeaderRowDef="['name','distanceNm','etaHours','route']"></tr>
                 <tr mat-row *matRowDef="let p; columns: ['name','distanceNm','etaHours','route']" (mouseenter)="hovered = p.harbourId; showRoute(p)" (mouseleave)="hovered = null; hideRoute()"></tr>
               </table>
+            </mat-tab>
+            <mat-tab [label]="'weather.title' | translate">
+              <app-weather-card [forecast]="weather()" [error]="weatherError()" />
             </mat-tab>
             <mat-tab [label]="'harbour.ships' | translate">
               @if (visits().length === 0) { <p class="muted">{{ 'harbour.noVisits' | translate }}</p> }
@@ -104,6 +108,8 @@ export class HarbourMapPage {
   harbour = signal<Harbour | null>(null);
   nearby = signal<NearbyPort[]>([]);
   visits = signal<{ shipId: string; name: string; visits: number; lastVisit: string; lastTripId: string | null; lastTripName: string | null }[]>([]);
+  weather = signal<WeatherForecast | null>(null);
+  weatherError = signal<string | null>(null);
   fmt = fmtDate;
   position = (h: HarbourMarker) => formatPosition(h.lat, h.lng);
   skipperGuideUrl = (h: HarbourMarker) => `https://www.skipperguide.de/index.php?search=${encodeURIComponent(h.name)}`;
@@ -165,6 +171,7 @@ export class HarbourMapPage {
       if (this.map) { this.map.easeTo({ center: [h.lng, h.lat] }); this.setHarbourData(); }
       this.api.get<{ ports: NearbyPort[] }>('/api/routing/nearby-ports', { harbour: id, maxNm: 60, limit: 30 }).subscribe(r => this.nearby.set(r.ports));
       this.api.get<ReturnType<HarbourMapPage['visits']>>(`/api/harbours/${id}/visits`).subscribe(v => this.visits.set(v));
+      loadForecast(this.api, `/api/harbours/${id}/weather`, undefined, this.weather, this.weatherError);
     });
   }
 
@@ -208,6 +215,7 @@ export class HarbourMapPage {
     const popup = new maplibregl.Popup({ closeButton: false }).setLngLat(e.lngLat);
     const mk = (label: string, fn: () => void) => { const b = document.createElement('button'); b.className = 'mdc-button'; b.style.display = 'block'; b.textContent = label; b.onclick = () => { popup.remove(); fn(); }; div.appendChild(b); };
     mk('Nächste Häfen von hier', () => this.nearbyFrom(e.lngLat.lat, e.lngLat.lng));
+    mk('Wettervorhersage hier', () => this.dialog.open(WeatherDialog, { data: { lat: e.lngLat.lat, lng: e.lngLat.lng }, width: '560px' }));
     if (this.auth.me()) mk('Neuer Hafen', () => this.edit(null, e.lngLat.lat, e.lngLat.lng));
     popup.setDOMContent(div).addTo(map);
   }
@@ -216,6 +224,7 @@ export class HarbourMapPage {
     this.api.get<{ ports: NearbyPort[] }>('/api/routing/nearby-ports', { lat, lng, maxNm: 60, limit: 30 }).subscribe(r => {
       this.harbour.set({ id: '', name: `${lat.toFixed(3)}, ${lng.toFixed(3)}`, lat, lng, category: null, country: null, website: null, description: null, phone: null, vhfChannel: null, facilities: {}, source: 'User', osmType: null, osmId: null, wifis: [], reviews: [], averageRating: null, photoUrls: [] });
       this.nearby.set(r.ports);
+      loadForecast(this.api, '/api/weather', { lat, lng }, this.weather, this.weatherError);
     });
   }
 

@@ -31,8 +31,34 @@ export async function createMap(container: HTMLElement, options: Partial<MapOpti
   map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: cfg.attribution }));
   await new Promise<void>(res => (map.loaded() ? res() : map.once('load', () => res())));
   addSeamarkOverlay(map, cfg.seamarkTilesUrl);
+  addWeatherOverlayControl(map);
   (window as unknown as { smsMap?: MlMap }).smsMap = map; // debugging/e2e hook: the current map instance
   return map;
+}
+
+/** Weather raster layers (rain radar, wind, …) proxied by the API; the user picks one in a small control, none by default. */
+export interface OverlayLayer { id: string; name: string; attribution: string; }
+export function setWeatherOverlay(map: MlMap, layer: OverlayLayer | null): void {
+  if (map.getLayer('weather-overlay')) map.removeLayer('weather-overlay');
+  if (map.getSource('weather-overlay')) map.removeSource('weather-overlay');
+  if (!layer) return;
+  map.addSource('weather-overlay', { type: 'raster', tiles: [`${location.origin}/api/weather/overlay/${layer.id}/{z}/{x}/{y}.png`], tileSize: 256, maxzoom: 12, attribution: layer.attribution });
+  const before = map.getLayer('seamark-points') ? 'seamark-points' : undefined;
+  map.addLayer({ id: 'weather-overlay', type: 'raster', source: 'weather-overlay', paint: { 'raster-opacity': 0.65 } }, before);
+}
+export function addWeatherOverlayControl(map: MlMap): void {
+  fetch('/api/weather/overlay/layers').then(r => r.json() as Promise<{ configured: boolean; layers: OverlayLayer[] }>).then(cfg => {
+    if (!cfg.configured || !cfg.layers.length) return;
+    const select = document.createElement('select');
+    select.className = 'weather-overlay-select'; select.title = 'Wetter-Overlay'; select.setAttribute('aria-label', 'Wetter-Overlay');
+    const none = document.createElement('option'); none.value = ''; none.textContent = '☁ Wetter: aus'; select.appendChild(none);
+    for (const l of cfg.layers) { const o = document.createElement('option'); o.value = l.id; o.textContent = l.name; select.appendChild(o); }
+    select.onchange = () => setWeatherOverlay(map, cfg.layers.find(l => l.id === select.value) ?? null);
+    map.addControl({
+      onAdd: () => { const div = document.createElement('div'); div.className = 'maplibregl-ctrl maplibregl-ctrl-group'; div.appendChild(select); return div; },
+      onRemove: () => { select.parentElement?.remove(); },
+    }, 'top-right');
+  }).catch(() => { /* no overlay without the API */ });
 }
 
 /** OpenSeaMap-like rendering of the seamark vector layer (buoys, beacons, lights, names). */

@@ -2230,6 +2230,74 @@ namespace Sms.Infrastructure.Migrations
                     b.ToTable("Profiles");
                 });
 
+            modelBuilder.Entity("Sms.Domain.WeatherObservation", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int?>("CloudCover")
+                        .HasColumnType("integer");
+
+                    b.Property<double?>("GustKn")
+                        .HasColumnType("double precision");
+
+                    b.Property<Point>("Location")
+                        .IsRequired()
+                        .HasColumnType("geography (point, 4326)");
+
+                    b.Property<double?>("PrecipitationMm")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("PressureHpa")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<Guid>("ShipId")
+                        .HasColumnType("uuid");
+
+                    b.Property<double?>("TemperatureC")
+                        .HasColumnType("double precision");
+
+                    b.Property<DateTimeOffset>("Time")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("TripId")
+                        .HasColumnType("uuid");
+
+                    b.Property<double?>("WaveDirDeg")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("WaveHeightM")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("WavePeriodS")
+                        .HasColumnType("double precision");
+
+                    b.Property<int?>("WeatherCode")
+                        .HasColumnType("integer");
+
+                    b.Property<double?>("WindDirDeg")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("WindKn")
+                        .HasColumnType("double precision");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ShipId", "Time");
+
+                    b.HasIndex("TripId", "Time");
+
+                    b.ToTable("WeatherObservations");
+                });
+
             modelBuilder.Entity("Sms.Infrastructure.ApplicationUser", b =>
                 {
                     b.Property<Guid>("Id")

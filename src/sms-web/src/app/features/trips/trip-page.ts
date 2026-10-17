@@ -11,6 +11,7 @@ import { TranslatePipe } from '@ngx-translate/core';
 import type { GeoJSONSource, MapLayerMouseEvent } from 'maplibre-gl';
 import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
 import { TrackPath } from '../../core/track-playback';
+import { fmtObservation, WeatherDialog, WeatherObservation } from '../../core/weather';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Day, Leg, Media, Trip } from '../../core/models';
 import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, UploadZone } from '../../shared/shared';
@@ -57,6 +58,7 @@ const DAY_COLORS = ['#e53935', '#8e24aa', '#3949ab', '#039be5', '#00897b', '#7cb
                 <mat-list>@for (l of o.legs; track l.id; let i = $index) {
                   <a mat-list-item [routerLink]="['/logbook', l.id]" [class.playing-leg]="playing() && playLeg() === i" (mouseenter)="highlight(i)" (mouseleave)="highlight(-1)"><span matListItemIcon class="dot" [style.background]="color(i)"></span><span matListItemTitle>{{ l.from }} → {{ l.to }}</span><span matListItemLine>{{ fmt(l.day) }} · {{ l.distanceNm | number:'1.0-1' }} sm</span></a> }</mat-list>
                 @if (position(); as pos) { <p class="muted"><mat-icon inline>my_location</mat-icon> {{ 'tracking.lastPosition' | translate }} {{ fmtTime(pos.time) }} @if (pos.sogKn) { · {{ pos.sogKn | number:'1.0-1' }} kn } @if (pos.delayed) { · {{ 'tracking.delayed' | translate }} }</p> }
+                @if (lastWeather(); as w) { <p class="muted"><mat-icon inline>air</mat-icon> {{ 'weather.lastObservation' | translate }} {{ fmtObservation(w) }}</p> }
                 @if (suggestions().length) { <h4>{{ 'tracking.suggestions' | translate }}</h4>
                   @for (s of suggestions(); track s.departedAt) { <div class="row suggestion"><span>{{ fmt(s.day) }}: {{ s.startHarbourName ?? '?' }} → {{ s.endHarbourName ?? '?' }} · {{ s.sailedDistanceNm }} sm</span><button mat-stroked-button (click)="adopt(t, s)">{{ 'tracking.adopt' | translate }}</button></div> } }
                 @if (t.isCrew) { <div class="import"><label>{{ 'tracking.import' | translate }} <input type="file" accept=".gpx,.kml,.nmea,.txt,.log" multiple (change)="importTrack(t, $event)" /></label> @if (importResult()) { <span class="muted">{{ importResult() }}</span> }</div> }
@@ -136,6 +138,8 @@ export class TripPage {
   trip = signal<Trip | null>(null); days = signal<Day[]>([]); legs = signal<Leg[]>([]); allPhotos = signal<Media[]>([]);
   suggestions = signal<{ departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number; day: string }[]>([]);
   position = signal<{ time: string; lat: number; lng: number; sogKn: number | null; cogDeg: number | null; delayed: boolean } | null>(null);
+  lastWeather = signal<WeatherObservation | null>(null);
+  fmtObservation = fmtObservation;
   importResult = signal('');
   overview = signal<{ stats: { distanceNm: number; underwayHours: number; engineHours: number; harbours: number; nights: number; photos: number; posts: number; costsTotal: number | null }; legs: { id: string; day: string; from: string; to: string; coordinates: number[][]; distanceNm: number; source: string }[]; stops: { name: string; lat: number; lng: number; nights: number }[]; items: { type: string; id: string; lat: number; lng: number; thumbUrl: string | null; title: string | null }[]; attribution: string } | null>(null);
   tabIndex = signal(0);
@@ -191,6 +195,7 @@ export class TripPage {
     this.api.get<Leg[]>(`/api/trips/${id}/legs`).subscribe(l => this.legs.set(l));
     this.api.get<NonNullable<ReturnType<TripPage['overview']>>>(`/api/trips/${id}/overview`).subscribe(o => { this.overview.set(o); setTimeout(() => this.drawMap(), 50); });
     this.api.get<NonNullable<ReturnType<TripPage['position']>>>(`/api/trips/${id}/position`).subscribe(p => this.position.set(p ?? null));
+    this.api.get<WeatherObservation[]>(`/api/trips/${id}/weather`).subscribe(w => this.lastWeather.set(w.at(-1) ?? null));
   }
 
   private async drawMap(): Promise<void> {
@@ -209,6 +214,7 @@ export class TripPage {
       map.addLayer({ id: 'stop-labels', type: 'symbol', source: 'stops', layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-anchor': 'left', 'text-offset': [0.8, 0], 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#1b4d7a', 'text-halo-color': '#fff', 'text-halo-width': 1.5 } });
       map.on('mouseenter', 'legs-solid', e => this.showLegTooltip(e)); map.on('mouseenter', 'legs-dashed', e => this.showLegTooltip(e));
       map.on('mouseleave', 'legs-solid', () => this.legPopup?.remove()); map.on('mouseleave', 'legs-dashed', () => this.legPopup?.remove());
+      map.on('contextmenu', e => this.dialog.open(WeatherDialog, { data: { lat: e.lngLat.lat, lng: e.lngLat.lng }, width: '560px' }));
     }
     const map = this.map;
     this.stopPlayback(); this.path.set(new TrackPath(o.legs)); this.progress.set(0); this.playLeg.set(-1); this.boat?.remove(); this.boat = undefined;

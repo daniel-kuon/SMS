@@ -100,7 +100,7 @@ public class EndpointSmokeTests(ApiFixture f) : IClassFixture<ApiFixture>
         var segments = template.Split('/');
         for (var i = 0; i < segments.Length; i++)
         {
-            var m = Regex.Match(segments[i], @"^\{\*?(\w+)(:[^}]*)?\}(\.ics)?$");
+            var m = Regex.Match(segments[i], @"^\{\*?(\w+)(:[^}]*)?\}(\.\w+)?$");
             if (!m.Success) continue;
             var name = m.Groups[1].Value; var suffix = m.Groups[3].Value;
             string? value = name switch
@@ -109,7 +109,7 @@ public class EndpointSmokeTests(ApiFixture f) : IClassFixture<ApiFixture>
                 "targetType" => "posts", "variant" => "thumb", "kind" => "users", "action" => template.Contains("costs") ? "lock" : "accept",
                 "token" => "no-such-token", "slug" => "smoke", "path" => "ueber-uns", "lang" => "de",
                 "z" => "12", "x" => "2163", "y" => "1307", "targetId" => ids["targetId"],
-                "fontstack" => "Noto Sans Regular", "range" => "0-255", "file" => "ofm.json",
+                "fontstack" => "Noto Sans Regular", "range" => "0-255", "file" => "ofm.json", "layer" => "radar",
                 _ => ids.GetValueOrDefault(name),
             };
             if (value is null) return null;

@@ -371,6 +371,28 @@ public class RoutingCorrection : Entity
     public double? ClearanceM { get; set; }
 }
 
+/// <summary>Weather at a received live position (one per ship per 15 min / 1 nm), from the configured IWeatherProvider.</summary>
+public class WeatherObservation
+{
+    public long Id { get; set; }
+    public Guid ShipId { get; set; }
+    public Guid? TripId { get; set; }
+    public DateTimeOffset Time { get; set; }
+    public Point Location { get; set; } = null!;
+    public string Provider { get; set; } = "";
+    public double? TemperatureC { get; set; }
+    public double? WindKn { get; set; }
+    public double? WindDirDeg { get; set; }
+    public double? GustKn { get; set; }
+    public double? PressureHpa { get; set; }
+    public double? PrecipitationMm { get; set; }
+    public int? WeatherCode { get; set; }
+    public int? CloudCover { get; set; }
+    public double? WaveHeightM { get; set; }
+    public double? WaveDirDeg { get; set; }
+    public double? WavePeriodS { get; set; }
+}
+
 /// <summary>Spec 12 §12.1 C: AIS provider settings per ship; the API key is stored data-protection encrypted and never returned.</summary>
 public class ShipAisConfig
 {
