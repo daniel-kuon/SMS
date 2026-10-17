@@ -17,7 +17,8 @@ public enum LocationSource { Manual, Exif, Device, Track, Harbour }
 public enum HarbourSource { Osm, User, Legacy }
 public enum TaskScope { Trip, Ship }
 public enum ProfileVisibility { Public, Registered }
-public enum CorrectionKind { Block, Passage, Bridge, Lock }
+/// <summary>OpeningBridge: a movable bridge – no clearance limit, but a waiting-time penalty like a lock (spec 10 canals).</summary>
+public enum CorrectionKind { Block, Passage, Bridge, Lock, OpeningBridge }
 public enum CorrectionSource { Manual, Derived }
 
 /// <summary>16 compass points (spec 08).</summary>

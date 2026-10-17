@@ -26,6 +26,11 @@ public class ObstaclesTests
         // two bridges over one edge: the lower one counts
         var twice = Obstacles.Apply([canal[0]], [(bridge, false, 12.5), (F.CreatePoint(new Coordinate(9.715, 54.30)), false, 8)], 1852);
         Assert.Equal(8, twice[0].ClearanceM);
+        // an opening bridge costs waiting time but limits nothing unless its open clearance is known
+        var opening = Obstacles.Apply([canal[0]], [(bridge, Sms.Domain.CorrectionKind.OpeningBridge, (double?)null)], 1852, 926);
+        Assert.Null(opening[0].ClearanceM); Assert.Equal(canal[0].Cost + 926, opening[0].Cost, 6);
+        var openingLow = Obstacles.Apply([canal[0]], [(bridge, Sms.Domain.CorrectionKind.OpeningBridge, 15.0)], 1852, 926);
+        Assert.Equal(15, openingLow[0].ClearanceM);
     }
 
     [Fact]
@@ -38,15 +43,23 @@ public class ObstaclesTests
               { "type": "node", "id": 3, "lat": 53.90, "lon": 9.14, "tags": { "waterway": "lock_gate", "name": "Schleuse Brunsbüttel" } },
               { "type": "way", "id": 4, "center": { "lat": 54.0, "lon": 9.0 }, "tags": { "lock": "yes" } },
               { "type": "node", "id": 5, "lat": 54.0, "lon": 9.0, "tags": { "seamark:type": "buoy_lateral" } },
-              { "type": "way", "id": 6, "tags": { "waterway": "canal", "CEMT": "Vb" }, "geometry": [ { "lat": 54.0, "lon": 9.0 }, { "lat": 54.1, "lon": 9.1 } ] }
+              { "type": "way", "id": 6, "tags": { "waterway": "canal", "CEMT": "Vb" }, "geometry": [ { "lat": 54.0, "lon": 9.0 }, { "lat": 54.1, "lon": 9.1 } ] },
+              { "type": "way", "id": 7, "center": { "lat": 54.33, "lon": 10.13 }, "tags": { "bridge": "yes", "bridge:movable": "bascule", "seamark:bridge:clearance_height_closed": "5.2", "name": "Hörnbrücke" } },
+              { "type": "node", "id": 8, "lat": 54.47, "lon": 9.86, "tags": { "seamark:type": "bridge", "seamark:bridge:category": "swing", "seamark:bridge:clearance_height": "4", "seamark:bridge:clearance_height_open": "12.5", "seamark:name": "Lindaunisbrücke" } },
+              { "type": "way", "id": 9, "center": { "lat": 54.5, "lon": 9.5 }, "tags": { "bridge": "yes", "bridge:movable": "no" } }
             ] }
             """);
         var obstacles = Waterways.ParseObstacles(doc);
-        Assert.Equal(4, obstacles.Count);
+        Assert.Equal(6, obstacles.Count);
         var bridge = obstacles.Single(o => o.Name == "Rendsburger Hochbrücke");
         Assert.False(bridge.IsLock); Assert.Equal(42, bridge.ClearanceM);
         Assert.Equal(5.5, obstacles.Single(o => o.Lng == 10.14).ClearanceM);
         Assert.Equal(2, obstacles.Count(o => o.IsLock));
+        var hoern = obstacles.Single(o => o.Name == "Hörnbrücke");
+        Assert.True(hoern.Opening); Assert.Null(hoern.ClearanceM); // closed height does not limit a bridge that opens
+        var lindaunis = obstacles.Single(o => o.Name == "Lindaunisbrücke");
+        Assert.True(lindaunis.Opening); Assert.Equal(12.5, lindaunis.ClearanceM);
+        Assert.False(obstacles.Single(o => o.Name == "Rendsburger Hochbrücke").Opening);
         Assert.Null(Waterways.Clearance(new Dictionary<string, string> { ["maxheight"] = "default" }));
         Assert.Equal(3.8, Waterways.Clearance(new Dictionary<string, string> { ["maxheight"] = "3.8" }));
     }

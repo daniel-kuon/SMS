@@ -152,7 +152,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
     public static bool IsHarbour(IReadOnlyDictionary<string, string> t) => t.GetValueOrDefault("leisure") == "marina" || t.GetValueOrDefault("seamark:type") == "harbour" || t.GetValueOrDefault("harbour") == "yes";
     public static bool IsWaterway(IReadOnlyDictionary<string, string> t) => Waterways.IsNavigable(t);
     public static bool IsObstacle(IReadOnlyDictionary<string, string> t) =>
-        t.GetValueOrDefault("seamark:type") is "bridge" or "gate" || (t.ContainsKey("bridge") && t.ContainsKey("seamark:bridge:clearance_height")) || t.GetValueOrDefault("waterway") == "lock_gate" || t.GetValueOrDefault("lock") == "yes";
+        t.GetValueOrDefault("seamark:type") is "bridge" or "gate" || (t.ContainsKey("bridge") && (t.ContainsKey("seamark:bridge:clearance_height") || t.ContainsKey("bridge:movable"))) || t.GetValueOrDefault("waterway") == "lock_gate" || t.GetValueOrDefault("lock") == "yes";
 
     private static Dictionary<string, string> ToDict(OsmSharp.Tags.TagsCollectionBase? tags) => tags is null ? [] : tags.ToDictionary(t => t.Key, t => t.Value);
 

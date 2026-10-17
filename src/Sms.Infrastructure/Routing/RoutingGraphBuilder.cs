@@ -29,6 +29,8 @@ public sealed class RoutingOptions
     public double PassageCostFactor { get; set; } = 1.0; // below 1 makes routes ride cheap passages to their ends (detours); channel preference does the steering
     /// <summary>Extra cost (metres) for passing a lock, roughly the time a mile takes.</summary>
     public double LockPenaltyM { get; set; } = 1852;
+    /// <summary>Extra cost (metres) for an opening bridge: waiting for the next opening, about half a lock.</summary>
+    public double BridgeOpeningPenaltyM { get; set; } = 926;
     /// <summary>Open water within this distance of a derived fairway counts as unmarked/shallow: grid edges there cost ×ChannelPenaltyFactor (0 = off).</summary>
     public double ChannelPreferenceM { get; set; } = 1500;
     /// <summary>Interior passage vertices link to a water node this close, so fairways and canals can be joined along their length (ends use HarbourAccessM).</summary>
@@ -187,9 +189,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 prev = id;
             }
         }
-        var obstacles = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
-            .Select(c => (c.Geometry.Centroid, c.Kind == CorrectionKind.Lock, c.ClearanceM)).ToList();
-        extraEdges = Obstacles.Apply(extraEdges, obstacles, o.LockPenaltyM);
+        var obstacles = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+            .Select(c => (c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+        extraEdges = Obstacles.Apply(extraEdges, obstacles, o.LockPenaltyM, o.BridgeOpeningPenaltyM);
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
             foreach (var n in extraNodes) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, ct); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, ct); }
