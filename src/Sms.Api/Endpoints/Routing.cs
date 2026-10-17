@@ -196,7 +196,7 @@ public static class RoutingEndpoints
     }
 
     /// <summary>Replaces derived passages that lie inside the imported data's extent, keeps manual ones and derived ones elsewhere.</summary>
-    public static async Task<WaterwayImportResult> ImportWaterwaysAsync(JsonDocument doc, SmsDbContext db, Guid? userId, CancellationToken ct)
+    public static async Task<WaterwayImportResult> ImportWaterwaysAsync(JsonDocument doc, SmsDbContext db, Guid? userId, CancellationToken ct, bool replaceExisting = true)
     {
         var ways = Waterways.Parse(doc, Geo.Factory);
         var obstacles = Waterways.ParseObstacles(doc);
@@ -209,7 +209,7 @@ public static class RoutingEndpoints
         }
         var extent = Geo.Factory.ToGeometry(new Envelope(ways.Select(w => w.Line.EnvelopeInternal).Aggregate(new Envelope(), (e, x) => { e.ExpandToInclude(x); return e; })));
         extent.SRID = 4326;
-        var old = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct);
+        var old = replaceExisting ? await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct) : [];
         db.RoutingCorrections.RemoveRange(old);
         foreach (var w in ways)
             db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = userId });

@@ -26,7 +26,7 @@ public sealed class RoutingOptions
     public double HarbourAccessM { get; set; } = 3000;
     public double CoastPenaltyFactor { get; set; } = 0.2;
     /// <summary>Cost multiplier for passage edges (canals, derived fairways): below 1 routes prefer marked channels. Reported distances come from the geometry and are unaffected.</summary>
-    public double PassageCostFactor { get; set; } = 0.8;
+    public double PassageCostFactor { get; set; } = 1.0; // below 1 makes routes ride cheap passages to their ends (detours); channel preference does the steering
     /// <summary>Extra cost (metres) for passing a lock, roughly the time a mile takes.</summary>
     public double LockPenaltyM { get; set; } = 1852;
     /// <summary>Open water within this distance of a derived fairway counts as unmarked/shallow: grid edges there cost ×ChannelPenaltyFactor (0 = off).</summary>
@@ -217,7 +217,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         {
             var sql = $"""
                 INSERT INTO routing_meta (key, value) VALUES ('active_version', '{version}'), ('built_at', '{DateTimeOffset.UtcNow:O}'),
-                  ('region', '{string.Join(',', new[] { o.Region.MinLng, o.Region.MinLat, o.Region.MaxLng, o.Region.MaxLat }.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)))}'), ('nodes', '{nodes}'), ('edges', '{edges}')
+                  ('region', '{string.Join(',', new[] { o.Region.MinLng, o.Region.MinLat, o.Region.MaxLng, o.Region.MaxLat }.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)))}'), ('nodes', '{nodes}'), ('edges', '{edges}'), ('grid_nodes', '{tiler.NodeCount}')
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
                 DELETE FROM routing_edge WHERE graph_version < {version};
                 DELETE FROM routing_node WHERE graph_version < {version};

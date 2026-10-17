@@ -8,6 +8,7 @@ using Sms.Api.Endpoints;
 using Sms.Domain;
 using Sms.Infrastructure;
 using Sms.Infrastructure.Routing;
+using NetTopologySuite.Geometries;
 
 namespace Sms.Api;
 
@@ -103,6 +104,24 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         void Add(string key, int v) => totals[key] = totals.GetValueOrDefault(key) + v;
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+        // derived waterways/bridges/locks inside the extract's extent are replaced once, before the batches (a per-batch
+        // replacement would delete what earlier batches just added)
+        if (req.Waterways)
+        {
+            var env = new Envelope();
+            foreach (var el in elements)
+            {
+                var json = JsonSerializer.SerializeToElement(el);
+                if (json.TryGetProperty("geometry", out var g)) foreach (var c in g.EnumerateArray()) env.ExpandToInclude(c.GetProperty("lon").GetDouble(), c.GetProperty("lat").GetDouble());
+                else if (json.TryGetProperty("lat", out var la)) env.ExpandToInclude(json.GetProperty("lon").GetDouble(), la.GetDouble());
+            }
+            if (!env.IsNull)
+            {
+                var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
+                var removed = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ExecuteDeleteAsync(ct);
+                Add("derivedReplaced", removed);
+            }
+        }
         const int batch = 4000;
         for (var i = 0; i < elements.Count; i += batch)
         {
@@ -111,7 +130,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (req.Harbours) { var r = await HarbourEndpoints.ImportAsync(Filter(doc, IsHarbour), db, userId, ct); Add("harboursCreated", r.created); Add("harboursUpdated", r.updated); }
             if (req.Waterways)
             {
-                var r = await RoutingEndpoints.ImportWaterwaysAsync(Filter(doc, t => IsWaterway(t) || IsObstacle(t)), db, userId, ct);
+                var r = await RoutingEndpoints.ImportWaterwaysAsync(Filter(doc, t => IsWaterway(t) || IsObstacle(t)), db, userId, ct, replaceExisting: false);
                 Add("waterways", r.Created); Add("bridges", r.Bridges); Add("locks", r.Locks);
             }
             db.ChangeTracker.Clear();

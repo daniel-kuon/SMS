@@ -151,11 +151,13 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     private async Task<long?> AccessNodeAsync(Guid harbourId, int version, CancellationToken ct) =>
         await db.Database.SqlQueryRaw<long>("SELECT node_id AS \"Value\" FROM routing_harbour_access WHERE graph_version = {0} AND harbour_id = {1}", version, harbourId).FirstOrDefaultAsync(ct) is var id && id != 0 ? id : null;
 
+    /// <summary>Nearest node within 2 km; grid (water-cell) nodes win over passage vertices, which sit on a line and would send the route to the line's end.</summary>
     private async Task<long?> SnapAsync(Point p, int version, CancellationToken ct)
     {
         var row = await db.Database.SqlQueryRaw<SnapRow>("""
             SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
-            FROM routing_node WHERE graph_version = {0} ORDER BY geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
+            FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - 0.035, {2} - 0.02, {1} + 0.035, {2} + 0.02, 4326)
+            ORDER BY CASE WHEN id <= (SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes') THEN 0 ELSE 1 END, geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
             """, version, p.X, p.Y).FirstOrDefaultAsync(ct);
         return row is not null && row.Metres <= 2000 ? row.Id : null;
     }
