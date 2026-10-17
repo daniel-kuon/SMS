@@ -21,16 +21,18 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | 9 Social | ✅ | Comments/likes on posts, photos, logbook entries, trips, reviews (target visibility enforced), follows, personal feed, public explore, in-app notifications (+ e-mail for invitations/comments/settlements), reports, admin hide/dismiss, user blocks |
 | 10 Tasks / pages | ✅ | Trip and ship task trees, admin-editable content pages in footer |
 | 11 Reviews / stats | ✅ | Harbour ratings, ship statistics |
+| 14 Canals / rivers (step 1) | ✅ (centrelines) | Navigable OSM waterways (`waterway=canal/river/fairway` with CEMT/boat/motorboat/ship tags) imported per bounding box (Overpass mirrors or JSON upload) as *derived* passages; ways merged end-to-end, junctions share graph nodes; inland harbours get access via passage nodes; reviewable/deactivatable in the routing corrections. Buoy-derived fairways and channel preference (§10.5 steps 2–3) not done |
 | Vector maps | ✅ | MapLibre GL everywhere (harbour map, trip overview); base style OpenFreeMap *Liberty* (vector, no API key); own sea-mark overlay from `Sms.Tiles` |
 | Sea-mark tile server | ✅ | `Sms.Tiles` (separate Aspire resource): `GET /tiles/seamark/{z}/{x}/{y}.mvt` from the `Seamarks` table via `ST_AsMVT`, zoom ≥ 8, memory cache + ETag; admin import of OpenSeaMap data per bounding box (Overpass with mirror fallback) or Overpass-JSON upload |
 | CMS | ✅ | Global content pages as a tree (nav + footer); per-ship websites with sub pages (owner-editable, published/draft, slug paths); domains assigned to ships → the site served on that host shows only the ship's pages and latest logbook (`/api/site`); dev preview via `X-Tenant-Host` |
-| Tests | ✅ | 17 domain tests, 29 API/infrastructure tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 33 Angular vitest specs, 7 Playwright e2e tests (`npm run e2e`, needs the AppHost: web fixed on :5173, Mailpit on :8025) |
+| Tests | ✅ | 17 domain tests, 33 API/infrastructure tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 33 Angular vitest specs, 7 Playwright e2e tests (`npm run e2e`, needs the AppHost: web fixed on :5173, Mailpit on :8025) |
 
 ## Open (follow-ups)
 
 - **AIS provider** (`12` §12.1 C): `IAisPositionProvider` + MarineTraffic/aisstream polling; the track pipeline already accepts `Ais` points.
 - **Europe-wide routing build**: run with `Routing:Region` = −32…45 / 27…72; the build is tile-wise with bounded memory (see decisions), only time (hours) and PostGIS disk are needed. Untested at that scale so far.
-- **13 legacy import** (needs the old SQL Server database), **14 canals**.
+- **13 legacy import** (needs the old SQL Server database).
+- **14 canals, steps 2–3**: fairway lines from lateral buoys/beacons (pairing heuristic), lower cost on marked channels / higher on unmarked shallow water, locks and bridge clearances.
 - Europe-wide OSM harbour **and sea-mark** import (osmium pipeline); the Overpass import works for bounding boxes (≈30 s for Kiel Bay, 5 000 marks).
 - Self-host the base map (OpenFreeMap tiles are a free public service; `Map:StyleUrl` points to any MapLibre style, e.g. a Planetiler/Martin stack next to `Sms.Tiles`).
 - (done: Playwright e2e smoke – `npm run e2e` in `src/sms-web` against the running AppHost: map + sea marks, register/confirm/login, ship + trip, logbook entry + overview, costs with CSV/PDF, ship website + domain tenant mode.)

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NetTopologySuite.Geometries;
 using Sms.Domain;
@@ -83,10 +84,11 @@ public static class RoutingEndpoints
             return Results.Ok(new { distanceNm = r.DistanceNm, straightLineNm = r.StraightLineNm, geometry = r.Geometry, graphVersion = r.GraphVersion, method = r.Method, disclaimer = Disclaimer, attribution = Attribution });
         });
 
-        g.MapGet("/status", async (SeaRouter router, RoutingGraphBuilder builder, CancellationToken ct) =>
+        g.MapGet("/status", async (SeaRouter router, RoutingGraphBuilder builder, SmsDbContext db, CancellationToken ct) =>
         {
             var s = await router.StatusAsync(ct);
-            return Results.Ok(new { method = s.ActiveVersion > 0 ? "sea-graph" : "straight-line", graphVersion = s.ActiveVersion, s.BuiltAt, s.Region, s.Nodes, s.Edges, building = builder.IsRunning, progress = builder.Progress, options = builder.Options });
+            var waterways = await db.RoutingCorrections.CountAsync(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Active, ct);
+            return Results.Ok(new { method = s.ActiveVersion > 0 ? "sea-graph" : "straight-line", graphVersion = s.ActiveVersion, s.BuiltAt, s.Region, s.Nodes, s.Edges, waterways, building = builder.IsRunning, progress = builder.Progress, options = builder.Options });
         });
 
         var admin = api.MapGroup("/admin/routing").WithTags("Admin").RequireAuthorization();
@@ -120,6 +122,30 @@ public static class RoutingEndpoints
         });
         admin.MapDelete("/corrections/{id:guid}", async (Guid id, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
             await current.IsAdminAsync(ct) ? (await db.RoutingCorrections.Where(x => x.Id == id).ExecuteDeleteAsync(ct) > 0 ? Results.NoContent() : Results.NotFound()) : Results.Forbid());
+        // Spec 10 §10.5 step 1: OSM waterway centrelines for a bounding box become derived passages (reviewable in the corrections list).
+        admin.MapPost("/import-waterways", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (bbox.Split(',').Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
+            using var doc = await Overpass.QueryAsync(http, cfg, string.Format(Waterways.OverpassQuery, bbox), ct);
+            if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen oder eine Overpass-JSON-Datei hochladen.");
+            return Results.Ok(await ImportWaterwaysAsync(doc, db, current, ct));
+        });
+        admin.MapPost("/import-waterways-file", async (HttpRequest http, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var form = await http.ReadFormAsync(ct);
+            var file = form.Files.FirstOrDefault();
+            if (file is null) return Invalid("file", "Overpass-JSON-Datei fehlt.");
+            await using var stream = file.OpenReadStream();
+            JsonDocument doc;
+            try { doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct); }
+            catch (JsonException) { return Invalid("file", "Kein Overpass-JSON (Datei ist kein JSON)."); }
+            using var owned = doc;
+            if (!doc.RootElement.TryGetProperty("elements", out _)) return Invalid("file", "Kein Overpass-JSON (elements fehlt).");
+            return Results.Ok(await ImportWaterwaysAsync(doc, db, current, ct));
+        });
+
         admin.MapGet("/unreachable-harbours", async (CurrentUser current, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
@@ -130,6 +156,28 @@ public static class RoutingEndpoints
             if (region is { Length: 4 }) { var env = Geo.Factory.ToGeometry(new Envelope(region[0], region[2], region[1], region[3])); q = q.Where(h => h.Location.Intersects(env)); }
             return Results.Ok(await q.Select(h => new { h.Id, h.Name }).ToListAsync(ct));
         });
+    }
+
+    /// <summary>Replaces derived passages that lie inside the imported data's extent, keeps manual ones and derived ones elsewhere.</summary>
+    private static async Task<object> ImportWaterwaysAsync(JsonDocument doc, SmsDbContext db, CurrentUser current, CancellationToken ct)
+    {
+        var ways = Waterways.Parse(doc, Geo.Factory);
+        if (ways.Count == 0) return new { created = 0, removed = 0, lines = 0 };
+        var extent = Geo.Factory.ToGeometry(new Envelope(ways.Select(w => w.Line.EnvelopeInternal).Aggregate(new Envelope(), (e, x) => { e.ExpandToInclude(x); return e; })));
+        extent.SRID = 4326;
+        var old = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct);
+        db.RoutingCorrections.RemoveRange(old);
+        foreach (var w in ways)
+            db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = current.Id });
+        await db.SaveChangesAsync(ct);
+        return new { created = ways.Count, removed = old.Count, lines = ways.Select(w => new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }) };
+    }
+
+    private static double LengthNm(LineString l)
+    {
+        double m = 0;
+        for (var i = 1; i < l.NumPoints; i++) m += RoutingGraphBuilder.Haversine(l.GetCoordinateN(i - 1).Y, l.GetCoordinateN(i - 1).X, l.GetCoordinateN(i).Y, l.GetCoordinateN(i).X);
+        return m / 1852;
     }
 
     private static bool TryParsePoint(string? s, out Point p)

@@ -1,0 +1,18 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API (fixture)",
+  "elements": [
+    { "type": "way", "id": 1, "tags": { "waterway": "canal", "name": "Nord-Ostsee-Kanal", "CEMT": "Vb", "motorboat": "yes" },
+      "geometry": [ { "lat": 54.3700, "lon": 10.1400 }, { "lat": 54.3650, "lon": 10.1000 }, { "lat": 54.3600, "lon": 10.0500 } ] },
+    { "type": "way", "id": 2, "tags": { "waterway": "canal", "name": "Nord-Ostsee-Kanal", "CEMT": "Vb" },
+      "geometry": [ { "lat": 54.3600, "lon": 10.0500 }, { "lat": 54.3400, "lon": 9.9800 }, { "lat": 54.3000, "lon": 9.7000 } ] },
+    { "type": "way", "id": 3, "tags": { "waterway": "river", "name": "Eider", "boat": "yes" },
+      "geometry": [ { "lat": 54.3000, "lon": 9.7000 }, { "lat": 54.3200, "lon": 9.6000 } ] },
+    { "type": "way", "id": 4, "tags": { "waterway": "river", "name": "Bach", "boat": "no" },
+      "geometry": [ { "lat": 54.3800, "lon": 10.2000 }, { "lat": 54.3900, "lon": 10.2200 } ] },
+    { "type": "way", "id": 5, "tags": { "waterway": "stream" },
+      "geometry": [ { "lat": 54.4000, "lon": 10.2000 }, { "lat": 54.4100, "lon": 10.2200 } ] },
+    { "type": "way", "id": 6, "tags": { "waterway": "river", "name": "Unbekannt" },
+      "geometry": [ { "lat": 54.4200, "lon": 10.2000 }, { "lat": 54.4300, "lon": 10.2200 } ] }
+  ]
+}

@@ -12,7 +12,7 @@ import { Api, errorMessage } from '../../core/api';
 import { ContentPage } from '../../core/models';
 import { tenantPreview } from '../../core/site';
 
-interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
+interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; waterways: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
 
 @Component({
   imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe],
@@ -55,6 +55,11 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
           <p>{{ 'admin.routingStatus' | translate }}: <b>{{ r.method }}</b> · Version {{ r.graphVersion }} · {{ r.nodes }} Knoten / {{ r.edges }} Kanten @if (r.builtAt) { · {{ r.builtAt }} } @if (r.region) { · Region {{ r.region }} }</p>
           <p class="muted">{{ 'admin.routingHint' | translate }}</p>
           <button mat-flat-button (click)="rebuild()" [disabled]="r.building">{{ (r.building ? 'admin.routingBuilding' : 'admin.routingRebuild') | translate }}</button>
+          <h4>{{ 'admin.waterways' | translate }} <span class="muted">({{ r.waterways }})</span></h4>
+          <p class="muted">{{ 'admin.waterwaysHint' | translate }}</p>
+          <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="waterwayBbox" /></mat-form-field>
+            <button mat-stroked-button (click)="importWaterways()" [disabled]="busy()">{{ 'admin.import' | translate }}</button>
+            <label class="muted">{{ 'admin.orFile' | translate }} <input type="file" accept=".json" (change)="importWaterwaysFile($event)" /></label></div>
           <ul class="progress">@for (p of r.progress.slice(-8); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul>
         }
       </mat-card-content></mat-card>
@@ -100,6 +105,18 @@ export class AdminPage {
   resolve(r: { id: string }, hide: boolean): void { this.api.post(`/api/admin/reports/${r.id}/resolve`, { hide, resolution: hide ? 'hidden' : 'dismissed' }).subscribe(() => this.loadReports()); }
   loadRouting(): void { this.api.get<RoutingStatus>('/api/routing/status').subscribe(r => this.routing.set(r)); }
   rebuild(): void { this.api.post('/api/admin/routing/rebuild', {}).subscribe({ next: () => setTimeout(() => this.loadRouting(), 500), error: e => this.result.set(errorMessage(e)) }); }
+  waterwayBbox = '54.2,9.1,54.5,10.2';
+  importWaterways(): void {
+    this.busy.set(true);
+    this.api.post<{ created: number; removed: number }>(`/api/admin/routing/import-waterways?bbox=${encodeURIComponent(this.waterwayBbox)}`, {}).subscribe({
+      next: r => { this.busy.set(false); this.result.set(`${r.created} Wasserstraßen importiert (${r.removed} ersetzt) – Routing-Graph neu bauen, damit sie wirken.`); this.loadRouting(); },
+      error: e => { this.busy.set(false); this.result.set(errorMessage(e)); } });
+  }
+  importWaterwaysFile(e: Event): void {
+    const file = (e.target as HTMLInputElement).files?.[0]; if (!file) return;
+    this.api.upload<{ created: number; removed: number }>('/api/admin/routing/import-waterways-file', [file]).subscribe({
+      next: r => { this.result.set(`${r.created} Wasserstraßen importiert (${r.removed} ersetzt) – Routing-Graph neu bauen, damit sie wirken.`); this.loadRouting(); }, error: err => this.result.set(errorMessage(err)) });
+  }
   importOsm(): void {
     this.busy.set(true); this.result.set('');
     this.api.post<{ created: number; updated: number; skipped: number }>(`/api/admin/harbours/import-osm?bbox=${encodeURIComponent(this.bbox)}`, {}).subscribe({

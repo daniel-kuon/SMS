@@ -144,9 +144,19 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             }, ct);
         Report("harbours", $"{access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
 
-        // 4. passages (manual lines) as extra edge chains hooked into the nearest water node
+        // 4. passages (manual lines and imported waterways, spec 10 §10.5) as edge chains; ends hook into the nearest
+        //    water node, vertices at the same coordinate are one node so canal networks connect at junctions
         var nextId = tiler.NextId;
         var extraNodes = new List<GraphNode>(); var extraEdges = new List<GraphEdge>();
+        var shared = new Dictionary<(long, long), long>();
+        long NodeAt(Coordinate p)
+        {
+            var key = ((long)Math.Round(p.X * 1e6), (long)Math.Round(p.Y * 1e6));
+            if (shared.TryGetValue(key, out var existing)) return existing;
+            var id = nextId++;
+            shared[key] = id; extraNodes.Add(new GraphNode(id, p.X, p.Y, false));
+            return id;
+        }
         foreach (var passage in await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => c.Geometry).ToListAsync(ct))
         {
             if (passage is not LineString ls) continue;
@@ -154,9 +164,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             for (var i = 0; i < ls.NumPoints; i++)
             {
                 var p = ls.GetCoordinateN(i);
-                var id = nextId++;
-                extraNodes.Add(new GraphNode(id, p.X, p.Y, false));
-                if (prev is { } pv) { var q = ls.GetCoordinateN(i - 1); extraEdges.Add(new GraphEdge(pv, id, Haversine(q.Y, q.X, p.Y, p.X), Geo.Factory.CreateLineString([q, p]))); }
+                var id = NodeAt(p);
+                if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); extraEdges.Add(new GraphEdge(pv, id, Haversine(q.Y, q.X, p.Y, p.X), Geo.Factory.CreateLineString([q, p]))); }
                 if (i == 0 || i == ls.NumPoints - 1)
                 {
                     var near = await NearestNodeAsync(conn, version, p.X, p.Y, o.HarbourAccessM, ct);
@@ -171,6 +180,15 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.CompleteAsync(ct);
         }
         await WriteEdgesAsync(conn, version, extraEdges, ct);
+        // inland harbours: no water cell nearby (rivers/canals count as land) but maybe a passage node
+        if (extraNodes.Count > 0)
+        {
+            var reached = access.Select(a => a.harbourId).ToHashSet();
+            foreach (var h in harbours.Where(h => !reached.Contains(h.Id)))
+                if (await NearestNodeAsync(conn, version, h.Location.X, h.Location.Y, o.HarbourAccessM, ct) is { } n)
+                    access.Add((h.Id, n.Id, Haversine(h.Location.Y, h.Location.X, n.Y, n.X)));
+            Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
+        }
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_harbour_access (graph_version, harbour_id, node_id, distance_m) FROM STDIN (FORMAT BINARY)", ct))
         {
             foreach (var a in access) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(a.harbourId, NpgsqlDbType.Uuid, ct); await w.WriteAsync(a.nodeId, NpgsqlDbType.Bigint, ct); await w.WriteAsync(a.distance, NpgsqlDbType.Double, ct); }
