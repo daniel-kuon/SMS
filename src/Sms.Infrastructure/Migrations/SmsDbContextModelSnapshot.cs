@@ -1000,6 +1000,60 @@ namespace Sms.Infrastructure.Migrations
                     b.ToTable("PlannedLegs");
                 });
 
+            modelBuilder.Entity("Sms.Domain.Poi", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Class")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<DateTimeOffset>("ImportedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<Point>("Location")
+                        .IsRequired()
+                        .HasColumnType("geometry(Point,3857)");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<long>("OsmId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OsmType")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("TagsJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Location");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Location"), "gist");
+
+                    b.HasIndex("OsmType", "OsmId")
+                        .IsUnique();
+
+                    b.ToTable("Pois");
+                });
+
             modelBuilder.Entity("Sms.Domain.Post", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1164,6 +1218,9 @@ namespace Sms.Infrastructure.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
 
+                    b.Property<LineString>("Line")
+                        .HasColumnType("geometry(LineString,3857)");
+
                     b.Property<Point>("Location")
                         .IsRequired()
                         .HasColumnType("geometry(Point,3857)");
@@ -1180,6 +1237,10 @@ namespace Sms.Infrastructure.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
 
+                    b.Property<string>("Sectors")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)");
+
                     b.Property<string>("Shape")
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
@@ -1195,6 +1256,10 @@ namespace Sms.Infrastructure.Migrations
                         .HasColumnType("character varying(4000)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Line");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Line"), "gist");
 
                     b.HasIndex("Location");
 

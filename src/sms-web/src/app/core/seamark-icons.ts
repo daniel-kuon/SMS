@@ -6,10 +6,13 @@ import type { ExpressionSpecification, Map as MlMap } from 'maplibre-gl';
  * Icons are composed on demand when MapLibre reports a missing image id (styleimagemissing).
  */
 export interface SeamarkProps { type: string; category?: string | null; shape?: string | null; colour?: string | null; }
-export interface IconSpec { body: string; colours: string[]; vertical?: boolean; top?: string; topColour?: string; fixed?: boolean; }
+/** raw: the symbol file is drawn as it is (OpenSeaMap's magenta glyphs for harbours, facilities, landmarks) at `size` px instead of a recoloured body path. */
+export interface IconSpec { body: string; colours: string[]; vertical?: boolean; top?: string; topColour?: string; fixed?: boolean; raw?: boolean; size?: number; }
 
 const COLOURS: Record<string, string> = { red: '#d32f2f', green: '#2e7d32', yellow: '#fbc02d', black: '#212121', white: '#ffffff', orange: '#ef6c00', blue: '#1565c0', grey: '#9e9e9e', brown: '#6d4c41', amber: '#ffb300', violet: '#8e24aa', magenta: '#d81b60' };
 const BODY_BY_SHAPE: Record<string, string> = { can: 'Can', cylindrical: 'Can', conical: 'Cone', cone: 'Cone', spherical: 'Sphere', sphere: 'Sphere', pillar: 'Pillar', spar: 'Spar', barrel: 'Barrel', super: 'Super', 'super-buoy': 'Super', float: 'Float', stake: 'Stake', pole: 'Stake', post: 'Post', pile: 'Post', tower: 'Tower', lattice: 'Beacon', perch: 'Beacon', withy: 'Beacon' };
+const FACILITY: Record<string, string> = { toilets: 'Toilet', fuel_station: 'Fuel', shower: 'Shower', laundrette: 'Laundrette', pump_out: 'Pump_Out', slipway: 'Slipway', boat_hoist: 'Crane', boatyard: 'Boatyard', chandler: 'Chandler', visitor_berth: 'Visitor_Berth', visitors_berth: 'Visitor_Berth', visitor_buoy: 'Visitor_Mooring', sailing_club: 'SailingClub', harbour_master: 'HarbourMaster', customs: 'Customs', hospital: 'Hospital', landing_steps: 'LandingSteps', boat_storage: 'Storage', crane: 'Crane', pump_out_station: 'Pump_Out' };
+const LANDMARK: Record<string, string> = { church: 'Church', tower: 'Tower', lighthouse: 'Light_House', chimney: 'Chimney', mast: 'Mast', radio_mast: 'RadioMast', water_tower: 'WaterTower', windmill: 'Windmill', wind_motor: 'Wind_Motor', windmotor: 'Wind_Motor', flagstaff: 'Flagstaff', flagpole: 'Flagstaff', monument: 'Monument', dome: 'Dome', spire: 'Spire', minaret: 'Minaret', cairn: 'Cairn', cross: 'Cross', dish_aerial: 'DishAerial', radar_station: 'Radar_Station', statue: 'Monument' };
 const CARDINAL: Record<string, { colours: string[]; top: string }> = {
   north: { colours: ['black', 'yellow'], top: 'Top_North' }, east: { colours: ['black', 'yellow', 'black'], top: 'Top_East' },
   south: { colours: ['yellow', 'black'], top: 'Top_South' }, west: { colours: ['yellow', 'black', 'yellow'], top: 'Top_West' },
@@ -40,23 +43,29 @@ export function iconSpec(p: SeamarkProps): IconSpec {
       return { body: body(shape, isBeacon ? 'Beacon' : 'Sphere'), colours: colours.length ? colours : ['red', 'white'], vertical: true, top: 'Top_Sphere', topColour: 'red' };
     case 'buoy_special_purpose': case 'beacon_special_purpose':
       return { body: body(shape, isBeacon ? 'Beacon' : 'Spar'), colours: colours.length ? colours : ['yellow'], top: 'Top_X', topColour: 'yellow' };
-    case 'mooring': return { body: 'Visitor_Mooring', colours: [], fixed: true };
+    case 'mooring': return cat === 'dolphin' ? { body: 'Dolphin', colours: [], raw: true, size: 20 } : cat === 'deviation_dolphin' ? { body: 'DeviationDolphin', colours: [], raw: true, size: 20 } : cat === 'bollard' ? { body: 'Bollard', colours: [], raw: true, size: 20 } : cat === 'pile' || cat === 'post' ? { body: 'Post', colours: ['grey'] } : { body: 'Visitor_Mooring', colours: [], raw: true, size: 22 };
     case 'light_major': return { body: 'Light_Major', colours: [], fixed: true };
     case 'light_minor': case 'light': case 'light_float': case 'light_vessel': return { body: 'Light_Minor', colours: [], fixed: true };
-    case 'landmark': return { body: cat === 'tower' || cat === 'lighthouse' ? 'Light_House' : 'Tower', colours: cat === 'tower' || cat === 'lighthouse' ? [] : ['black'], fixed: cat === 'tower' || cat === 'lighthouse' };
-    case 'harbour': return { body: cat === 'marina' || cat === 'yacht' ? 'Marina' : 'Harbour', colours: [], fixed: true };
-    case 'anchorage': case 'anchor_berth': return { body: 'Anchorage', colours: [], fixed: true };
-    case 'berth': return { body: 'Berth', colours: [], fixed: true };
-    case 'rock': return { body: 'Rock', colours: [], fixed: true };
-    case 'wreck': return { body: 'WreckD', colours: [], fixed: true };
-    case 'fog_signal': return { body: 'Fog_Signal', colours: [], fixed: true };
-    case 'gauge': return { body: 'Tide_Gauge', colours: [], fixed: true };
-    case 'gate': case 'lock_basin': return { body: 'Lock_Gate', colours: [], fixed: true };
-    case 'platform': return { body: 'Platform', colours: [], fixed: true };
-    case 'signal_station_traffic': case 'signal_station_warning': return { body: 'Signal_Station', colours: [], fixed: true };
-    case 'pilot_boarding': return { body: 'Pilot', colours: [], fixed: true };
-    case 'rescue_station': return { body: 'Rescue', colours: [], fixed: true };
-    case 'small_craft_facility': return { body: 'Fuel', colours: [], fixed: true };
+    case 'landmark': return { body: LANDMARK[cat] ?? 'LandTower', colours: [], raw: true, size: 26 };
+    case 'harbour': return { body: cat === 'marina' || cat === 'yacht' ? 'Marina' : cat === 'marina_no_facilities' ? 'MarinaNF' : cat === 'fishing' ? 'Fishing_Harbour' : 'Harbour', colours: [], raw: true, size: 28 };
+    case 'anchorage': return { body: 'Anchorage', colours: [], raw: true, size: 24 };
+    case 'anchor_berth': return { body: 'Anchor_Berth', colours: [], raw: true, size: 24 };
+    case 'berth': return { body: 'Berth', colours: [], raw: true, size: 22 };
+    case 'rock': return { body: cat === 'awash' ? 'RockA' : cat === 'covers' ? 'RockC' : 'Rock', colours: [], raw: true, size: 22 };
+    case 'wreck': return { body: cat === 'dangerous' ? 'WreckD' : cat === 'distributed_remains' ? 'WreckS' : 'WreckND', colours: [], raw: true, size: 24 };
+    case 'fog_signal': return { body: 'Fog_Signal', colours: [], raw: true, size: 22 };
+    case 'gauge': return { body: 'Tide_Gauge', colours: [], raw: true, size: 22 };
+    case 'gate': return { body: 'Lock_Gate', colours: [], raw: true, size: 22 };
+    case 'lock_basin': return { body: 'Lock', colours: [], raw: true, size: 24 };
+    case 'platform': return { body: 'Platform', colours: [], raw: true, size: 24 };
+    case 'pilot_boarding': return { body: 'Pilot', colours: [], raw: true, size: 24 };
+    case 'rescue_station': return { body: 'Rescue', colours: [], raw: true, size: 24 };
+    case 'signal_station_traffic': case 'signal_station_warning': case 'coastguard_station': return { body: 'Signal_Station', colours: [], raw: true, size: 24 };
+    case 'small_craft_facility': return { body: FACILITY[cat.split(';')[0]] ?? 'Marina', colours: [], raw: true, size: 20 };
+    case 'cable_submarine': case 'cable_overhead': return { body: 'Cable', colours: [], raw: true, size: 20 };
+    case 'pipeline_submarine': case 'pipeline_overhead': return { body: 'Pipeline', colours: [], raw: true, size: 20 };
+    case 'turning_basin': return { body: 'Turning_Point', colours: [], raw: true, size: 24 };
+    case 'radar_station': case 'radar_transponder': case 'radar_reflector': return { body: 'Radar_Station', colours: [], raw: true, size: 22 };
     case 'restricted_area': return { body: 'Restricted', colours: [], fixed: true };
     case 'notice': return { body: 'Notice', colours: [], fixed: true };
     default: return { body: body(shape, 'Post'), colours: colours.length ? colours : ['grey'] };
@@ -96,6 +105,20 @@ export function pathBox(d: string): Box {
     }
   }
   return box;
+}
+
+const svgCache = new Map<string, Promise<string>>();
+/** Whole symbol file, the <symbol> wrapper opened up so it renders on its own; cached per name. */
+export function symbolSvg(name: string, fetcher: (url: string) => Promise<string> = url => fetch(url).then(r => r.text())): Promise<string> {
+  if (!svgCache.has(name)) svgCache.set(name, fetcher(`/seamarks/${name}.svg`));
+  return svgCache.get(name)!;
+}
+/** Draws a symbol file as it is (its own colours and frame) in a size×size icon; the file's 60×60 canvas is scaled. */
+export function composeRawSvg(svg: string, size: number): string {
+  const inner = svg.replace(/<\?xml[^>]*>/, '').replace(/<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '')
+    .replace(/<symbol[^>]*>/g, '<g>').replace(/<\/symbol>/g, '</g>').replace(/<use[^>]*\/>/g, '');
+  const canvas = /width="(\d+)"/.exec(svg)?.[1] ?? '60';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${canvas} ${canvas}">${inner}</svg>`;
 }
 
 const symbolCache = new Map<string, Promise<string>>();
@@ -145,9 +168,9 @@ export function registerSeamarkIcons(map: MlMap): void {
     if (!map.hasImage(e.id)) map.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) }); // placeholder now, real icon when composed (keeps MapLibre quiet)
     try {
       const spec = iconSpec(props);
-      const [body, top] = await Promise.all([symbolPath(spec.body), spec.top ? symbolPath(spec.top) : Promise.resolve(null)]);
-      const svg = composeSvg(spec, body || 'M0 0 h10 v10 h-10 z', top);
-      const img = new Image(ICON_W * 2, ICON_H * 2);
+      const size = spec.size ?? 24;
+      const svg = spec.raw ? composeRawSvg(await symbolSvg(spec.body), size) : composeSvg(spec, (await symbolPath(spec.body)) || 'M0 0 h10 v10 h-10 z', spec.top ? await symbolPath(spec.top) : null);
+      const img = spec.raw ? new Image(size * 2, size * 2) : new Image(ICON_W * 2, ICON_H * 2);
       await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error('icon')); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); });
       if (map.hasImage(e.id)) map.removeImage(e.id);
       map.addImage(e.id, img, { pixelRatio: 2 });

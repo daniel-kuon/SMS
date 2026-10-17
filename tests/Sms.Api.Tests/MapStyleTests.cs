@@ -26,6 +26,14 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal("http://localhost:5173/api/map/fonts/{fontstack}/{range}.pbf", proxied.GetProperty("glyphs").GetString());
         Assert.Equal("http://localhost:5173/api/map/sprites/ofm", proxied.GetProperty("sprite").GetString());
 
+        // a harbour-detail tile set clones every vector layer from z13 and adds pier rules
+        var detail = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", true, null, "http://localhost:5161/basemap-detail")).RootElement;
+        Assert.Equal("http://localhost:5161/basemap-detail", detail.GetProperty("sources").GetProperty("openmaptiles_detail").GetProperty("url").GetString());
+        var ids = detail.GetProperty("layers").EnumerateArray().Select(l => l.GetProperty("id").GetString()).ToList();
+        Assert.Equal(["shade", "water", "water-detail"], ids);
+        var clone = detail.GetProperty("layers")[2];
+        Assert.Equal("openmaptiles_detail", clone.GetProperty("source").GetString()); Assert.Equal(13, clone.GetProperty("minzoom").GetDouble());
+
         var offline = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", keepRemoteRaster: false)).RootElement;
         Assert.False(offline.GetProperty("sources").TryGetProperty("ne2_shaded", out _));
         Assert.Single(offline.GetProperty("layers").EnumerateArray());

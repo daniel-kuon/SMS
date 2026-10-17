@@ -353,9 +353,14 @@ public class Seamark
     public string? Name { get; set; }
     public string? Colour { get; set; }
     public string? Shape { get; set; }
+    /// <summary>Light characteristic as charted, e.g. "Oc(2)WRG.9s16m13-9M".</summary>
     public string? Light { get; set; }
+    /// <summary>Light sectors "colour:start:end:range;…" (degrees true from seaward; empty start/end = all round).</summary>
+    public string? Sectors { get; set; }
     public string TagsJson { get; set; } = "{}";
     public Point Location { get; set; } = null!;
+    /// <summary>Line marks (navigation lines, recommended tracks, cables, pipelines, fairway edges): the way's geometry, EPSG:3857.</summary>
+    public LineString? Line { get; set; }
     public DateTimeOffset ImportedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -369,6 +374,22 @@ public class RoutingCorrection : Entity
     public bool Active { get; set; } = true;
     /// <summary>Bridge: vertical clearance in metres (null = unknown, no restriction). Passages under it are closed for ships with a larger air draft.</summary>
     public double? ClearanceM { get; set; }
+}
+
+/// <summary>Shops, restaurants, services from OSM within a few km of a harbour (PBF import): rendered by Sms.Tiles, details (opening hours, website) on click.</summary>
+public class Poi
+{
+    public long Id { get; set; }
+    public string OsmType { get; set; } = "node";
+    public long OsmId { get; set; }
+    /// <summary>OSM key that classifies it: amenity, shop, tourism, leisure, craft, office, healthcare.</summary>
+    public string Class { get; set; } = "";
+    /// <summary>The key's value: restaurant, supermarket, toilets, …</summary>
+    public string Kind { get; set; } = "";
+    public string? Name { get; set; }
+    public string TagsJson { get; set; } = "{}";
+    public Point Location { get; set; } = null!;
+    public DateTimeOffset ImportedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>Weather at a received live position (one per ship per 15 min / 1 nm), from the configured IWeatherProvider.</summary>

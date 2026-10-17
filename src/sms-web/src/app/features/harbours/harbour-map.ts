@@ -121,7 +121,6 @@ export class HarbourMapPage {
   private map?: MlMap;
   private harbours = new Map<string, HarbourMarker>();
   private pinned = false;
-  private prevBounds?: maplibregl.LngLatBounds;
 
   constructor() { effect(() => { const id = this.id(); if (id) this.load(id); else this.harbour.set(null); }); }
 
@@ -196,7 +195,7 @@ export class HarbourMapPage {
     const to = { lat, lng };
     this.pinned = false; this.hovered = null;
     this.draw([[h.lng, h.lat], [lng, lat]], straightNm(h, to), true);
-    this.pinned = true; this.prevBounds = undefined;
+    this.pinned = true;
     this.pointPopup?.remove();
     this.pointPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat([lng, lat]).setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie) …`)).addTo(map);
     this.pointPopup.on('close', () => { if (this.pinned) this.hideRoute(true); });
@@ -226,18 +225,15 @@ export class HarbourMapPage {
   private draw(coords: [number, number][], nm: number, dashed: boolean): void {
     const map = this.map; if (!map) return;
     (map.getSource('route') as GeoJSONSource).setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { label: `${nm} sm`, dashed }, geometry: { type: 'LineString', coordinates: coords } }] });
-    const b = bounds(coords);
-    const view = map.getBounds();
-    if (!view.contains(b.getNorthEast()) || !view.contains(b.getSouthWest())) { this.prevBounds ??= view; map.fitBounds(b, { padding: 60, maxZoom: 12 }); }
+    // the map stays where it is: hovering/pinning only draws (the view moves only when another harbour is selected)
   }
   hideRoute(force = false): void {
     if (this.pinned && !force) return;
     if (force) { const p = this.pointPopup; this.pointPopup = undefined; p?.remove(); }
     this.hovered = null;
     (this.map?.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
-    if (this.prevBounds) { const b = this.prevBounds; this.prevBounds = undefined; setTimeout(() => this.map?.fitBounds(b, { duration: 300 }), 100); }
   }
-  pinRoute(p: NearbyPort): void { this.pinned = false; this.hovered = p.harbourId; this.showRoute(p); this.pinned = true; this.prevBounds = undefined; }
+  pinRoute(p: NearbyPort): void { this.pinned = false; this.hovered = p.harbourId; this.showRoute(p); this.pinned = true; }
 
   private contextMenu(e: MapMouseEvent): void {
     const map = this.map; if (!map) return;

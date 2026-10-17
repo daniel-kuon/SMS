@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
+using Sms.Infrastructure;
 using System.Text.RegularExpressions;
 
 namespace Sms.Api.Endpoints;
@@ -17,8 +19,33 @@ public static class MapStyleEndpoints
     public static bool BasemapAvailable(IConfiguration cfg, IWebHostEnvironment env) =>
         cfg["Map:BaseTilesUrl"] is { Length: > 0 } && cfg["Map:BasemapFile"] is { Length: > 0 } f && File.Exists(Path.GetFullPath(Path.Combine(env.ContentRootPath, f)));
 
+    /// <summary>A second tile set with full detail (z12–14) only around harbours: media/tiles/basemap-detail.pmtiles (tools/build-basemap.sh detail …).</summary>
+    public static bool DetailAvailable(IConfiguration cfg, IWebHostEnvironment env) =>
+        cfg["Map:BasemapFile"] is { Length: > 0 } f && File.Exists(Path.GetFullPath(Path.Combine(env.ContentRootPath, f.Replace("basemap.pmtiles", "basemap-detail.pmtiles"))));
+
     public static void MapMapStyle(this IEndpointRouteBuilder api)
     {
+        // Planetiler polygon for the harbour-detail tile set: the union of 3 km (radiusKm) circles around every harbour, .poly format
+        api.MapGet("/admin/map/harbour-areas.poly", async (double? radiusKm, SmsDbContext db, CurrentUser current, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var r = Math.Clamp(radiusKm ?? 3, 0.5, 20) * 1000;
+            var rows = await db.Database.SqlQueryRaw<string>("""
+                SELECT ST_AsGeoJSON((ST_Dump(ST_Union(ST_Buffer("Location", {0}, 8)::geometry))).geom) AS "Value" FROM "Harbours"
+                """, r).ToListAsync(ct);
+            var sb = new System.Text.StringBuilder("harbours\n");
+            var n = 0;
+            foreach (var g in rows)
+            {
+                var coords = System.Text.Json.JsonDocument.Parse(g).RootElement.GetProperty("coordinates")[0]; // outer ring only
+                sb.Append(++n).Append('\n');
+                foreach (var c in coords.EnumerateArray()) sb.Append("   ").Append(c[0].GetDouble().ToString("0.000000", System.Globalization.CultureInfo.InvariantCulture)).Append(' ').Append(c[1].GetDouble().ToString("0.000000", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+                sb.Append("END\n");
+            }
+            sb.Append("END\n");
+            return Results.Text(sb.ToString(), "text/plain", System.Text.Encoding.UTF8);
+        }).WithTags("Map");
+
         api.MapGet("/map/style.json", async (HttpRequest httpRequest, IConfiguration cfg, IWebHostEnvironment env, IHttpClientFactory http, CancellationToken ct) =>
         {
             if (!BasemapAvailable(cfg, env)) return Results.NotFound(new { message = "Keine selbst gehostete Basiskarte (tools/build-basemap.sh)." });
@@ -31,7 +58,7 @@ public static class MapStyleEndpoints
                 await File.WriteAllTextAsync(cached, upstream, ct);
             }
             // glyphs and sprites go through our cache proxy, so after a first visit the map works without OpenFreeMap
-            var style = Rewrite(await File.ReadAllTextAsync(cached, ct), cfg["Map:BaseTilesUrl"]!, cfg.GetValue("Map:KeepRemoteRaster", true), AssetsBase(httpRequest, cfg) + "/api/map");
+            var style = Rewrite(await File.ReadAllTextAsync(cached, ct), cfg["Map:BaseTilesUrl"]!, cfg.GetValue("Map:KeepRemoteRaster", true), AssetsBase(httpRequest, cfg) + "/api/map", DetailAvailable(cfg, env) ? cfg["Map:BaseTilesUrl"] + "-detail" : null);
             return Results.Content(style, "application/json");
         }).WithTags("Map");
 
@@ -68,7 +95,7 @@ public static class MapStyleEndpoints
     }
 
     /// <summary>Points the OpenMapTiles vector source at our tile server; optionally drops remote raster sources (low-zoom shading) and their layers.</summary>
-    public static string Rewrite(string styleJson, string tilesUrl, bool keepRemoteRaster = true, string? assetsBaseUrl = null)
+    public static string Rewrite(string styleJson, string tilesUrl, bool keepRemoteRaster = true, string? assetsBaseUrl = null, string? detailTilesUrl = null)
     {
         var style = JsonNode.Parse(styleJson)!.AsObject();
         if (assetsBaseUrl is not null) { style["glyphs"] = assetsBaseUrl + "/fonts/{fontstack}/{range}.pbf"; style["sprite"] = assetsBaseUrl + "/sprites/ofm"; }
@@ -82,6 +109,29 @@ public static class MapStyleEndpoints
         }
         if (removed.Count > 0 && style["layers"] is JsonArray layers)
             foreach (var layer in layers.Where(l => removed.Contains(l?["source"]?.GetValue<string>() ?? "")).ToList()) layers.Remove(layer);
+        if (detailTilesUrl is not null && style["layers"] is JsonArray all)
+        {
+            // lean tiles (z ≤ 12, overzoomed) everywhere; the detail set adds every OpenMapTiles layer again from z13 (buildings, shops, side streets, piers) where it has tiles
+            sources["openmaptiles_detail"] = new JsonObject { ["type"] = "vector", ["url"] = detailTilesUrl };
+            var vectorSource = sources.First(s => s.Value!["type"]?.GetValue<string>() == "vector" && s.Key != "openmaptiles_detail").Key;
+            var piers = false;
+            for (var i = 0; i < all.Count; i++)
+            {
+                var l = all[i]!.AsObject();
+                if (l["source"]?.GetValue<string>() != vectorSource) continue;
+                var clone = JsonNode.Parse(l.ToJsonString())!.AsObject();
+                clone["id"] = l["id"]!.GetValue<string>() + "-detail"; clone["source"] = "openmaptiles_detail";
+                clone["minzoom"] = Math.Max(l["minzoom"]?.GetValue<double>() ?? 0, 13);
+                if (clone["maxzoom"] is JsonValue mz && mz.GetValue<double>() <= 13) continue;
+                all.Insert(++i, clone);
+                if (!piers && l["source-layer"]?.GetValue<string>() == "transportation")
+                {
+                    piers = true; // Liberty has no rule for piers; harbour piers ("Stege") matter here
+                    all.Insert(++i, JsonNode.Parse("""{"id":"pier-detail","type":"line","source":"openmaptiles_detail","source-layer":"transportation","minzoom":13,"filter":["==",["get","class"],"pier"],"paint":{"line-color":"#9e9e9e","line-width":["interpolate",["linear"],["zoom"],13,1,17,5]}}""")!);
+                    all.Insert(++i, JsonNode.Parse("""{"id":"pier-area-detail","type":"fill","source":"openmaptiles_detail","source-layer":"landuse","minzoom":13,"filter":["==",["get","class"],"pier"],"paint":{"fill-color":"#e0e0e0"}}""")!);
+                }
+            }
+        }
         style["name"] = (style["name"]?.GetValue<string>() ?? "Liberty") + " (self-hosted)";
         return style.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
     }

@@ -40,6 +40,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
     public DbSet<WeatherObservation> WeatherObservations => Set<WeatherObservation>();
     public DbSet<RouteCache> RouteCaches => Set<RouteCache>();
     public DbSet<Seamark> Seamarks => Set<Seamark>();
+    public DbSet<Poi> Pois => Set<Poi>();
     public DbSet<ShipPage> ShipPages => Set<ShipPage>();
     public DbSet<ShipDomain> ShipDomains => Set<ShipDomain>();
     public DbSet<TrackingDevice> TrackingDevices => Set<TrackingDevice>();
@@ -181,9 +182,11 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.HasIndex(t => t.TripId);
             e.HasIndex(t => t.ShipId);
         });
+        m.Entity<Poi>(e => { e.Property(p => p.Location).HasColumnType("geometry(Point,3857)"); e.HasIndex(p => p.Location).HasMethod("gist"); e.HasIndex(p => new { p.OsmType, p.OsmId }).IsUnique(); e.Property(p => p.TagsJson).HasColumnType("jsonb"); e.Property(p => p.Class).HasMaxLength(30); e.Property(p => p.Kind).HasMaxLength(60); });
         m.Entity<Seamark>(e =>
         {
             e.Property(s => s.Location).HasColumnType("geometry(Point,3857)");
+            e.Property(s => s.Line).HasColumnType("geometry(LineString,3857)"); e.HasIndex(s => s.Line).HasMethod("gist"); e.Property(s => s.Sectors).HasMaxLength(400);
             e.HasIndex(s => s.Location).HasMethod("gist");
             e.HasIndex(s => new { s.OsmType, s.OsmId }).IsUnique();
             e.HasIndex(s => s.Type);

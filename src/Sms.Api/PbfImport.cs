@@ -12,7 +12,7 @@ using NetTopologySuite.Geometries;
 
 namespace Sms.Api;
 
-public sealed record PbfImportRequest(string Url, bool Seamarks = true, bool Harbours = true, bool Waterways = true, string? Bbox = null);
+public sealed record PbfImportRequest(string Url, bool Seamarks = true, bool Harbours = true, bool Waterways = true, string? Bbox = null, bool Pois = true, double PoiRadiusKm = 3);
 public sealed record PbfProgress(string Phase, string Message, DateTimeOffset At);
 
 /// <summary>
@@ -60,6 +60,9 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         var sw = Stopwatch.StartNew();
         var bbox = ParseBbox(req.Bbox);
         var nodes = new List<Node>(); var ways = new List<Way>();
+        // POIs are kept only near harbours: the harbours already in the database plus harbour nodes met in this pass (marina areas
+        // only get their centre in pass 2, so a new region needs a second run for the POIs around them)
+        var poiNear = req.Pois ? await HarbourIndexAsync(req.PoiRadiusKm * 1000, ct) : null;
         Report("scan", "Pass 1: matching nodes and ways…");
         long seen = 0;
         foreach (var geo in source)
@@ -69,7 +72,13 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (geo.Tags is null || geo.Tags.Count == 0) continue;
             var kind = Classify(geo.Tags, req);
             if (kind is null) continue;
-            if (geo is Node n && n.Latitude is { } la && n.Longitude is { } lo) { if (bbox is null || bbox.Value.Contains(la, lo)) nodes.Add(n); }
+            if (geo is Node n && n.Latitude is { } la && n.Longitude is { } lo)
+            {
+                if (bbox is not null && !bbox.Value.Contains(la, lo)) continue;
+                if (kind == "poi" && !poiNear!.Near(la, lo)) continue;
+                if (kind == "harbour") poiNear?.Add(la, lo);
+                nodes.Add(n);
+            }
             else if (geo is Way w && w.Nodes is { Length: > 1 }) ways.Add(w);
         }
         Report("scan", $"Pass 1 done: {nodes.Count} nodes, {ways.Count} ways ({sw.Elapsed:hh\\:mm\\:ss})");
@@ -128,6 +137,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             using var doc = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(new { elements = elements.Skip(i).Take(batch) }));
             if (req.Seamarks) { var r = await SeamarkEndpoints.ImportAsync(Filter(doc, e => e.ContainsKey("seamark:type")), db, ct); Add("seamarksCreated", r.created); Add("seamarksUpdated", r.updated); }
             if (req.Harbours) { var r = await HarbourEndpoints.ImportAsync(Filter(doc, IsHarbour), db, userId, ct); Add("harboursCreated", r.created); Add("harboursUpdated", r.updated); }
+            if (req.Pois) { var r = await PoiEndpoints.ImportAsync(Filter(doc, IsPoi), poiNear!, db, ct); Add("pois", r); }
             if (req.Waterways)
             {
                 var r = await RoutingEndpoints.ImportWaterwaysAsync(Filter(doc, t => IsWaterway(t) || IsObstacle(t) || IsFairwayArea(t)), db, userId, ct, replaceExisting: false);
@@ -147,7 +157,44 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         if (req.Seamarks && d.ContainsKey("seamark:type")) return "seamark";
         if (req.Harbours && IsHarbour(d)) return "harbour";
         if (req.Waterways && (IsWaterway(d) || IsObstacle(d))) return "waterway";
+        if (req.Pois && IsPoi(d)) return "poi";
         return null;
+    }
+
+    private static readonly HashSet<string> PoiKeys = ["amenity", "shop", "tourism", "leisure", "craft", "office", "healthcare"];
+    private static readonly HashSet<string> PoiSkip = ["parking", "bench", "waste_basket", "bicycle_parking", "parking_space", "parking_entrance", "grave_yard", "vending_machine", "recycling", "shelter", "hunting_stand", "picnic_table", "yes", "pitch", "garden", "playground", "swimming_pool", "track", "park", "nature_reserve", "artwork", "information", "viewpoint"];
+    /// <summary>Named shops, restaurants, services; toilets and fuel also without a name (as OpenSeaMap shows them).</summary>
+    public static bool IsPoi(IReadOnlyDictionary<string, string> t)
+    {
+        if (IsHarbour(t) || t.ContainsKey("seamark:type")) return false;
+        foreach (var k in PoiKeys)
+            if (t.TryGetValue(k, out var v) && !PoiSkip.Contains(v))
+                return t.ContainsKey("name") || v is "toilets" or "fuel" or "drinking_water" or "atm" or "shower";
+        return false;
+    }
+
+    /// <summary>Harbour positions as a coarse grid for a cheap "within r metres of a harbour" test during the scan.</summary>
+    public sealed class NearIndex(double radiusM)
+    {
+        private readonly double _cell = radiusM / 111_320.0;
+        private readonly HashSet<(int, int)> _cells = [];
+        public int Count { get; private set; }
+        public void Add(double lat, double lng)
+        {
+            Count++;
+            var cx = (int)Math.Floor(lng / _cell * Math.Cos(lat * Math.PI / 180)); var cy = (int)Math.Floor(lat / _cell);
+            for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) _cells.Add((cx + dx, cy + dy));
+        }
+        public bool Near(double lat, double lng) => _cells.Contains(((int)Math.Floor(lng / _cell * Math.Cos(lat * Math.PI / 180)), (int)Math.Floor(lat / _cell)));
+    }
+
+    private async Task<NearIndex> HarbourIndexAsync(double radiusM, CancellationToken ct)
+    {
+        var index = new NearIndex(radiusM);
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+        foreach (var h in await db.Harbours.AsNoTracking().Select(h => h.Location).ToListAsync(ct)) index.Add(h.Y, h.X);
+        return index;
     }
 
     public static bool IsHarbour(IReadOnlyDictionary<string, string> t) => t.GetValueOrDefault("leisure") == "marina" || t.GetValueOrDefault("seamark:type") == "harbour" || t.GetValueOrDefault("harbour") == "yes";

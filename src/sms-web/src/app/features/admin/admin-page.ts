@@ -66,7 +66,7 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
           <p class="muted">{{ 'admin.pbfHint' | translate }}</p>
           <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>URL / Pfad (.osm.pbf)</mat-label><input matInput [(ngModel)]="pbf.url" /></mat-form-field>
             <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="pbf.bbox" placeholder="optional" /></mat-form-field></div>
-          <div class="row"><mat-checkbox [(ngModel)]="pbf.seamarks">{{ 'admin.seamarks' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.harbours">{{ 'admin.importOsm' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.waterways">{{ 'admin.waterways' | translate }}</mat-checkbox>
+          <div class="row"><mat-checkbox [(ngModel)]="pbf.seamarks">{{ 'admin.seamarks' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.harbours">{{ 'admin.importOsm' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.waterways">{{ 'admin.waterways' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.pois">{{ 'admin.pois' | translate }}</mat-checkbox>
             <button mat-flat-button (click)="startPbf()" [disabled]="pbfStatus()?.running || !pbf.url">{{ (pbfStatus()?.running ? 'admin.routingBuilding' : 'admin.import') | translate }}</button></div>
           @if (pbfStatus(); as ps) { <ul class="progress">@for (p of ps.progress.slice(-6); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul> }
           <app-routing-corrections />
@@ -116,7 +116,7 @@ export class AdminPage {
   loadRouting(): void { this.api.get<RoutingStatus>('/api/routing/status').subscribe(r => this.routing.set(r)); }
   rebuild(): void { this.api.post('/api/admin/routing/rebuild', {}).subscribe({ next: () => setTimeout(() => this.loadRouting(), 500), error: e => this.result.set(errorMessage(e)) }); }
   waterwayBbox = '54.2,9.1,54.5,10.2';
-  pbf = { url: 'https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf', bbox: '', seamarks: true, harbours: true, waterways: true };
+  pbf = { url: 'https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf', bbox: '', seamarks: true, harbours: true, waterways: true, pois: true };
   pbfStatus = signal<{ running: boolean; progress: { phase: string; message: string; at: string }[] } | null>(null);
   loadPbf(): void { this.api.get<NonNullable<ReturnType<AdminPage['pbfStatus']>>>('/api/admin/routing/import-pbf/status').subscribe(s => this.pbfStatus.set(s)); }
   startPbf(): void {

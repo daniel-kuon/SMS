@@ -75,7 +75,9 @@ public static class SeamarkEndpoints
                 mark.Name = Tag(tags, "seamark:name") ?? Tag(tags, "name");
                 mark.Colour = Tag(tags, $"seamark:{seamarkType}:colour");
                 mark.Shape = Tag(tags, $"seamark:{seamarkType}:shape");
-                mark.Light = Tag(tags, "seamark:light:character") is { } ch ? $"{ch} {Tag(tags, "seamark:light:colour") ?? ""} {Tag(tags, "seamark:light:period") ?? ""}".Trim() : Tag(tags, "seamark:light:1:character");
+                var (light, sectors) = Lights.Describe(tags.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? ""));
+                mark.Light = light; mark.Sectors = sectors;
+                mark.Line = type == "way" && el.TryGetProperty("geometry", out var geometry) ? ToMercatorLine(geometry) : null;
                 mark.TagsJson = tags.GetRawText();
                 mark.Location = ToMercator(lat, lng);
                 mark.ImportedAt = DateTimeOffset.UtcNow;
@@ -86,6 +88,14 @@ public static class SeamarkEndpoints
     }
 
     private static string? Tag(JsonElement tags, string key) => tags.TryGetProperty(key, out var v) ? v.GetString() : null;
+
+    /// <summary>Overpass "geometry" of a way → Mercator line (null for closed rings and degenerate ways; areas keep their centre point).</summary>
+    public static LineString? ToMercatorLine(JsonElement geometry)
+    {
+        var pts = geometry.EnumerateArray().Select(c => ToMercator(c.GetProperty("lat").GetDouble(), c.GetProperty("lon").GetDouble()).Coordinate).ToArray();
+        if (pts.Length < 2 || pts[0].Equals2D(pts[^1])) return null;
+        return new LineString(pts) { SRID = 3857 };
+    }
 
     /// <summary>WGS84 → Web Mercator (EPSG:3857), the projection vector tiles are cut in.</summary>
     public static Point ToMercator(double lat, double lng)

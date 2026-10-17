@@ -109,7 +109,7 @@ public class EndpointSmokeTests(ApiFixture f) : IClassFixture<ApiFixture>
                 "targetType" => "posts", "variant" => "thumb", "kind" => "users", "action" => template.Contains("costs") ? "lock" : "accept",
                 "token" => "no-such-token", "slug" => "smoke", "path" => "ueber-uns", "lang" => "de",
                 "z" => "12", "x" => "2163", "y" => "1307", "targetId" => ids["targetId"],
-                "fontstack" => "Noto Sans Regular", "range" => "0-255", "file" => "ofm.json", "layer" => "radar",
+                "fontstack" => "Noto Sans Regular", "range" => "0-255", "file" => "ofm.json", "layer" => "radar", "osmType" => "node", "osmId" => "1",
                 _ => ids.GetValueOrDefault(name),
             };
             if (value is null) return null;

@@ -152,14 +152,21 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         await db.Database.SqlQueryRaw<long>("SELECT node_id AS \"Value\" FROM routing_harbour_access WHERE graph_version = {0} AND harbour_id = {1}", version, harbourId).FirstOrDefaultAsync(ct) is var id && id != 0 ? id : null;
 
     /// <summary>Nearest node within 2 km; grid (water-cell) nodes win over passage vertices, which sit on a line and would send the route to the line's end.</summary>
+    /// <summary>
+    /// Nearest graph node for a map click. On water the grid is coarse offshore (cells up to StartCellM wide), so the search
+    /// reaches a whole cell; on land (coast, harbour basins counted as land) only 2 km, so inland clicks stay unroutable.
+    /// </summary>
     private async Task<long?> SnapAsync(Point p, int version, CancellationToken ct)
     {
+        var onLand = await db.Database.SqlQueryRaw<int>("SELECT 1 AS \"Value\" FROM routing_land WHERE graph_version = {0} AND geom && ST_SetSRID(ST_MakePoint({1}, {2}), 4326) AND ST_Intersects(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326))", version, p.X, p.Y).AnyAsync(ct);
+        var maxM = onLand ? 2000 : Math.Max(2000, builder.Options.StartCellM);
+        var degLat = maxM / WaterGraphTiler.MPerDegLat; var degLng = degLat / Math.Max(0.2, Math.Cos(p.Y * Math.PI / 180));
         var row = await db.Database.SqlQueryRaw<SnapRow>("""
             SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
-            FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - 0.035, {2} - 0.02, {1} + 0.035, {2} + 0.02, 4326)
+            FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
             ORDER BY CASE WHEN id <= (SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes') THEN 0 ELSE 1 END, geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
-            """, version, p.X, p.Y).FirstOrDefaultAsync(ct);
-        return row is not null && row.Metres <= 2000 ? row.Id : null;
+            """, version, p.X, p.Y, degLng, degLat).FirstOrDefaultAsync(ct);
+        return row is not null && row.Metres <= maxM ? row.Id : null;
     }
 
     private static Envelope Expand(Point a, Point b, double metres)

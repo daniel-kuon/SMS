@@ -143,7 +143,7 @@ api.MapAuth();
 api.MapProfiles();
 api.MapShips();
 api.MapHarbours();
-api.MapSeamarks();
+api.MapSeamarks(); api.MapPois();
 api.MapCms();
 api.MapAis(); api.MapWeather();
 api.MapRouting();
