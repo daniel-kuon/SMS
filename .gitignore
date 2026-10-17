@@ -244,3 +244,7 @@ dist/
 media/
 
 .playwright-mcp/
+
+# self-hosted base map tiles (built by tools/build-basemap.sh)
+media/tiles/*
+!media/tiles/.gitkeep

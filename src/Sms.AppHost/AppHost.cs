@@ -16,9 +16,18 @@ var postgres = builder.AddPostgres("postgres")
     .WithDataVolume("sms-postgres-data");
 var db = postgres.AddDatabase("sms");
 
+// Optional self-hosted base map: Martin serves media/tiles/*.pmtiles (built with tools/build-basemap.sh); the API
+// switches the map style to it when the file exists.
+var basemap = builder.AddContainer("basemap", "ghcr.io/maplibre/martin", "latest") // ghcr publishes no version tags
+    .WithArgs("/data")
+    .WithBindMount("../../media/tiles", "/data")
+    .WithHttpEndpoint(port: 5161, targetPort: 3000, name: "http")
+    .WithUrlForEndpoint("http", u => u.DisplayText = "Martin tiles");
+
 var api = builder.AddProject<Projects.Sms_Api>("api")
     .WithReference(db).WaitFor(db)
     .WithEnvironment("SMTP_ENDPOINT", mailpit.GetEndpoint("smtp"))
+    .WithEnvironment("Map__BaseTilesUrl", "http://localhost:5161/basemap")
     .WithEnvironment("SIGNOZ_OTLP_ENDPOINT", signoz.OtlpGrpc)
     .WithEnvironment("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=development")
     .WithHttpHealthCheck("/health")

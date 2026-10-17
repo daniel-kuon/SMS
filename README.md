@@ -22,6 +22,7 @@ The AppHost starts everything and prints the Aspire dashboard URL:
 |----------|------|-------|
 | `web` | Angular app (dev server with proxy to the API) | http://localhost:5173 |
 | `api` | ASP.NET Core API, OpenAPI at `/api/docs` | https://localhost:7150 |
+| `basemap` | Martin, serves the optional self-hosted base map from `media/tiles/*.pmtiles` | http://localhost:5161 |
 | `tiles` | sea-mark vector tile server (`/tiles/seamark/{z}/{x}/{y}.mvt`, TileJSON at `/tiles/seamark.json`) | http://localhost:5160 (proxied as `/tiles` by the web dev server) |
 | `postgres` / `sms` | PostgreSQL 17 + PostGIS + pgRouting (`pgrouting/pgrouting`) | volume `sms-postgres-data` |
 | `mailpit` | catches confirmation / invitation mails | http://localhost:8025 |
@@ -65,7 +66,12 @@ Migrations: `dotnet ef migrations add <Name> --project src/Sms.Infrastructure` (
 ## Maps, sea marks and ship websites
 
 * **Vector maps**: MapLibre GL with the OpenFreeMap *Liberty* style (`Map:StyleUrl`, no API key; attribution
-  "OpenFreeMap © OpenMapTiles, data from OpenStreetMap"). Self-hosting: point `Map:StyleUrl` at your own style.
+  "OpenFreeMap © OpenMapTiles, data from OpenStreetMap").
+* **Self-hosted base map**: `tools/build-basemap.sh <geofabrik-area>` runs Planetiler (Docker) and writes
+  `media/tiles/basemap.pmtiles`; the AppHost's Martin container serves it and the API serves the Liberty style with
+  its vector source pointed at Martin (`/api/map/style.json`) as soon as the file exists – no code change, no key.
+  `schleswig-holstein` takes a few minutes, `europe` hours (see the Planetiler docs for RAM/disk). Glyphs and sprites
+  still come from OpenFreeMap (static files; mirror them for a fully offline setup).
 * **Sea marks**: Admin page → "Seezeichen (OpenSeaMap, Vektorkacheln)" loads OpenSeaMap data (OSM `seamark:*` tags) for a bounding
   box from Overpass (mirrors in `Overpass:Endpoints`) or from an uploaded Overpass-JSON file; `Sms.Tiles` renders
   them as vector tiles that the map overlays (buoys, beacons, lights, harbours, names from zoom 8 upwards).

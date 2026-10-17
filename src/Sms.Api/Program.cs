@@ -121,12 +121,18 @@ if (app.Environment.IsDevelopment())
 var api = app.MapGroup("/api");
 api.MapGet("/ping", () => Results.Ok(new { ok = true, time = DateTimeOffset.UtcNow })).WithName("Ping");
 // Public client configuration (map style/tiles); only non-secret values belong here.
-api.MapGet("/config", (IConfiguration cfg) => Results.Ok(new
+api.MapGet("/config", (IConfiguration cfg, IWebHostEnvironment env) =>
 {
-    mapStyleUrl = cfg["Map:StyleUrl"] ?? "https://tiles.openfreemap.org/styles/liberty",
-    seamarkTilesUrl = cfg["Map:SeamarkTilesUrl"] ?? "/tiles/seamark/{z}/{x}/{y}.mvt",
-    attribution = cfg["Map:Attribution"] ?? "© OpenStreetMap-Mitwirkende · OpenSeaMap · OpenFreeMap",
-})).WithName("Config");
+    var selfHosted = MapStyleEndpoints.BasemapAvailable(cfg, env); // Planetiler tiles + Martin (tools/build-basemap.sh)
+    return Results.Ok(new
+    {
+        mapStyleUrl = selfHosted ? "/api/map/style.json" : cfg["Map:StyleUrl"] ?? MapStyleEndpoints.DefaultStyleUrl,
+        seamarkTilesUrl = cfg["Map:SeamarkTilesUrl"] ?? "/tiles/seamark/{z}/{x}/{y}.mvt",
+        attribution = selfHosted ? "© OpenStreetMap-Mitwirkende · OpenSeaMap · OpenMapTiles" : cfg["Map:Attribution"] ?? "© OpenStreetMap-Mitwirkende · OpenSeaMap · OpenFreeMap",
+        selfHostedBasemap = selfHosted,
+    });
+}).WithName("Config");
+api.MapMapStyle();
 api.MapAuth();
 api.MapProfiles();
 api.MapShips();
