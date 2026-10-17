@@ -17,20 +17,20 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 | 8 Sea routing | ✅ (region-configurable) | `RoutingGraphBuilder`: OSM land polygons (downloaded once, ≈900 MB) → adaptive quadtree over water → pgRouting tables; `SeaRouter`: A* routes with string-pulling smoothing, driving-distance nearby ports, cache; admin rebuild/status/corrections. Default region western Baltic (build ≈75 s, 72k nodes); Europe = set `Routing:Region` and wait hours |
 | 8a Trip overview | ✅ | Overview map with recorded (solid) or calculated/straight (dashed) legs, harbour stops, photo/post markers with clustering, stats, day list hover, last position, track playback (play/pause, scrubber, 1×/4×/16×; boat marker with heading, travelled trail, current leg highlighted) |
 | 8b Tracking | ✅ (no AIS provider yet) | Devices with one-time tokens, OsmAnd/Traccar, OwnTracks and JSON ingest, GPX/KML/NMEA import, cleaning, per-day segments with source priority, media/post placement on the track, public delay, privacy zones, source override, stop detection → logbook suggestions |
-| 12 PWA / offline | ✅ (basic) | Installable (service worker + manifest), cached reference data, offline upload queue (IndexedDB, retried when online), autosaved post drafts. No background sync API |
+| 12 PWA / offline | ✅ (basic) | Installable (service worker + manifest), cached reference data, offline upload queue (IndexedDB, retried when online), autosaved post and logbook drafts; logbook entries saved without connection go into a localStorage outbox and are sent when online (nav chip shows pending items, list reloads). No background sync API |
 | 9 Social | ✅ | Comments/likes on posts, photos, logbook entries, trips, reviews (target visibility enforced), follows, personal feed, public explore, in-app notifications (+ e-mail for invitations/comments/settlements), reports, admin hide/dismiss, user blocks |
 | 10 Tasks / pages | ✅ | Trip and ship task trees, admin-editable content pages in footer |
 | 11 Reviews / stats | ✅ | Harbour ratings, ship statistics |
 | Vector maps | ✅ | MapLibre GL everywhere (harbour map, trip overview); base style OpenFreeMap *Liberty* (vector, no API key); own sea-mark overlay from `Sms.Tiles` |
 | Sea-mark tile server | ✅ | `Sms.Tiles` (separate Aspire resource): `GET /tiles/seamark/{z}/{x}/{y}.mvt` from the `Seamarks` table via `ST_AsMVT`, zoom ≥ 8, memory cache + ETag; admin import of OpenSeaMap data per bounding box (Overpass with mirror fallback) or Overpass-JSON upload |
 | CMS | ✅ | Global content pages as a tree (nav + footer); per-ship websites with sub pages (owner-editable, published/draft, slug paths); domains assigned to ships → the site served on that host shows only the ship's pages and latest logbook (`/api/site`); dev preview via `X-Tenant-Host` |
-| Tests | ✅ | 17 domain tests, 25 API/infrastructure tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 29 Angular vitest specs |
+| Tests | ✅ | 17 domain tests, 25 API/infrastructure tests (Testcontainers PostGIS, all endpoint groups + authorization matrix + CMS/tiles), 33 Angular vitest specs |
 
 ## Open (follow-ups)
 
 - **AIS provider** (`12` §12.1 C): `IAisPositionProvider` + MarineTraffic/aisstream polling; the track pipeline already accepts `Ais` points.
 - **Europe-wide routing build**: run with `Routing:Region` = −32…45 / 27…72; the build is tile-wise with bounded memory (see decisions), only time (hours) and PostGIS disk are needed. Untested at that scale so far.
-- **13 legacy import** (needs the old SQL Server database), **14 canals**, offline drafts for logbook entries.
+- **13 legacy import** (needs the old SQL Server database), **14 canals**.
 - Europe-wide OSM harbour **and sea-mark** import (osmium pipeline); the Overpass import works for bounding boxes (≈30 s for Kiel Bay, 5 000 marks).
 - Self-host the base map (OpenFreeMap tiles are a free public service; `Map:StyleUrl` points to any MapLibre style, e.g. a Planetiler/Martin stack next to `Sms.Tiles`).
 - Playwright end-to-end smoke (login → map → ship/trip creation); unit/integration coverage exists.

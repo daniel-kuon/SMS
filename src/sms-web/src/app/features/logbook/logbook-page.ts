@@ -13,6 +13,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
+import { drafts, isNetworkError, OfflineQueue } from '../../core/offline';
 import { EntryCrew, LogbookDefaults, LogbookEntry, Paged, Ship } from '../../core/models';
 import { confirm, fmtDateTime, HarbourSelect, VisibilityPicker } from '../../shared/shared';
 
@@ -53,7 +54,8 @@ export class LogbookTable {
   cols = ['departedAt', 'start', 'end', 'arrivedAt', 'duration', 'distance', 'wind', 'engine', 'crew', 'visibility', 'actions'];
   year: number | null = null; years = Array.from({ length: 15 }, (_, i) => new Date().getFullYear() - i);
   pageIndex = 0; pageSize = 25; sortField = ''; fmt = fmtDateTime;
-  constructor() { effect(() => { this.shipId(); this.tripId(); this.load(); }); }
+  private offline = inject(OfflineQueue);
+  constructor() { effect(() => { this.shipId(); this.tripId(); this.offline.flushed(); this.load(); }); } // reloads after queued entries were sent
   load(): void {
     this.api.get<Paged<LogbookEntry>>(`/api/ships/${this.shipId()}/logbook`, { trip: this.tripId(), year: this.year, page: this.pageIndex + 1, pageSize: this.pageSize, sort: this.sortField })
       .subscribe(p => { this.entries.set(p.items); this.total.set(p.total); });
@@ -82,7 +84,8 @@ export class LogbookPage {
   imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe, HarbourSelect, VisibilityPicker],
   template: `
     <h2 mat-dialog-title>{{ data.entry ? ('common.edit' | translate) : ('logbook.newEntry' | translate) }}</h2>
-    <mat-dialog-content class="form-grid">
+    <mat-dialog-content class="form-grid" (input)="saveDraft()" (change)="saveDraft()">
+      <p class="muted full draft-hint">{{ 'logbook.draftHint' | translate }}@if (restored()) { · {{ 'logbook.draftRestored' | translate }} <button mat-button (click)="discardDraft()">{{ 'logbook.discardDraft' | translate }}</button> }</p>
       <app-harbour-select [label]="'logbook.startHarbour' | translate" [(harbourId)]="m.startHarbourId" [harbourName]="startName()" [required]="true" />
       <app-harbour-select [label]="'logbook.endHarbour' | translate" [(harbourId)]="m.endHarbourId" [harbourName]="endName()" [required]="true" />
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.departed' | translate }}</mat-label><input matInput type="datetime-local" [(ngModel)]="m.departedAt" required /></mat-form-field>
@@ -110,6 +113,8 @@ export class EntryDialog {
   data = inject<{ shipId: string; tripId: string | null; entry?: LogbookEntry; suggestion?: { departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number } }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api); private auth = inject(AuthService);
   wind = WIND; error = signal(''); startName = signal<string | null>(this.data.entry?.startHarbour ?? null); endName = signal<string | null>(this.data.entry?.endHarbour ?? null);
   crew: (EntryCrew & { selected: boolean })[] = []; guest = '';
+  private offline = inject(OfflineQueue); restored = signal(false);
+  private draftScope = `logbook:${this.data.shipId}:${this.data.tripId ?? 'ship'}:${this.data.entry?.id ?? 'new'}`;
   private e = this.data.entry;
   m = { startHarbourId: this.e?.startHarbourId ?? null as string | null, endHarbourId: this.e?.endHarbourId ?? null as string | null,
     departedAt: local(this.e?.departedAt), arrivedAt: local(this.e?.arrivedAt), engineHoursStart: this.e?.engineHoursStart ?? null, engineHoursEnd: this.e?.engineHoursEnd ?? null,
@@ -117,6 +122,8 @@ export class EntryDialog {
     sailedDistanceNm: this.e?.sailedDistanceNm ?? null, sailsNotes: this.e?.sailsNotes ?? '', notes: this.e?.notes ?? '', visibility: this.e?.visibility ?? this.auth.me()?.defaultContentVisibility ?? 'Crew' as const };
 
   constructor() {
+    const draft = drafts.load<EntryDraft>(this.draftScope);
+    if (draft) { this.m = draft.m; this.crew = draft.crew; this.startName.set(draft.startName); this.endName.set(draft.endName); this.restored.set(true); return; }
     if (this.e) { this.crew = this.e.crew.map(c => ({ ...c, selected: true })); return; }
     this.api.get<LogbookDefaults>(`/api/ships/${this.data.shipId}/logbook/new-defaults`, { trip: this.data.tripId }).subscribe(d => {
       this.m.startHarbourId = d.startHarbourId; this.startName.set(d.startHarbourName); this.m.engineHoursStart = d.engineHoursStart; this.m.logStart = d.logStart;
@@ -129,14 +136,28 @@ export class EntryDialog {
       }
     });
   }
-  addGuest(): void { if (this.guest.trim()) { this.crew.push({ crewMemberId: null, userId: null, name: this.guest.trim(), selected: true }); this.guest = ''; } }
+  addGuest(): void { if (this.guest.trim()) { this.crew.push({ crewMemberId: null, userId: null, name: this.guest.trim(), selected: true }); this.guest = ''; this.saveDraft(); } }
+  saveDraft(): void { drafts.save(this.draftScope, { m: this.m, crew: this.crew, startName: this.startName(), endName: this.endName() }); }
+  discardDraft(): void { drafts.clear(this.draftScope); this.ref.close(false); }
   save(): void {
+    if (!this.m.startHarbourId || !this.m.endHarbourId || !this.m.departedAt || !this.m.arrivedAt) { this.error.set('Start- und Zielhafen, Ablegen und Ankunft angeben.'); return; }
     const body = { ...this.m, tripId: this.data.tripId, departedAt: new Date(this.m.departedAt).toISOString(), arrivedAt: new Date(this.m.arrivedAt).toISOString(),
       crew: this.crew.filter(c => c.selected).map(c => ({ crewMemberId: c.crewMemberId, userId: c.userId, guestName: c.crewMemberId || c.userId ? null : c.name })) };
-    const req = this.e ? this.api.put(`/api/logbook/${this.e.id}`, body) : this.api.post(`/api/ships/${this.data.shipId}/logbook`, body);
-    req.subscribe({ next: () => this.ref.close(true), error: err => this.error.set(errorMessage(err)) });
+    const method = this.e ? 'PUT' : 'POST'; const url = this.e ? `/api/logbook/${this.e.id}` : `/api/ships/${this.data.shipId}/logbook`;
+    const done = () => { drafts.clear(this.draftScope); this.ref.close(true); };
+    const req = this.e ? this.api.put(url, body) : this.api.post(url, body);
+    req.subscribe({
+      next: done,
+      error: async err => {
+        // on board without signal: keep the entry and send it when the connection is back (spec 07 H2)
+        if (isNetworkError(err)) { await this.offline.enqueueJson(method, url, body, `Logbucheintrag ${this.startName() ?? ''} → ${this.endName() ?? ''}`.trim()); done(); }
+        else this.error.set(errorMessage(err));
+      },
+    });
   }
 }
+
+type EntryDraft = { m: EntryDialog['m']; crew: EntryDialog['crew']; startName: string | null; endName: string | null };
 
 function local(iso: string | undefined): string {
   const d = iso ? new Date(iso) : new Date();

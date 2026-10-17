@@ -16,6 +16,8 @@ export class OfflineQueue {
   private auth = inject(AuthService);
   private snack = inject(MatSnackBar);
   readonly pending = signal(0);
+  /** Bumped after a flush that sent something; lists reload on it. */
+  readonly flushed = signal(0);
   readonly online = signal(typeof navigator === 'undefined' ? true : navigator.onLine);
   private flushing = false;
 
@@ -37,12 +39,25 @@ export class OfflineQueue {
     this.snack.open('Offline – Upload wird nachgeholt, sobald wieder Verbindung besteht.', 'OK', { duration: 5000 });
   }
 
+  /** Queues a JSON request (logbook entry) that failed for lack of connectivity; sent by flush(). */
+  async enqueueJson(method: 'POST' | 'PUT', url: string, body: unknown, label: string): Promise<void> {
+    const userId = this.auth.me()?.id;
+    if (!userId) return;
+    outbox.add({ userId, method, url, body, label, createdAt: Date.now() });
+    await this.refreshCount();
+    this.snack.open(`Offline – ${label} wird gesendet, sobald wieder Verbindung besteht.`, 'OK', { duration: 5000 });
+  }
+
   /** Retries all queued uploads; resolves with the media created in this pass. */
   async flush(): Promise<Media[]> {
     if (this.flushing || !navigator.onLine) return [];
     this.flushing = true;
     const created: Media[] = [];
     try {
+      const userId0 = this.auth.me()?.id;
+      const sent = await flushOutbox(userId0, item => new Promise<void>((res, rej) => (item.method === 'PUT' ? this.api.put(item.url, item.body) : this.api.post(item.url, item.body)).subscribe({ next: () => res(), error: rej })));
+      if (sent.sent) { this.snack.open(`${sent.sent} Eintrag/Einträge nachträglich gespeichert.`, 'OK', { duration: 4000 }); this.flushed.update(n => n + 1); }
+      for (const r of sent.rejected) this.snack.open(`${r.label} wurde vom Server abgelehnt.`, 'OK', { duration: 6000 });
       const db = await this.db();
       const items = await tx<QueuedUpload[]>(db, 'readonly', store => store.getAll());
       const userId = this.auth.me()?.id;
@@ -71,13 +86,16 @@ export class OfflineQueue {
   /** Logout hygiene: service-worker caches, queued uploads and drafts are removed from the device. */
   async clearAll(): Promise<void> {
     try { const db = await this.db(); await tx(db, 'readwrite', store => store.clear()); } catch { /* ignore */ }
+    outbox.clear();
     try { for (const k of Object.keys(localStorage)) if (k.startsWith('draft:')) localStorage.removeItem(k); } catch { /* ignore */ }
     try { if ('caches' in window) for (const k of await caches.keys()) if (k.startsWith('ngsw:')) await caches.delete(k); } catch { /* ignore */ }
     await this.refreshCount();
   }
 
   private async refreshCount(): Promise<void> {
-    try { const db = await this.db(); this.pending.set(await tx<number>(db, 'readonly', store => store.count())); } catch { this.pending.set(0); }
+    let n = outbox.count();
+    try { const db = await this.db(); n += await tx<number>(db, 'readonly', store => store.count()); } catch { /* no IndexedDB */ }
+    this.pending.set(n);
   }
 
   private db(): Promise<IDBDatabase> {
@@ -96,6 +114,36 @@ function tx<T>(db: IDBDatabase, mode: IDBTransactionMode, fn: (store: IDBObjectS
     req.onsuccess = () => res(req.result as T);
     req.onerror = () => rej(req.error);
   });
+}
+
+export interface OutboxItem { userId: string; method: 'POST' | 'PUT'; url: string; body: unknown; label: string; createdAt: number; }
+
+/** localStorage outbox for small JSON writes (logbook entries) made while offline. */
+const OUTBOX_KEY = 'outbox:json';
+export const outbox = {
+  key: OUTBOX_KEY,
+  list(): OutboxItem[] { try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) ?? '[]') as OutboxItem[]; } catch { return []; } },
+  add(item: OutboxItem): void { try { localStorage.setItem(OUTBOX_KEY, JSON.stringify([...outbox.list(), item])); } catch { /* quota */ } },
+  save(items: OutboxItem[]): void { try { items.length ? localStorage.setItem(OUTBOX_KEY, JSON.stringify(items)) : localStorage.removeItem(OUTBOX_KEY); } catch { /* ignore */ } },
+  count(): number { return outbox.list().length; },
+  clear(): void { try { localStorage.removeItem(OUTBOX_KEY); } catch { /* ignore */ } },
+};
+
+/**
+ * Sends the outbox in order for the signed-in user: items of other accounts are dropped, a network error keeps the
+ * rest for later, a server rejection drops the item (it would fail forever) and is reported.
+ */
+export async function flushOutbox(userId: string | undefined, send: (item: OutboxItem) => Promise<void>): Promise<{ sent: number; rejected: OutboxItem[] }> {
+  const items = outbox.list();
+  const keep: OutboxItem[] = []; const rejected: OutboxItem[] = []; let sent = 0; let offline = false;
+  for (const item of items) {
+    if (!userId || item.userId !== userId) continue;
+    if (offline) { keep.push(item); continue; }
+    try { await send(item); sent++; }
+    catch (e) { if (isNetworkError(e)) { offline = true; keep.push(item); } else rejected.push(item); }
+  }
+  outbox.save(keep);
+  return { sent, rejected };
 }
 
 export function isNetworkError(e: unknown): boolean {
