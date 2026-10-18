@@ -47,6 +47,17 @@ public static class Waterways
     /// <summary>Hard: never enter (Sperrgebiet). Soft: entry restricted at times (Warngebiet, firing range) – avoided, not blocked.</summary>
     private static readonly HashSet<string> NoEntry = ["no_entry", "entry_prohibited", "no_entry_except", "no_boating"];
     private static readonly HashSet<string> RestrictedEntry = ["entry_restricted", "restricted_entry", "to_be_avoided"];
+    /// <summary>Categories whose "entry restricted" means ships keep out while active (firing, exercises); a nature reserve's
+    /// restricted entry (Wadden Sea zone 2) concerns landing and anchoring, navigation is free.</summary>
+    private static readonly HashSet<string> WarningCategories = ["military", "firing_danger_area", "warning", "exercise", "mine_laying", "submarine_exercise", "torpedo_exercise", "danger", "explosives_dumping"];
+    private static bool IsWarningArea(IReadOnlyDictionary<string, string> tags)
+    {
+        if (tags.GetValueOrDefault("seamark:type") == "military_area") return true;
+        var cat = tags.GetValueOrDefault("seamark:restricted_area:category") ?? "";
+        if (cat.Split(';').Any(c => WarningCategories.Contains(c.Trim()))) return true;
+        var name = (tags.GetValueOrDefault("seamark:name") ?? tags.GetValueOrDefault("name") ?? "").ToLowerInvariant();
+        return name.Contains("warngebiet") || name.Contains("schießgebiet") || name.Contains("skjutfält") || name.Contains("skyde") || name.Contains("firing");
+    }
     /// <summary>Areas a yacht must stay out of (Sperrgebiete): military areas and restricted areas whose restriction forbids entry.</summary>
     public static bool IsNoGoArea(IReadOnlyDictionary<string, string> tags)
     {
@@ -54,7 +65,8 @@ public static class Waterways
         if (type == "military_area") return true;
         if (type != "restricted_area") return false;
         var r = tags.GetValueOrDefault("seamark:restricted_area:restriction") ?? tags.GetValueOrDefault("seamark:restriction") ?? "";
-        return r.Split(';').Any(x => NoEntry.Contains(x.Trim()) || RestrictedEntry.Contains(x.Trim()));
+        var parts = r.Split(';').Select(x => x.Trim()).ToList();
+        return parts.Any(NoEntry.Contains) || (parts.Any(RestrictedEntry.Contains) && IsWarningArea(tags));
     }
 
     /// <summary>True when the area must never be entered (Block); false for a restricted/warning area (Avoid).</summary>

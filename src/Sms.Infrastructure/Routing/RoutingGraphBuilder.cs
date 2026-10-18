@@ -226,7 +226,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             shared[key] = id; extraNodes.Add(new GraphNode(id, p.X, p.Y, false));
             return id;
         }
-        var linkLand = await LandIndexAsync(conn, version, ct); // the link checks below run in memory: an SQL probe per candidate took an hour
+        // the link checks below run in memory (an SQL probe per candidate took an hour); no-go blocks are not land for a link: a buoyed
+        // fairway through a Wadden Sea zone-1 area must still hook into the water outside it
+        var linkLand = await LandIndexAsync(conn, version, blocks, ct);
         var channelEdgeFrom = new List<int>(); // index ranges of derived channel edges: they run through whatever depth the sound has
         foreach (var pc in await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => new { c.Geometry, c.Note }).ToListAsync(ct))
         {
@@ -544,15 +546,17 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     }
 
     /// <summary>The raw land of this graph version (coast tiles with lakes cut out, no-go blocks) as a prepared index for the link checks.</summary>
-    private static async Task<STRtree<(IPreparedGeometry prepared, Geometry geom)>> LandIndexAsync(NpgsqlConnection conn, int version, CancellationToken ct)
+    private static async Task<STRtree<(IPreparedGeometry prepared, Geometry geom)>> LandIndexAsync(NpgsqlConnection conn, int version, IReadOnlyList<Geometry> blocks, CancellationToken ct)
     {
         var index = new STRtree<(IPreparedGeometry, Geometry)>();
+        var blockEnvelopes = blocks.Select(b => b.EnvelopeInternal).ToHashSet();
         await using var cmd = new NpgsqlCommand("SELECT geom FROM routing_land WHERE graph_version = @v", conn) { CommandTimeout = 3600 };
         cmd.Parameters.AddWithValue("v", version);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
             var g = r.GetFieldValue<Geometry>(0);
+            if (blockEnvelopes.Contains(g.EnvelopeInternal)) continue; // a Block correction written into routing_land
             foreach (var poly in g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []) index.Insert(poly.EnvelopeInternal, (PreparedGeometryFactory.Prepare(poly), poly));
         }
         index.Build();

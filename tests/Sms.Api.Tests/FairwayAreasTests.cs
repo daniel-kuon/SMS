@@ -42,8 +42,12 @@ public class FairwayAreasTests
         Assert.Equal("Warngebiet (military_area)", noGo[1].label); // a practice area is avoided, not blocked
         Assert.True(noGo[0].hard); Assert.False(noGo[1].hard);
         // a warning area (firing range, restricted entry at times) is avoided, not blocked
-        Assert.True(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "restricted_entry" }));
-        Assert.False(Waterways.IsHardNoGo(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "restricted_entry" }));
+        Assert.True(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "restricted_entry", ["seamark:restricted_area:category"] = "military" }));
+        Assert.False(Waterways.IsHardNoGo(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "restricted_entry", ["seamark:restricted_area:category"] = "military" }));
+        // a nature reserve's restricted entry (Wadden Sea zone 2) is about landing and anchoring: no obstacle; a firing range's is
+        Assert.False(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "restricted_entry", ["seamark:restricted_area:category"] = "nature_reserve", ["seamark:name"] = "Allgemeines Schutzgebiet" }));
+        Assert.True(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "restricted_entry", ["seamark:name"] = "Warngebiet Todendorf" }));
+        Assert.True(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "no_entry", ["seamark:restricted_area:category"] = "nature_reserve" }));
         Assert.False(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "no_anchoring;no_fishing" }));
         Assert.True(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "no_anchoring;no_entry" }));
     }
