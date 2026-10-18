@@ -88,6 +88,78 @@ public static class Waterways
         return result;
     }
 
+    /// <summary>Inland water bodies: lakes, reservoirs and lagoons with a perimeter above 3 km (ponds are noise), as ways and multipolygon relations with geometry.</summary>
+    public const string OverpassWaterQuery = """[out:json][timeout:180];(way["natural"="water"]["water"~"^(lake|reservoir|lagoon)$"](if:length()>3000)({0});relation["natural"="water"]["water"~"^(lake|reservoir|lagoon)$"]({0}););out geom;""";
+
+    /// <summary>Lakes as polygons with holes (islands): closed ways directly, multipolygon relations by stitching their outer/inner member ways into rings. Only areas of at least minKm2.</summary>
+    public static List<(Polygon area, string? name)> ParseWaterAreas(JsonDocument doc, GeometryFactory f, double minKm2 = 0.5)
+    {
+        var result = new List<(Polygon, string?)>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (!el.TryGetProperty("tags", out var t)) continue;
+            var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+            if (tags.GetValueOrDefault("natural") != "water") continue;
+            var name = tags.GetValueOrDefault("name");
+            var type = el.GetProperty("type").GetString();
+            if (type == "way" && el.TryGetProperty("geometry", out var geom)) { if (Ring(geom, f) is { } ring && AreaKm2(ring) >= minKm2) result.Add((ring, name)); }
+            else if (type == "relation" && el.TryGetProperty("members", out var members))
+            {
+                var outers = new List<Coordinate[]>(); var inners = new List<Coordinate[]>();
+                foreach (var m in members.EnumerateArray())
+                {
+                    if (m.GetProperty("type").GetString() != "way" || !m.TryGetProperty("geometry", out var mg)) continue;
+                    var coords = mg.EnumerateArray().Select(c => new Coordinate(c.GetProperty("lon").GetDouble(), c.GetProperty("lat").GetDouble())).ToArray();
+                    if (coords.Length < 2) continue;
+                    (m.TryGetProperty("role", out var role) && role.GetString() == "inner" ? inners : outers).Add(coords);
+                }
+                var holes = Stitch(inners, f);
+                foreach (var shell in Stitch(outers, f))
+                {
+                    Polygon poly;
+                    try { poly = f.CreatePolygon(shell, holes.Where(h => shell.EnvelopeInternal.Contains(h.EnvelopeInternal) && f.CreatePolygon(shell).Contains(h.StartPoint)).ToArray()); if (!poly.IsValid) poly = poly.Buffer(0) as Polygon ?? poly; }
+                    catch (Exception) { continue; }
+                    if (AreaKm2(poly) >= minKm2) result.Add((poly, name));
+                }
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Joins open ways end to end into closed rings (OSM multipolygon members come in any order and direction).</summary>
+    internal static List<LinearRing> Stitch(List<Coordinate[]> ways, GeometryFactory f)
+    {
+        var rings = new List<LinearRing>();
+        var open = ways.Select(w => w.ToList()).ToList();
+        while (open.Count > 0)
+        {
+            var ring = open[0]; open.RemoveAt(0);
+            var grew = true;
+            while (!ring[0].Equals2D(ring[^1]) && grew)
+            {
+                grew = false;
+                for (var i = 0; i < open.Count; i++)
+                {
+                    var w = open[i];
+                    if (w[0].Equals2D(ring[^1])) ring.AddRange(w.Skip(1));
+                    else if (w[^1].Equals2D(ring[^1])) { w.Reverse(); ring.AddRange(w.Skip(1)); }
+                    else if (w[^1].Equals2D(ring[0])) ring.InsertRange(0, w.Take(w.Count - 1));
+                    else if (w[0].Equals2D(ring[0])) { w.Reverse(); ring.InsertRange(0, w.Take(w.Count - 1)); }
+                    else continue;
+                    open.RemoveAt(i); grew = true; break;
+                }
+            }
+            if (ring.Count >= 4 && ring[0].Equals2D(ring[^1])) rings.Add(f.CreateLinearRing(ring.ToArray()));
+        }
+        return rings;
+    }
+
+    private static double AreaKm2(Geometry g)
+    {
+        var cos = Math.Cos(g.Centroid.Y * Math.PI / 180);
+        return g.Area * cos * WaterGraphTiler.MPerDegLat * WaterGraphTiler.MPerDegLat / 1e6;
+    }
+
     /// <summary>Fairway areas (seamark:type=fairway): closed ways and the outer rings of multipolygon relations, as polygons.</summary>
     public static List<(Polygon area, string? name)> ParseFairwayAreas(JsonDocument doc, GeometryFactory f)
     {

@@ -67,4 +67,27 @@ public class FairwayAreasTests
         Assert.Equal("Schlei", areas[1].name);
         Assert.Single(Waterways.Parse(doc, F)); // the open fairway line is still a passage, the areas are not
     }
+
+    [Fact]
+    public void Lakes_come_as_stitched_multipolygons_with_islands_and_ponds_are_dropped()
+    {
+        using var doc = JsonDocument.Parse("""
+            { "elements": [
+              { "type": "relation", "id": 1, "tags": { "natural": "water", "water": "lake", "name": "See" }, "members": [
+                { "type": "way", "role": "outer", "geometry": [ { "lat": 54.0, "lon": 10.0 }, { "lat": 54.0, "lon": 10.1 } ] },
+                { "type": "way", "role": "outer", "geometry": [ { "lat": 54.1, "lon": 10.1 }, { "lat": 54.0, "lon": 10.1 } ] },
+                { "type": "way", "role": "outer", "geometry": [ { "lat": 54.1, "lon": 10.1 }, { "lat": 54.1, "lon": 10.0 }, { "lat": 54.0, "lon": 10.0 } ] },
+                { "type": "way", "role": "inner", "geometry": [ { "lat": 54.04, "lon": 10.04 }, { "lat": 54.04, "lon": 10.06 }, { "lat": 54.06, "lon": 10.06 }, { "lat": 54.06, "lon": 10.04 }, { "lat": 54.04, "lon": 10.04 } ] } ] },
+              { "type": "way", "id": 2, "tags": { "natural": "water", "water": "pond" }, "geometry": [ { "lat": 54.2, "lon": 10.0 }, { "lat": 54.2, "lon": 10.001 }, { "lat": 54.201, "lon": 10.001 }, { "lat": 54.2, "lon": 10.0 } ] },
+              { "type": "way", "id": 3, "tags": { "natural": "water", "water": "lake" }, "geometry": [ { "lat": 54.3, "lon": 10.0 }, { "lat": 54.3, "lon": 10.002 }, { "lat": 54.302, "lon": 10.002 }, { "lat": 54.3, "lon": 10.0 } ] }
+            ] }
+            """);
+        var lakes = Waterways.ParseWaterAreas(doc, F);
+        var lake = Assert.Single(lakes);
+        Assert.Equal("See", lake.name);
+        Assert.Equal(1, lake.area.NumInteriorRings);
+        Assert.True(lake.area.IsValid);
+        Assert.False(lake.area.Contains(F.CreatePoint(new Coordinate(10.05, 54.05)))); // the island
+        Assert.True(lake.area.Contains(F.CreatePoint(new Coordinate(10.02, 54.02))));
+    }
 }

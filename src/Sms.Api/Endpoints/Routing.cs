@@ -158,6 +158,21 @@ public static class RoutingEndpoints
             var b = bbox.Split(',').Select(x => double.Parse(x, CultureInfo.InvariantCulture)).ToArray();
             return Results.Ok(await ImportWaterwaysAsync(doc, db, current.Id, ct, bbox: new Envelope(b[1], b[3], b[0], b[2])));
         });
+        // inland water bodies (lakes, IJsselmeer, Randmeren) – the coastline-based land polygons count them as land
+        admin.MapPost("/import-water", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (bbox.Split(',').Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
+            using var doc = await Overpass.QueryAsync(http, cfg, string.Format(Waterways.OverpassWaterQuery, bbox), ct);
+            if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
+            var b = bbox.Split(',').Select(x => double.Parse(x, CultureInfo.InvariantCulture)).ToArray();
+            var extent = Geo.Factory.ToGeometry(new Envelope(b[1], b[3], b[0], b[2])); extent.SRID = 4326;
+            var areas = Waterways.ParseWaterAreas(doc, Geo.Factory);
+            var removed = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Water && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct);
+            foreach (var a in areas) db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Water, Source = CorrectionSource.Derived, Geometry = Srid(a.area), Active = true, CreatedById = current.Id, Note = $"Binnengewässer{(a.name is null ? "" : " " + a.name)}" });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new { created = areas.Count, removed, lakes = areas.Select(a => new { a.name, km2 = Math.Round(a.area.Area * Math.Cos(a.area.Centroid.Y * Math.PI / 180) * WaterGraphTiler.MPerDegLat * WaterGraphTiler.MPerDegLat / 1e6, 1) }).OrderByDescending(x => x.km2).Take(30) });
+        });
         admin.MapPost("/import-waterways-file", async (HttpRequest http, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();

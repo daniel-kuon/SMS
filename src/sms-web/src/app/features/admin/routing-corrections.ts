@@ -13,8 +13,8 @@ import { bounds, createMap, MlMap } from '../../core/map';
 import { Api, errorMessage } from '../../core/api';
 import { haversineM } from '../../core/track-playback';
 
-export interface Correction { id: string; kind: 'Block' | 'Passage' | 'Bridge' | 'Lock' | 'OpeningBridge' | 'Fairway' | 'Avoid'; source: 'Manual' | 'Derived'; geometry: Geometry; note: string | null; active: boolean; createdAt: string; clearanceM?: number | null; }
-export const KIND_ICON: Record<Correction['kind'], string> = { Block: 'block', Passage: 'timeline', Bridge: 'vertical_align_top', Lock: 'lock', OpeningBridge: 'open_in_full', Fairway: 'water', Avoid: 'warning' };
+export interface Correction { id: string; kind: 'Block' | 'Passage' | 'Bridge' | 'Lock' | 'OpeningBridge' | 'Fairway' | 'Avoid' | 'Water'; source: 'Manual' | 'Derived'; geometry: Geometry; note: string | null; active: boolean; createdAt: string; clearanceM?: number | null; }
+export const KIND_ICON: Record<Correction['kind'], string> = { Block: 'block', Passage: 'timeline', Bridge: 'vertical_align_top', Lock: 'lock', OpeningBridge: 'open_in_full', Fairway: 'water', Avoid: 'warning', Water: 'waves' };
 
 /** Length of a LineString in nautical miles (0 for other geometries). */
 export function lengthNm(g: Geometry): number {
@@ -96,7 +96,7 @@ export class RoutingCorrections {
   private async initMap(el: HTMLElement): Promise<void> {
     const map = this.map = await createMap(el, { zoom: 8 });
     map.addSource('corrections', { type: 'geojson', data: toFeatureCollection(this.items()) });
-    map.addLayer({ id: 'corr-blocks', type: 'fill', source: 'corrections', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': ['case', ['==', ['get', 'kind'], 'Fairway'], '#1e88e5', ['==', ['get', 'kind'], 'Avoid'], '#f9a825', '#d32f2f'], 'fill-opacity': ['case', ['get', 'active'], ['case', ['==', ['get', 'kind'], 'Fairway'], 0.2, 0.35], 0.12] } });
+    map.addLayer({ id: 'corr-blocks', type: 'fill', source: 'corrections', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': ['case', ['==', ['get', 'kind'], 'Fairway'], '#1e88e5', ['==', ['get', 'kind'], 'Avoid'], '#f9a825', ['==', ['get', 'kind'], 'Water'], '#26a69a', '#d32f2f'], 'fill-opacity': ['case', ['get', 'active'], ['case', ['==', ['get', 'kind'], 'Fairway'], 0.2, 0.35], 0.12] } });
     map.addLayer({ id: 'corr-lines', type: 'line', source: 'corrections', filter: ['==', ['geometry-type'], 'LineString'],
       paint: { 'line-color': ['case', ['==', ['get', 'source'], 'Derived'], '#fb8c00', '#1976d2'], 'line-width': 3, 'line-opacity': ['case', ['get', 'active'], 0.9, 0.35], 'line-dasharray': [2, 1] } });
     map.addLayer({ id: 'corr-points', type: 'circle', source: 'corrections', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 5, 'circle-color': ['case', ['==', ['get', 'kind'], 'Lock'], '#6d4c41', ['==', ['get', 'kind'], 'OpeningBridge'], '#00897b', '#7b1fa2'], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5, 'circle-opacity': ['case', ['get', 'active'], 1, 0.4] } });

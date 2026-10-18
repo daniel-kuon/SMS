@@ -120,6 +120,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         // 1. land polygons inside the region (streamed, never all in memory) + active Block corrections → routing_land
         Report("land", $"Streaming land polygons inside the region into graph version {version}…");
         var blocks = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Block).Select(c => c.Geometry).ToListAsync(ct); // before the COPY: same connection
+        // inland water bodies are land in the coastline polygons: cut them out of the land tiles they touch
+        var waters = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Water).Select(c => c.Geometry).ToListAsync(ct);
+        var waterIndex = new STRtree<Geometry>(); foreach (var g in waters) waterIndex.Insert(g.EnvelopeInternal, g); waterIndex.Build();
         var landCount = 0;
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_land (graph_version, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
@@ -129,6 +132,11 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 ct.ThrowIfCancellationRequested();
                 if (!g.EnvelopeInternal.Intersects(regionEnv)) continue;
                 var clipped = regionEnv.Contains(g.EnvelopeInternal) ? g : g.Intersection(region);
+                foreach (var water in waterIndex.Query(clipped.EnvelopeInternal))
+                {
+                    if (!water.Intersects(clipped)) continue;
+                    try { clipped = clipped.Difference(water); } catch (TopologyException) { clipped = clipped.Buffer(0).Difference(water.Buffer(0)); }
+                }
                 if (!clipped.IsEmpty) await Write(clipped);
             }
             foreach (var g in blocks) await Write(g);
