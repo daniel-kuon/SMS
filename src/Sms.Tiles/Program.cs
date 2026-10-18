@@ -15,7 +15,38 @@ var app = builder.Build();
 app.UseCors();
 var source = new ActivitySource("Sms");
 
-app.MapGet("/", () => Results.Ok(new { service = "sms-tiles", layers = new[] { "seamark", "poi" }, url = "/tiles/seamark/{z}/{x}/{y}.mvt", poiUrl = "/tiles/poi/{z}/{x}/{y}.mvt", minZoom = 8, maxZoom = 18 }));
+app.MapGet("/", () => Results.Ok(new { service = "sms-tiles", layers = new[] { "seamark", "poi", "depth" }, url = "/tiles/seamark/{z}/{x}/{y}.mvt", poiUrl = "/tiles/poi/{z}/{x}/{y}.mvt", depthUrl = "/tiles/depth/{z}/{x}/{y}.mvt", minZoom = 8, maxZoom = 18 }));
+
+// charted depth areas (routing_depth, filled by the admin depth import: Open Waters Seascape, fathom steps) as polygons with min/max depth
+app.MapGet("/tiles/depth/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int y, NpgsqlDataSource db, IMemoryCache cache, HttpContext ctx, CancellationToken ct) =>
+{
+    if (z < 0 || z > 22 || x < 0 || y < 0 || x >= 1 << z || y >= 1 << z) return Results.NotFound();
+    if (z < 7) return Results.Bytes([], "application/vnd.mapbox-vector-tile");
+    var tile = await cache.GetOrCreateAsync($"depth/{z}/{x}/{y}", async entry =>
+    {
+        entry.SlidingExpiration = TimeSpan.FromMinutes(30);
+        await using var cmd = db.CreateCommand("""
+            WITH b AS (SELECT ST_TileEnvelope(@z, @x, @y) AS geom, ST_Transform(ST_TileEnvelope(@z, @x, @y), 4326) AS geom4326),
+            q AS (
+                SELECT d.min_depth_m AS min_depth, d.max_depth_m AS max_depth,
+                       ST_AsMVTGeom(ST_Transform(ST_SimplifyPreserveTopology(d.geom, @tol), 3857), b.geom, 4096, 32, true) AS geom
+                FROM routing_depth d, b WHERE d.geom && ST_Expand(b.geom4326, (ST_XMax(b.geom4326) - ST_XMin(b.geom4326)) / 32)
+                  AND (@z >= 10 OR d.max_depth_m <= 10)
+            )
+            SELECT COALESCE(ST_AsMVT(q, 'depth', 4096, 'geom'), ''::bytea) FROM q WHERE geom IS NOT NULL
+            """);
+        cmd.Parameters.AddWithValue("z", z); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y);
+        cmd.Parameters.AddWithValue("tol", 360.0 / (1 << z) / 2048); // about two tile pixels in degrees
+        var bytes = await cmd.ExecuteScalarAsync(ct) as byte[] ?? [];
+        entry.Size = bytes.Length + 64;
+        return bytes;
+    }) ?? [];
+    var etag = $"\"{Convert.ToHexStringLower(System.IO.Hashing.XxHash64.Hash(tile))}\"";
+    if (ctx.Request.Headers.IfNoneMatch.Contains(etag)) return Results.StatusCode(304);
+    ctx.Response.Headers.ETag = etag;
+    ctx.Response.Headers.CacheControl = "public,max-age=3600";
+    return Results.Bytes(tile, "application/vnd.mapbox-vector-tile");
+});
 
 // POIs near harbours (shops, restaurants, toilets …) from z13; the click goes to the API for opening hours and links
 app.MapGet("/tiles/poi/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int y, NpgsqlDataSource db, IMemoryCache cache, HttpContext ctx, CancellationToken ct) =>

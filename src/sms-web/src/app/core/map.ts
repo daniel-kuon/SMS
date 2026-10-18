@@ -33,6 +33,7 @@ export async function createMap(container: HTMLElement, options: Partial<MapOpti
   await new Promise<void>(res => (map.loaded() ? res() : map.once('load', () => res())));
   addSeamarkOverlay(map, cfg.seamarkTilesUrl);
   addPoiOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/poi/'));
+  addDepthOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/depth/'));
   addWeatherOverlayControl(map);
   (window as unknown as { smsMap?: MlMap }).smsMap = map; // debugging/e2e hook: the current map instance
   return map;
@@ -156,6 +157,34 @@ async function poiBadge(kind: string, cls: string): Promise<ImageData> {
 }
 
 /** Shops, restaurants, services near harbours (own tile layer from Sms.Tiles, z ≥ 13); a click shows the OSM details. */
+const DEPTH_STORAGE = 'sms.depthOverlay';
+/** Depth shading: a draft of null shows plain chart steps, a draft colours what is too shallow for the ship (draft + 0.5 m) red. */
+function depthFillColour(draftM: number | null): unknown {
+  const limit = draftM == null ? null : draftM + 0.5;
+  const steps = ['step', ['get', 'min_depth'], '#a5d6a7', 0, '#64b5f6', 2, '#90caf9', 5, '#bbdefb', 10, 'rgba(0,0,0,0)'];
+  return limit == null ? steps : ['case', ['<', ['get', 'max_depth'], limit], '#ef9a9a', ['<', ['get', 'min_depth'], limit], '#ffcc80', steps];
+}
+/** Charted depth areas as a toggleable overlay below the sea marks; the toggle is remembered per browser. */
+export function addDepthOverlay(map: MlMap, tilesUrl: string): void {
+  if (map.getSource('depth')) return;
+  const abs = tilesUrl.startsWith('/') ? `${location.origin}${tilesUrl}` : tilesUrl;
+  map.addSource('depth', { type: 'vector', tiles: [abs], minzoom: 7, maxzoom: 14, attribution: 'Tiefen: Open Waters Seascape (EMODnet, GEBCO)' });
+  let on = false; try { on = localStorage.getItem(DEPTH_STORAGE) === '1'; } catch { /* ignore */ }
+  const before = ['seamark-sectors-fill', 'seamark-lines', 'seamark-icons', 'seamark-points'].find(id => map.getLayer(id));
+  map.addLayer({ id: 'depth-fill', type: 'fill', source: 'depth', 'source-layer': 'depth', minzoom: 7, layout: { visibility: on ? 'visible' : 'none' },
+    paint: { 'fill-color': depthFillColour(null) as never, 'fill-opacity': 0.45, 'fill-outline-color': 'rgba(21,101,192,0.35)' } }, before);
+  const wrap = document.createElement('div'); wrap.className = 'maplibregl-ctrl maplibregl-ctrl-group depth-overlay-ctrl';
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'depth-overlay-button'; button.title = 'Tiefen anzeigen'; button.setAttribute('aria-label', 'Tiefen anzeigen');
+  const refresh = () => { button.textContent = '≈'; button.classList.toggle('active', on); };
+  button.onclick = () => { on = !on; map.setLayoutProperty('depth-fill', 'visibility', on ? 'visible' : 'none'); try { localStorage.setItem(DEPTH_STORAGE, on ? '1' : '0'); } catch { /* ignore */ } refresh(); };
+  map.addControl({ onAdd: () => { wrap.append(button); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
+  refresh();
+}
+/** Recolours the depth overlay for the ship's draft (null = chart steps only). */
+export function applyDepthShading(map: MlMap, draftM: number | null): void {
+  if (map.getLayer('depth-fill')) map.setPaintProperty('depth-fill', 'fill-color', depthFillColour(draftM) as never);
+}
+
 export function addPoiOverlay(map: MlMap, tilesUrl: string): void {
   if (map.getSource('poi')) return;
   const abs = tilesUrl.startsWith('/') ? `${location.origin}${tilesUrl}` : tilesUrl;

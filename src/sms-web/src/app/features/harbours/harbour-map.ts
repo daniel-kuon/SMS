@@ -23,7 +23,7 @@ import { haversineM } from '../../core/track-playback';
 import { UploadZone } from '../../shared/shared';
 import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
 import { ShipContextService } from '../../core/ship-context';
-import { applyHazardFilter } from '../../core/map';
+import { applyDepthShading, applyHazardFilter } from '../../core/map';
 
 const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
 
@@ -142,7 +142,7 @@ export class HarbourMapPage {
 
   constructor() {
     effect(() => { const id = this.id(); if (id) this.load(id); else this.harbour.set(null); });
-    effect(() => { const draft = this.shipCtx.draftM(); if (this.map) applyHazardFilter(this.map, draft); });
+    effect(() => { const draft = this.shipCtx.draftM(); if (this.map) { applyHazardFilter(this.map, draft); applyDepthShading(this.map, draft); } });
   }
   pickShip(id: string): void { this.shipCtx.select(this.shipCtx.myShips().find(s => s.id === id) ?? null); }
 
@@ -166,7 +166,7 @@ export class HarbourMapPage {
     map.on('mouseenter', 'harbour-points', e => { map.getCanvas().style.cursor = 'pointer'; const id = e.features?.[0]?.properties?.['id']; if (id) this.hoverHarbour(id); });
     map.on('mouseleave', 'harbour-points', () => { map.getCanvas().style.cursor = ''; this.hideRoute(); });
     map.on('contextmenu', e => this.contextMenu(e));
-    applyHazardFilter(map, this.shipCtx.draftM());
+    applyHazardFilter(map, this.shipCtx.draftM()); applyDepthShading(map, this.shipCtx.draftM());
     this.refresh();
     const h = this.harbour();
     if (h) map.easeTo({ center: [h.lng, h.lat], zoom: Math.max(map.getZoom(), 11) });
