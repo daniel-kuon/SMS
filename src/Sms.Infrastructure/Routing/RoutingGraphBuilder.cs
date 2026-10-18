@@ -504,15 +504,17 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             var lenM = Haversine(p.Y, p.X, n.Y, n.X);
             if (lenM < 300) return n;
             var seg = Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)]);
-            // a harbour point sits on its pier and a channel end on the shore: crossing a mole or pier is fine, crossing a field is not
-            var crossedM = 0.0;
-            foreach (var (prepared, geom) in landIndex.Query(seg.EnvelopeInternal))
+            // a harbour point sits on its pier and a channel end on the shore: crossing a mole or pier is fine, crossing a field is not.
+            // Sampled every 25 m with the prepared point-in-polygon test (an exact overlay against a mainland tile took minutes per node)
+            var hits = landIndex.Query(seg.EnvelopeInternal).Where(l => l.prepared.Intersects(seg)).Select(l => l.prepared).ToList();
+            if (hits.Count == 0) return n;
+            var steps = (int)Math.Ceiling(lenM / 25); var onLand = 0;
+            for (var k = 1; k < steps && onLand <= 6; k++)
             {
-                if (!prepared.Intersects(seg)) continue;
-                try { crossedM += geom.Intersection(seg).Length * WaterGraphTiler.MPerDegLat; } catch (TopologyException) { crossedM += 1e6; }
-                if (crossedM > 150) break;
+                var q = Geo.Factory.CreatePoint(new Coordinate(p.X + (n.X - p.X) * k / steps, p.Y + (n.Y - p.Y) * k / steps));
+                if (hits.Any(l => l.Contains(q))) onLand++;
             }
-            if (crossedM <= 150) return n;
+            if (onLand <= 6) return n;
         }
         return null;
     }
