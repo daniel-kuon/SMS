@@ -172,7 +172,7 @@ export function addDepthOverlay(map: MlMap, tilesUrl: string): void {
   let on = false; try { on = localStorage.getItem(DEPTH_STORAGE) === '1'; } catch { /* ignore */ }
   const before = ['seamark-sectors-fill', 'seamark-lines', 'seamark-icons', 'seamark-points'].find(id => map.getLayer(id));
   map.addLayer({ id: 'depth-fill', type: 'fill', source: 'depth', 'source-layer': 'depth', minzoom: 7, layout: { visibility: on ? 'visible' : 'none' },
-    paint: { 'fill-color': depthFillColour(null) as never, 'fill-opacity': 0.45, 'fill-outline-color': 'rgba(21,101,192,0.35)' } }, before);
+    paint: { 'fill-color': depthFillColour(null) as never, 'fill-opacity': 0.45, 'fill-antialias': false } }, before);
   const wrap = document.createElement('div'); wrap.className = 'maplibregl-ctrl maplibregl-ctrl-group depth-overlay-ctrl';
   const button = document.createElement('button'); button.type = 'button'; button.className = 'depth-overlay-button'; button.title = 'Tiefen anzeigen'; button.setAttribute('aria-label', 'Tiefen anzeigen');
   const refresh = () => { button.textContent = '≈'; button.classList.toggle('active', on); };
