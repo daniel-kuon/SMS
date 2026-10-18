@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NetTopologySuite.Geometries;
+using NetTopologySuite.Geometries.Prepared;
 using NetTopologySuite.Index.Strtree;
 using NetTopologySuite.IO.Esri;
 using Npgsql;
@@ -223,6 +224,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             shared[key] = id; extraNodes.Add(new GraphNode(id, p.X, p.Y, false));
             return id;
         }
+        var linkLand = await LandIndexAsync(conn, version, ct); // the link checks below run in memory: an SQL probe per candidate took an hour
         var channelEdgeFrom = new List<int>(); // index ranges of derived channel edges: they run through whatever depth the sound has
         foreach (var pc in await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => new { c.Geometry, c.Note }).ToListAsync(ct))
         {
@@ -243,7 +245,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 if (linkM > 0) sinceLink = 0;
                 if (linkM > 0 && linked.Add(id))
                 {
-                    var near = await NearestWaterLinkAsync(conn, version, p, linkM, _ => true, ct);
+                    var near = await NearestWaterLinkAsync(conn, version, linkLand, p, linkM, _ => true, ct);
                     if (near is { } n) extraEdges.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
                 }
                 prev = id;
@@ -288,7 +290,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             {
                 if (!find.TryGetValue(id, out var c) || c == giant || attached.Contains(c)) continue;
                 strays++;
-                var n = await NearestWaterLinkAsync(conn, version, p, o.HarbourAccessM, m => find.TryGetValue(m.Id, out var mc) && mc == giant, ct);
+                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, o.HarbourAccessM, m => find.TryGetValue(m.Id, out var mc) && mc == giant, ct);
                 if (n is null) continue;
                 relinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
                 attached.Add(c);
@@ -299,7 +301,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             {
                 // the access link may not cross land: a harbour on a river or lake the graph does not know stays unreachable rather than
                 // being routed across a field (the audit found 35 such routes)
-                var n = await NearestWaterLinkAsync(conn, version, h.Location.Coordinate, o.HarbourAccessM, m => find.TryGetValue(m.Id, out var mc) && attached.Contains(mc), ct);
+                var n = await NearestWaterLinkAsync(conn, version, linkLand, h.Location.Coordinate, o.HarbourAccessM, m => find.TryGetValue(m.Id, out var mc) && attached.Contains(mc), ct);
                 if (n is not null) access.Add((h.Id, n.Id, Haversine(h.Location.Y, h.Location.X, n.Y, n.X)));
             }
             Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {strays} stray passage ends, {relinks.Count} relinked; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
@@ -487,7 +489,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
 
     /// <summary>The nearest acceptable node whose link from <paramref name="p"/> does not cross land. The first 150 m at the start are
     /// ignored (a harbour point sits on its pier, a channel end on the shore).</summary>
-    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct)
+    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, STRtree<IPreparedGeometry> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct)
     {
         foreach (var n in await NearestNodesAsync(conn, version, p.X, p.Y, maxM, 40, ct))
         {
@@ -495,14 +497,21 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             var lenM = Haversine(p.Y, p.X, n.Y, n.X);
             if (lenM < 300) return n;
             var t = 150 / lenM;
-            var start = new Coordinate(p.X + (n.X - p.X) * t, p.Y + (n.Y - p.Y) * t);
-            await using var cmd = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM routing_land WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326) AND ST_Intersects(geom, ST_SetSRID(ST_MakeLine(ST_MakePoint(@ax, @ay), ST_MakePoint(@bx, @by)), 4326)))", conn) { CommandTimeout = 3600 };
-            cmd.Parameters.AddWithValue("v", version);
-            cmd.Parameters.AddWithValue("x1", Math.Min(start.X, n.X)); cmd.Parameters.AddWithValue("y1", Math.Min(start.Y, n.Y)); cmd.Parameters.AddWithValue("x2", Math.Max(start.X, n.X)); cmd.Parameters.AddWithValue("y2", Math.Max(start.Y, n.Y));
-            cmd.Parameters.AddWithValue("ax", start.X); cmd.Parameters.AddWithValue("ay", start.Y); cmd.Parameters.AddWithValue("bx", n.X); cmd.Parameters.AddWithValue("by", n.Y);
-            if (!(bool)(await cmd.ExecuteScalarAsync(ct))!) return n;
+            var seg = Geo.Factory.CreateLineString([new Coordinate(p.X + (n.X - p.X) * t, p.Y + (n.Y - p.Y) * t), new Coordinate(n.X, n.Y)]);
+            if (!landIndex.Query(seg.EnvelopeInternal).Any(l => l.Intersects(seg))) return n;
         }
         return null;
+    }
+
+    /// <summary>The raw land of this graph version (coast tiles with lakes cut out, no-go blocks) as a prepared index for the link checks.</summary>
+    private static async Task<STRtree<IPreparedGeometry>> LandIndexAsync(NpgsqlConnection conn, int version, CancellationToken ct)
+    {
+        var land = new List<Polygon>();
+        await using var cmd = new NpgsqlCommand("SELECT geom FROM routing_land WHERE graph_version = @v", conn) { CommandTimeout = 3600 };
+        cmd.Parameters.AddWithValue("v", version);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) { var g = r.GetFieldValue<Geometry>(0); land.AddRange(g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []); }
+        return VisibilityGraph.Index(land);
     }
 
     private static async Task<List<GraphNode>> NearestNodesAsync(NpgsqlConnection conn, int version, double x, double y, double maxM, int limit, CancellationToken ct)
