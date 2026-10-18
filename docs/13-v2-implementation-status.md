@@ -50,6 +50,15 @@ State of the rewrite on branch `v2` (2026-10-17). Phases refer to `11` §11.5.
 - Routing region is 4.5–19.5 E / 52–60 N (Dutch coast to the Stockholm archipelago, IJsselmeer included); a wider region is a config change plus a rebuild.
 - (done: Playwright e2e smoke – `npm run e2e` in `src/sms-web` against the running AppHost: map + sea marks, register/confirm/login, ship + trip, logbook entry + overview, costs with CSV/PDF, ship website + domain tenant mode.)
 
+## Design: incremental graph builds and OSM diff updates (planned)
+
+Every derived routing input is already per bbox chunk (waterway/no-go chunks, fairway chunks, channel chunks, lake chunks) and the land union is computed per 2° chunk; only the build forgets it between runs. Two layers:
+
+1. **Graph build per chunk.** Partition the region into the 2° chunks plus a margin for legs that cross a border. Per chunk, hash the inputs: land tile ids and mtimes, active corrections intersecting the chunk (id + version stamp), depth areas, the routing options. Store per chunk the obstacle polygons, nodes, visibility legs and contracted passages together with the hash; a rebuild recomputes only chunks whose hash changed and redoes the cheap global steps (component merge, harbour attachment, activation). The margin makes a changed chunk refresh the legs that reach into its neighbours. A Europe-scale build becomes a one-time cost, a correction in the Kiel Bight recomputes one chunk in minutes.
+2. **OSM updates from replication diffs.** Keep the import's position (`osmosis_replication_timestamp`/sequence of the extract), pull minutely or hourly diffs from the Geofabrik or planet feed, apply them to sea marks, harbours, POIs, waterways, bridges, restricted areas and lakes; every applied element marks the chunks it touches as dirty. The derivations (fairways from lateral marks, channels from land, no-go blocks) rerun for dirty chunks only, then layer 1 picks them up. Prerequisite: relation handling in the PBF import (lakes and multipolygon restricted areas come from Overpass today).
+
+Build time today (v47, 34 min): land + lakes 5 min, chunk union 3 min, nodes and visibility legs 5 min, pricing 1 min, passages and their links 8 min, gap links / component merge / harbour attachment 10 min. Before layer 1: cache the land union per chunk, do every nearest-node lookup of the passage phase in memory, and skip the gap links to an end's own line (fb6ba78).
+
 ## External services (all behind an interface, swap by registration)
 
 No feature code talks to a third party directly; every provider sits behind one C# type in `Sms.Api` and is registered in `Program.cs`, so a different vendor is a new class plus one registration line. Tests register fakes through `ConfigureTestServices`.
