@@ -79,11 +79,14 @@ public class ObstaclesTests
               { "type": "way", "id": 7, "center": { "lat": 54.33, "lon": 10.13 }, "tags": { "bridge": "yes", "bridge:movable": "bascule", "seamark:bridge:clearance_height_closed": "5.2", "name": "Hörnbrücke" } },
               { "type": "node", "id": 8, "lat": 54.47, "lon": 9.86, "tags": { "seamark:type": "bridge", "seamark:bridge:category": "swing", "seamark:bridge:clearance_height": "4", "seamark:bridge:clearance_height_open": "12.5", "seamark:name": "Lindaunisbrücke" } },
               { "type": "way", "id": 9, "center": { "lat": 54.5, "lon": 9.5 }, "tags": { "bridge": "yes", "bridge:movable": "no" } },
-              { "type": "way", "id": 10, "center": { "lat": 55.34, "lon": 11.03 }, "geometry": [ { "lat": 55.33, "lon": 11.0 }, { "lat": 55.35, "lon": 11.06 } ], "tags": { "bridge": "yes", "seamark:bridge:clearance_height": "65", "name": "Østbroen" } }
+              { "type": "way", "id": 10, "center": { "lat": 55.34, "lon": 11.03 }, "geometry": [ { "lat": 55.33, "lon": 11.0 }, { "lat": 55.35, "lon": 11.06 } ], "tags": { "bridge": "yes", "seamark:bridge:clearance_height": "65", "name": "Østbroen" } },
+              { "type": "way", "id": 11, "geometry": [ { "lat": 55.60, "lon": 12.70 }, { "lat": 55.58, "lon": 12.80 } ], "tags": { "bridge": "yes", "highway": "motorway", "name": "Øresundsbron" } },
+              { "type": "way", "id": 12, "geometry": [ { "lat": 54.00, "lon": 9.00 }, { "lat": 54.001, "lon": 9.001 } ], "tags": { "bridge": "yes", "highway": "residential" } }
             ] }
             """);
         var obstacles = Waterways.ParseObstacles(doc);
-        Assert.Equal(7, obstacles.Count);
+        Assert.Equal(8, obstacles.Count); // the 100 m residential bridge without clearance is not an obstacle, the 7 km Øresund bridge is
+        var oeresund = obstacles.Single(o => o.Name == "Øresundsbron"); Assert.NotNull(oeresund.Line); Assert.Null(oeresund.ClearanceM); Assert.InRange(oeresund.Lat, 55.58, 55.60);
         Assert.Null(obstacles.Single(o => o.Name == "Rendsburger Hochbrücke").Line); // a node
         var east = obstacles.Single(o => o.Name == "Østbroen");
         Assert.NotNull(east.Line); Assert.Equal(2, east.Line!.NumPoints); Assert.Equal(65, east.ClearanceM);

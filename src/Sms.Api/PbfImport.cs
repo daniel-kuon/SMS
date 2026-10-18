@@ -170,7 +170,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (!env.IsNull)
             {
                 var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-                var removed = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct);
+                var removed = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && c.Note.StartsWith("Fahrwasser"))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct);
                 Add("derivedReplaced", removed);
             }
         }

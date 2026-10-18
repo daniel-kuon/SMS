@@ -16,7 +16,7 @@ public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? Clear
 /// </summary>
 public static class Waterways
 {
-    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0}););out center tags;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
+    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0});way["bridge"](if:length()>800)({0}););out geom;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
 
     /// <summary>Navigable for yachts: an explicit boat/motorboat/ship permission, a CEMT class, or a fairway.</summary>
     public static bool IsNavigable(IReadOnlyDictionary<string, string> tags)
@@ -154,6 +154,13 @@ public static class Waterways
         return rings;
     }
 
+    private static double LengthM(LineString l)
+    {
+        var m = 0.0;
+        for (var i = 1; i < l.NumPoints; i++) m += RoutingGraphBuilder.Haversine(l.GetCoordinateN(i - 1).Y, l.GetCoordinateN(i - 1).X, l.GetCoordinateN(i).Y, l.GetCoordinateN(i).X);
+        return m;
+    }
+
     private static double AreaKm2(Geometry g)
     {
         var cos = Math.Cos(g.Centroid.Y * Math.PI / 180);
@@ -197,19 +204,24 @@ public static class Waterways
             if (!el.TryGetProperty("tags", out var t)) continue;
             var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
             var opening = IsOpening(tags);
-            var isBridge = tags.GetValueOrDefault("seamark:type") == "bridge" || (tags.ContainsKey("bridge") && (tags.ContainsKey("seamark:bridge:clearance_height") || opening));
+            LineString? line = null;
+            if (el.TryGetProperty("geometry", out var geom))
+            {
+                var coords = geom.EnumerateArray().Select(g => new Coordinate(g.GetProperty("lon").GetDouble(), g.GetProperty("lat").GetDouble())).ToArray();
+                if (coords.Length >= 2 && !coords[0].Equals2D(coords[^1])) line = new LineString(coords) { SRID = 4326 };
+            }
+            // a long bridge way (Great Belt, Øresund: >800 m) counts even without a charted clearance – its charted span nodes carry it
+            var longBridge = line is not null && tags.ContainsKey("bridge") && LengthM(line) > 800;
+            var isBridge = tags.GetValueOrDefault("seamark:type") == "bridge" || (tags.ContainsKey("bridge") && (tags.ContainsKey("seamark:bridge:clearance_height") || opening)) || longBridge;
             var isLock = tags.GetValueOrDefault("waterway") == "lock_gate" || tags.GetValueOrDefault("lock") == "yes" || tags.GetValueOrDefault("seamark:type") == "gate";
             if (!isBridge && !isLock) continue;
             double lat, lng;
             if (el.TryGetProperty("center", out var c)) { lat = c.GetProperty("lat").GetDouble(); lng = c.GetProperty("lon").GetDouble(); }
             else if (el.TryGetProperty("lat", out var la)) { lat = la.GetDouble(); lng = el.GetProperty("lon").GetDouble(); }
+            else if (line is not null) { var mid = line.Centroid; lat = mid.Y; lng = mid.X; }
+            else if (el.TryGetProperty("geometry", out var cg) && cg.GetArrayLength() > 0) { var first = cg[0]; lat = first.GetProperty("lat").GetDouble(); lng = first.GetProperty("lon").GetDouble(); }
             else continue;
-            LineString? line = null;
-            if (isBridge && el.TryGetProperty("geometry", out var geom))
-            {
-                var coords = geom.EnumerateArray().Select(g => new Coordinate(g.GetProperty("lon").GetDouble(), g.GetProperty("lat").GetDouble())).ToArray();
-                if (coords.Length >= 2 && !coords[0].Equals2D(coords[^1])) { line = new LineString(coords) { SRID = 4326 }; }
-            }
+            if (!isBridge) line = null;
             result.Add(new Obstacle(isLock && !isBridge, lat, lng, isBridge ? (opening ? OpenClearance(tags) : Clearance(tags)) : null, tags.GetValueOrDefault("name") ?? tags.GetValueOrDefault("seamark:name"), isBridge && opening, line));
         }
         return result;
