@@ -1018,8 +1018,8 @@ namespace Sms.Infrastructure.Migrations
 
                     b.Property<string>("Kind")
                         .IsRequired()
-                        .HasMaxLength(60)
-                        .HasColumnType("character varying(60)");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.Property<Point>("Location")
                         .IsRequired()

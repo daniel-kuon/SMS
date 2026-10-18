@@ -11,7 +11,11 @@ public static class Obstacles
     public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Point point, bool isLock, double? clearanceM)> obstacles, double lockPenaltyM) =>
         Apply(edges, obstacles.Select(o => (o.point, o.isLock ? CorrectionKind.Lock : CorrectionKind.Bridge, o.clearanceM)).ToList(), lockPenaltyM, 0);
 
-    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Point point, CorrectionKind kind, double? clearanceM)> obstacles, double lockPenaltyM, double openingPenaltyM, double matchM = MatchM)
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Point point, CorrectionKind kind, double? clearanceM)> obstacles, double lockPenaltyM, double openingPenaltyM, double matchM = MatchM) =>
+        Apply(edges, obstacles.Select(o => ((Geometry)o.point, o.kind, o.clearanceM)).ToList(), lockPenaltyM, openingPenaltyM, matchM);
+
+    /// <summary>Point obstacles match edges within matchM; line obstacles (bridge ways) match every edge that intersects the line.</summary>
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles, double lockPenaltyM, double openingPenaltyM, double matchM)
     {
         if (obstacles.Count == 0) return edges.ToList();
         var result = new List<GraphEdge>(edges.Count);
@@ -20,10 +24,14 @@ public static class Obstacles
             var cost = e.Cost; double? clearance = e.ClearanceM;
             var lat = e.Geom.Centroid.Y;
             var tolDeg = matchM / WaterGraphTiler.MPerDegLat; // rough: the same tolerance in degrees for both axes (longitude is wider in metres)
-            foreach (var (point, kind, clearanceM) in obstacles)
+            foreach (var (geom, kind, clearanceM) in obstacles)
             {
-                if (e.Geom.EnvelopeInternal.Distance(point.EnvelopeInternal) > tolDeg) continue;
-                if (e.Geom.Distance(point) * WaterGraphTiler.MPerDegLat * (Math.Abs(point.X - e.Geom.Centroid.X) > Math.Abs(point.Y - lat) ? Math.Cos(lat * Math.PI / 180) : 1) > matchM) continue;
+                if (e.Geom.EnvelopeInternal.Distance(geom.EnvelopeInternal) > tolDeg) continue;
+                if (geom is Point point)
+                {
+                    if (e.Geom.Distance(point) * WaterGraphTiler.MPerDegLat * (Math.Abs(point.X - e.Geom.Centroid.X) > Math.Abs(point.Y - lat) ? Math.Cos(lat * Math.PI / 180) : 1) > matchM) continue;
+                }
+                else if (!geom.Intersects(e.Geom)) continue;
                 if (kind == CorrectionKind.Lock) cost += lockPenaltyM;
                 else if (kind == CorrectionKind.OpeningBridge) cost += openingPenaltyM;
                 if (kind != CorrectionKind.Lock && clearanceM is { } cm) clearance = clearance is { } cur ? Math.Min(cur, cm) : cm;

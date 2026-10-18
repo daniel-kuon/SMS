@@ -39,6 +39,8 @@ public sealed class RoutingOptions
     public double PassageLinkM { get; set; } = 600;
     public double ChannelPenaltyFactor { get; set; } = 1.5;
     public double MaxRouteNm { get; set; } = 500;
+    /// <summary>Draft assumed when a route is asked for without a ship (a typical cruising yacht): charted shallows below it are avoided by default.</summary>
+    public double DefaultDraftM { get; set; } = 1.5;
     /// <summary>"areas": visibility graph over open water (corners of the buffered coast, open-sea lattice, anchors); "grid": the adaptive quadtree.</summary>
     public string Mode { get; set; } = "areas";
     /// <summary>Safety distance kept from the coast: land is buffered by this before the corners are taken.</summary>
@@ -228,8 +230,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             }
         }
         var obstacles = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
-            .Select(c => (c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
-        extraEdges = Obstacles.Apply(extraEdges, obstacles, o.LockPenaltyM, o.BridgeOpeningPenaltyM);
+            .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+        extraEdges = Obstacles.Apply(extraEdges, obstacles, o.LockPenaltyM, o.BridgeOpeningPenaltyM, Obstacles.MatchM);
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
             foreach (var n in extraNodes) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, ct); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, ct); }
@@ -376,7 +378,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         edges = DepthLimits.Apply(ChannelPreference.Apply(edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), depths);
         // a visibility leg through a sound passes under its bridge: clearance, lock and opening costs apply here as on passages
         var bridges = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
-            .Select(c => (c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+            .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
         edges = Obstacles.Apply(edges, bridges, o.LockPenaltyM, o.BridgeOpeningPenaltyM, o.BridgeMatchAreaM); // a bridge over a sound is a point, the leg may pass a few hundred metres from it
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {

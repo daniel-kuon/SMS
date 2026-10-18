@@ -135,9 +135,19 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         for (var i = 0; i < elements.Count; i += batch)
         {
             using var doc = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(new { elements = elements.Skip(i).Take(batch) }));
-            if (req.Seamarks) { var r = await SeamarkEndpoints.ImportAsync(Filter(doc, e => e.ContainsKey("seamark:type")), db, ct); Add("seamarksCreated", r.created); Add("seamarksUpdated", r.updated); }
-            if (req.Harbours) { var r = await HarbourEndpoints.ImportAsync(Filter(doc, IsHarbour), db, userId, ct); Add("harboursCreated", r.created); Add("harboursUpdated", r.updated); }
-            if (req.Pois) { var r = await PoiEndpoints.ImportAsync(Filter(doc, IsPoi), poiNear!, db, ct); Add("pois", r); }
+            // one bad element must not sink the whole Europe import: a failed batch is logged, counted and skipped
+            try
+            {
+                if (req.Seamarks) { var r = await SeamarkEndpoints.ImportAsync(Filter(doc, e => e.ContainsKey("seamark:type")), db, ct); Add("seamarksCreated", r.created); Add("seamarksUpdated", r.updated); }
+                if (req.Harbours) { var r = await HarbourEndpoints.ImportAsync(Filter(doc, IsHarbour), db, userId, ct); Add("harboursCreated", r.created); Add("harboursUpdated", r.updated); }
+                if (req.Pois) { var r = await PoiEndpoints.ImportAsync(Filter(doc, IsPoi), poiNear!, db, ct); Add("pois", r); }
+            }
+            catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg)
+            {
+                Add("failedBatches", 1); db.ChangeTracker.Clear();
+                Report("import", $"Batch {i / batch + 1} skipped: {pg.SqlState} {pg.MessageText[..Math.Min(pg.MessageText.Length, 120)]}");
+                logger.LogWarning(ex, "PBF import batch {Batch} skipped", i / batch + 1);
+            }
             if (req.Waterways)
             {
                 var r = await RoutingEndpoints.ImportWaterwaysAsync(Filter(doc, t => IsWaterway(t) || IsObstacle(t) || IsFairwayArea(t)), db, userId, ct, replaceExisting: false);

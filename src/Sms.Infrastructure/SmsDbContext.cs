@@ -182,7 +182,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.HasIndex(t => t.TripId);
             e.HasIndex(t => t.ShipId);
         });
-        m.Entity<Poi>(e => { e.Property(p => p.Location).HasColumnType("geometry(Point,3857)"); e.HasIndex(p => p.Location).HasMethod("gist"); e.HasIndex(p => new { p.OsmType, p.OsmId }).IsUnique(); e.Property(p => p.TagsJson).HasColumnType("jsonb"); e.Property(p => p.Class).HasMaxLength(30); e.Property(p => p.Kind).HasMaxLength(60); });
+        m.Entity<Poi>(e => { e.Property(p => p.Location).HasColumnType("geometry(Point,3857)"); e.HasIndex(p => p.Location).HasMethod("gist"); e.HasIndex(p => new { p.OsmType, p.OsmId }).IsUnique(); e.Property(p => p.TagsJson).HasColumnType("jsonb"); e.Property(p => p.Class).HasMaxLength(30); e.Property(p => p.Kind).HasMaxLength(200); });
         m.Entity<Seamark>(e =>
         {
             e.Property(s => s.Location).HasColumnType("geometry(Point,3857)");

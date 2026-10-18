@@ -29,6 +29,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     public async Task<int> ActiveVersionAsync(CancellationToken ct) => (await StatusAsync(ct)).ActiveVersion;
+    /// <summary>Routing:DefaultDraftM (null when 0 = off).</summary>
+    public double? DefaultDraftM => builder.Options.DefaultDraftM > 0 ? builder.Options.DefaultDraftM : null;
 
     /// <summary>Harbour → harbour route; null when either harbour is not connected to the active graph or no path exists.</summary>
     public async Task<RouteResult?> RouteAsync(Guid from, Guid to, CancellationToken ct, double? airDraftM = null, double? draftM = null)
@@ -94,7 +96,16 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // bridges lower than the ship's air draft close their passage edges (clearance_m is null elsewhere); charted depth areas
         // shallower than draft + margin close grid edges (min_depth_m is null on marked passages: a buoyed channel is followed anyway)
         var clearance = airDraftM is { } ad ? $" AND (clearance_m IS NULL OR clearance_m >= {ad.ToString(System.Globalization.CultureInfo.InvariantCulture)})" : "";
-        if (draftM is { } dm) clearance += $" AND (min_depth_m IS NULL OR min_depth_m >= {(dm + builder.Options.DepthSafetyMarginM).ToString(System.Globalization.CultureInfo.InvariantCulture)})";
+        // the last/first HarbourAccessM into a harbour are exempt from the depth limit: the harbour basin and its approach are
+        // charted shallow at this resolution, and one has to get in anyway
+        if (draftM is { } dm)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            var accessDeg = (builder.Options.HarbourAccessM / WaterGraphTiler.MPerDegLat).ToString(inv);
+            clearance += $" AND (min_depth_m IS NULL OR min_depth_m >= {(dm + builder.Options.DepthSafetyMarginM).ToString(inv)}"
+                + $" OR ST_DWithin(geom, ST_SetSRID(ST_MakePoint({a.X.ToString(inv)}, {a.Y.ToString(inv)}), 4326), {accessDeg})"
+                + $" OR ST_DWithin(geom, ST_SetSRID(ST_MakePoint({b.X.ToString(inv)}, {b.Y.ToString(inv)}), 4326), {accessDeg}))";
+        }
         using var span = Activity.StartActivity("routing.route");
         span?.SetTag("routing.graph_version", version);
         var straightM = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X);
@@ -141,7 +152,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         {
             var radiusDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
             var low = await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge) && c.ClearanceM != null && c.ClearanceM < ad).Select(c => c.Geometry).ToListAsync(ct);
-            foreach (var g in low) { var b = g.Centroid.Buffer(radiusDeg); if (b.EnvelopeInternal.Intersects(env)) index.Insert(b.EnvelopeInternal, PreparedGeometryFactory.Prepare(b)); }
+            foreach (var g in low) { var b = g is LineString ? g.Buffer(300 / WaterGraphTiler.MPerDegLat) : g.Centroid.Buffer(radiusDeg); if (b.EnvelopeInternal.Intersects(env)) index.Insert(b.EnvelopeInternal, PreparedGeometryFactory.Prepare(b)); }
         }
         if (draftM is { } dm)
         {

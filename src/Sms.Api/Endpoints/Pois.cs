@@ -28,6 +28,8 @@ public static class PoiEndpoints
         api.MapGet("/pois/status", async (SmsDbContext db, CancellationToken ct) => Results.Ok(new { count = await db.Pois.CountAsync(ct) })).WithTags("Pois");
     }
 
+    private static string? Cut(string? v, int max) => v is null ? null : v.Length <= max ? v : v[..max];
+
     /// <summary>OSM website tags are free text: only http(s) URLs are handed to the browser as links.</summary>
     public static string? HttpUrl(string? v)
     {
@@ -57,7 +59,7 @@ public static class PoiEndpoints
             if (key is null) continue;
             var poi = existing.GetValueOrDefault((type, osmId));
             if (poi is null) { poi = new Poi { OsmType = type, OsmId = osmId }; db.Pois.Add(poi); }
-            poi.Class = key; poi.Kind = dict[key]; poi.Name = dict.GetValueOrDefault("name"); poi.TagsJson = tags.GetRawText();
+            poi.Class = key; poi.Kind = Cut(dict[key], 200); poi.Name = Cut(dict.GetValueOrDefault("name"), 200); poi.TagsJson = tags.GetRawText();
             poi.Location = SeamarkEndpoints.ToMercator(lat, lng); poi.ImportedAt = DateTimeOffset.UtcNow;
             n++;
         }

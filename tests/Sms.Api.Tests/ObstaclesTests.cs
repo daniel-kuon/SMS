@@ -31,6 +31,14 @@ public class ObstaclesTests
         Assert.Null(opening[0].ClearanceM); Assert.Equal(canal[0].Cost + 926, opening[0].Cost, 6);
         var openingLow = Obstacles.Apply([canal[0]], [(bridge, Sms.Domain.CorrectionKind.OpeningBridge, 15.0)], 1852, 926);
         Assert.Equal(15, openingLow[0].ClearanceM);
+        // a bridge as a line: every leg that meets the line gets the clearance, however far from the bridge's centre
+        var longBridge = F.CreateLineString([new Coordinate(9.70, 54.295), new Coordinate(9.76, 54.305)]); // crosses the canal at x ≈ 9.73: the middle edge only
+        var lined = Obstacles.Apply(canal, [((NetTopologySuite.Geometries.Geometry)longBridge, Sms.Domain.CorrectionKind.Bridge, 18.0)], 1852, 926, 60);
+        Assert.Null(lined[0].ClearanceM); Assert.Equal(18, lined[1].ClearanceM); Assert.Null(lined[2].ClearanceM);
+        var wide = F.CreateLineString([new(9.705, 54.29), new(9.715, 54.31), new(9.725, 54.29), new(9.735, 54.31), new(9.745, 54.29), new(9.755, 54.31)]); // zigzag: meets all three
+        Assert.All(Obstacles.Apply(canal, [((NetTopologySuite.Geometries.Geometry)wide, Sms.Domain.CorrectionKind.Bridge, 18.0)], 1852, 926, 60), e => Assert.Equal(18, e.ClearanceM));
+        var beside = Edge(9, 10, 9.70, 54.32, 9.76, 54.32); // parallel, 1.7 km north: untouched
+        Assert.Null(Obstacles.Apply([beside], [((NetTopologySuite.Geometries.Geometry)longBridge, Sms.Domain.CorrectionKind.Bridge, 18.0)], 1852, 926, 60)[0].ClearanceM);
     }
 
     [Fact]
@@ -46,11 +54,15 @@ public class ObstaclesTests
               { "type": "way", "id": 6, "tags": { "waterway": "canal", "CEMT": "Vb" }, "geometry": [ { "lat": 54.0, "lon": 9.0 }, { "lat": 54.1, "lon": 9.1 } ] },
               { "type": "way", "id": 7, "center": { "lat": 54.33, "lon": 10.13 }, "tags": { "bridge": "yes", "bridge:movable": "bascule", "seamark:bridge:clearance_height_closed": "5.2", "name": "Hörnbrücke" } },
               { "type": "node", "id": 8, "lat": 54.47, "lon": 9.86, "tags": { "seamark:type": "bridge", "seamark:bridge:category": "swing", "seamark:bridge:clearance_height": "4", "seamark:bridge:clearance_height_open": "12.5", "seamark:name": "Lindaunisbrücke" } },
-              { "type": "way", "id": 9, "center": { "lat": 54.5, "lon": 9.5 }, "tags": { "bridge": "yes", "bridge:movable": "no" } }
+              { "type": "way", "id": 9, "center": { "lat": 54.5, "lon": 9.5 }, "tags": { "bridge": "yes", "bridge:movable": "no" } },
+              { "type": "way", "id": 10, "center": { "lat": 55.34, "lon": 11.03 }, "geometry": [ { "lat": 55.33, "lon": 11.0 }, { "lat": 55.35, "lon": 11.06 } ], "tags": { "bridge": "yes", "seamark:bridge:clearance_height": "65", "name": "Østbroen" } }
             ] }
             """);
         var obstacles = Waterways.ParseObstacles(doc);
-        Assert.Equal(6, obstacles.Count);
+        Assert.Equal(7, obstacles.Count);
+        Assert.Null(obstacles.Single(o => o.Name == "Rendsburger Hochbrücke").Line); // a node
+        var east = obstacles.Single(o => o.Name == "Østbroen");
+        Assert.NotNull(east.Line); Assert.Equal(2, east.Line!.NumPoints); Assert.Equal(65, east.ClearanceM);
         var bridge = obstacles.Single(o => o.Name == "Rendsburger Hochbrücke");
         Assert.False(bridge.IsLock); Assert.Equal(42, bridge.ClearanceM);
         Assert.Equal(5.5, obstacles.Single(o => o.Lng == 10.14).ClearanceM);

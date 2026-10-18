@@ -62,6 +62,7 @@ public static class RoutingEndpoints
         {
             RouteResult? r = null;
             Point? a = null, b = null;
+            draft ??= router.DefaultDraftM; // no ship given: route for a typical yacht, not for a dinghy
             if (fromHarbour is { } f && toHarbour is { } t)
             {
                 a = await db.Harbours.AsNoTracking().Where(h => h.Id == f).Select(h => h.Location).FirstOrDefaultAsync(ct);
@@ -245,7 +246,7 @@ public static class RoutingEndpoints
 
     private static RoutingCorrection ToCorrection(Obstacle ob, Guid? userId) => new()
     {
-        Kind = ob.IsLock ? CorrectionKind.Lock : ob.Opening ? CorrectionKind.OpeningBridge : CorrectionKind.Bridge, Source = CorrectionSource.Derived, Geometry = Geo.Point(ob.Lat, ob.Lng), ClearanceM = ob.ClearanceM, Active = true, CreatedById = userId,
+        Kind = ob.IsLock ? CorrectionKind.Lock : ob.Opening ? CorrectionKind.OpeningBridge : CorrectionKind.Bridge, Source = CorrectionSource.Derived, Geometry = (Geometry?)ob.Line ?? Geo.Point(ob.Lat, ob.Lng), ClearanceM = ob.ClearanceM, Active = true, CreatedById = userId,
         Note = ob.IsLock ? $"Schleuse{(ob.Name is null ? "" : " " + ob.Name)}" : $"{(ob.Opening ? "Klappbrücke" : "Brücke")}{(ob.Name is null ? "" : " " + ob.Name)}{(ob.ClearanceM is { } c ? $" – Durchfahrtshöhe {c.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} m{(ob.Opening ? " (geöffnet)" : "")}" : "")}",
     };
 

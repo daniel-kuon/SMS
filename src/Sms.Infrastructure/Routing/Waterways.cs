@@ -6,7 +6,8 @@ namespace Sms.Infrastructure.Routing;
 
 public sealed record Waterway(string? Name, LineString Line, int Ways);
 /// <summary>Opening: a movable bridge (bridge:movable=*, seamark:bridge:category=opening/bascule/swing/lift…); ClearanceM is then the open clearance (null = unlimited).</summary>
-public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? ClearanceM, string? Name, bool Opening = false);
+/// <summary>Line: the bridge's way geometry (a 7 km bridge is crossed wherever a leg meets the line, not only near its centre).</summary>
+public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? ClearanceM, string? Name, bool Opening = false, LineString? Line = null);
 
 /// <summary>
 /// Spec 10 §10.5 step 1: OSM waterway centrelines (canals, rivers, fairways with navigability tags) become routing
@@ -87,7 +88,13 @@ public static class Waterways
             if (el.TryGetProperty("center", out var c)) { lat = c.GetProperty("lat").GetDouble(); lng = c.GetProperty("lon").GetDouble(); }
             else if (el.TryGetProperty("lat", out var la)) { lat = la.GetDouble(); lng = el.GetProperty("lon").GetDouble(); }
             else continue;
-            result.Add(new Obstacle(isLock && !isBridge, lat, lng, isBridge ? (opening ? OpenClearance(tags) : Clearance(tags)) : null, tags.GetValueOrDefault("name") ?? tags.GetValueOrDefault("seamark:name"), isBridge && opening));
+            LineString? line = null;
+            if (isBridge && el.TryGetProperty("geometry", out var geom))
+            {
+                var coords = geom.EnumerateArray().Select(g => new Coordinate(g.GetProperty("lon").GetDouble(), g.GetProperty("lat").GetDouble())).ToArray();
+                if (coords.Length >= 2 && !coords[0].Equals2D(coords[^1])) { line = new LineString(coords) { SRID = 4326 }; }
+            }
+            result.Add(new Obstacle(isLock && !isBridge, lat, lng, isBridge ? (opening ? OpenClearance(tags) : Clearance(tags)) : null, tags.GetValueOrDefault("name") ?? tags.GetValueOrDefault("seamark:name"), isBridge && opening, line));
         }
         return result;
     }

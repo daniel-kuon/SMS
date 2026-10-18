@@ -20,7 +20,7 @@ public class EndpointSmokeTests(ApiFixture f) : IClassFixture<ApiFixture>
     private static async Task<Guid> IdOf(HttpResponseMessage r) { r.EnsureSuccessStatusCode(); return (await r.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid(); }
 
     // routes that would start long-running or external work
-    private static readonly string[] Skip = ["/api/admin/routing/rebuild", "/api/admin/seamarks/import-osm", "/api/admin/harbours/import-osm", "/api/admin/routing/import-waterways"];
+    private static readonly string[] Skip = ["/api/admin/routing/rebuild", "/api/admin/seamarks/import-osm", "/api/admin/harbours/import-osm", "/api/admin/routing/import-waterways", "/api/admin/routing/import-depths", "/api/admin/routing/derive-fairways"];
 
     [Fact]
     public async Task No_route_answers_500_for_any_caller()
