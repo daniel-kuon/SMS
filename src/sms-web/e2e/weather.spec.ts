@@ -73,6 +73,7 @@ test('ship context hides deep hazards and routes carry the draft', async ({ page
   await page.locator('.ship-ctx input').first().fill('1.8');
   await page.locator('.ship-ctx input').first().dispatchEvent('input');
   await expect(page.locator('.ship-ctx .small')).toBeVisible();
+  await page.waitForFunction(() => !!(window as unknown as { smsMap?: unknown }).smsMap); // the map handle is set once the style and overlays are up
   const filter = await page.evaluate(() => JSON.stringify((window as unknown as { smsMap: { getFilter(id: string): unknown } }).smsMap.getFilter('seamark-icons')));
   expect(filter).toContain('2.3');
   const route = page.waitForRequest(r => r.url().includes('/api/routing/route?') && r.url().includes('draft=1.8'), { timeout: 30_000 });
