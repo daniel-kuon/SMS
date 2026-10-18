@@ -161,6 +161,45 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// are up to 20 km long, so the path is densified first (every ≤ 500 m) – otherwise the pulled string could only bend at
     /// grid nodes and kept a dog-leg when the direct line to the next node grazed the coast.
     /// </summary>
+    private sealed record SmoothStatics(STRtree<(Geometry geom, double? clearance)> Bridges, STRtree<Geometry> Zone);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<Task<SmoothStatics>>> _statics = new();
+
+    /// <summary>Per graph version: the bridge pieces after chains and charted spans, and the channel zone pieces; built on first use.</summary>
+    private Task<SmoothStatics> StaticsAsync(int version, CancellationToken ct)
+    {
+        foreach (var old in _statics.Keys.Where(k => k != version).ToList()) _statics.TryRemove(old, out _);
+        return _statics.GetOrAdd(version, v => new Lazy<Task<SmoothStatics>>(() => BuildStaticsAsync(v))).Value;
+    }
+
+    private async Task<SmoothStatics> BuildStaticsAsync(int version)
+    {
+        var sdb = db; // the first route of a version builds the cache; the caller awaits it, so its scope outlives the build
+        var bridges = new STRtree<(Geometry, double?)>();
+        var raw = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync())
+            .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+        foreach (var (g, _, cl) in Obstacles.WithSpans(raw)) bridges.Insert(g.EnvelopeInternal, (g, cl));
+        bridges.Build();
+        var zone = new STRtree<Geometry>();
+        var o = builder.Options;
+        if (o.ChannelPreferenceM > 0)
+        {
+            var fairways = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => c.Geometry).ToListAsync()).OfType<LineString>().ToList();
+            if (fairways.Count > 0)
+            {
+                var corridorDeg = 150 / WaterGraphTiler.MPerDegLat;
+                var corridor = NetTopologySuite.Operation.Union.UnaryUnionOp.Union(fairways.Select(f => f.Buffer(corridorDeg)).ToList());
+                var corridorPrepared = PreparedGeometryFactory.Prepare(corridor);
+                foreach (var z in ChannelPreference.Zone(fairways, [], o.ChannelPreferenceM))
+                {
+                    var g = corridorPrepared.Intersects(z) ? z.Difference(corridor) : z;
+                    if (!g.IsEmpty) zone.Insert(g.EnvelopeInternal, g);
+                }
+            }
+        }
+        zone.Build();
+        return new SmoothStatics(bridges, zone);
+    }
+
     private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null)
     {
         var clock = Stopwatch.StartNew();
@@ -174,11 +213,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // what A* avoided must stay avoided when the string is pulled: too-low bridges (a circle around the point, a band along a
         // line), the impassable parts of bridges with charted spans, and too-shallow areas count as land
         {
+            // bridge pieces (chains, charted spans) are the same for every route of a graph version: computed once, queried by envelope
+            var statics = await StaticsAsync(version, ct);
             var radiusDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
-            var envBox = Geo.Factory.ToGeometry(env); envBox.SRID = 4326;
-            var bridges = Obstacles.WithSpans((await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge) && c.Geometry.Intersects(envBox)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
-                .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList());
-            foreach (var (g, _, clearance) in bridges)
+            foreach (var (g, clearance) in statics.Bridges.Query(env))
             {
                 if (clearance is not { } cl || (cl > 0 && (airDraftM is not { } ad || cl >= ad))) continue;
                 var b = g is Point ? g.Buffer(radiusDeg) : g.Buffer(300 / WaterGraphTiler.MPerDegLat);
@@ -197,18 +235,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var o = builder.Options;
         if (o.ChannelPreferenceM > 0)
         {
-            var box = Geo.Factory.ToGeometry(env); box.SRID = 4326;
-            var fairways = (await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Geometry.Intersects(box)).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
-            if (fairways.Count > 0)
-            {
-                var corridorDeg = 150 / WaterGraphTiler.MPerDegLat;
-                var corridor = NetTopologySuite.Operation.Union.UnaryUnionOp.Union(fairways.Select(f => f.Buffer(corridorDeg)).ToList());
-                foreach (var z in ChannelPreference.Zone(fairways, [], o.ChannelPreferenceM))
-                {
-                    var g = z.Difference(corridor);
-                    if (!g.IsEmpty) index.Insert(g.EnvelopeInternal, PreparedGeometryFactory.Prepare(g));
-                }
-            }
+            // the channel zone (band next to every buoy chain minus the chains' corridors) likewise: once per version
+            foreach (var z in (await StaticsAsync(version, ct)).Zone.Query(env)) index.Insert(z.EnvelopeInternal, PreparedGeometryFactory.Prepare(z));
         }
         Lap("smooth-zone");
         index.Build();
