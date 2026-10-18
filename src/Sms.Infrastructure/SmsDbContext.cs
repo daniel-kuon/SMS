@@ -110,7 +110,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
         m.Entity<PlannedLeg>(e =>
         {
             e.Property(l => l.RouteGeometry).HasColumnType("geography (linestring, 4326)");
-            e.HasIndex(l => new { l.TripId, l.Order });
+            e.HasIndex(l => new { l.TripId, l.Order, l.Alternative });
         });
 
         m.Entity<LogbookEntry>(e =>
@@ -120,6 +120,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.HasOne(l => l.StartHarbour).WithMany().HasForeignKey(l => l.StartHarbourId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne(l => l.EndHarbour).WithMany().HasForeignKey(l => l.EndHarbourId).OnDelete(DeleteBehavior.Restrict);
             e.Property(l => l.CalculatedRoute).HasColumnType("geography (linestring, 4326)");
+            e.Property(l => l.RouteGeometry).HasColumnType("geography (linestring, 4326)");
             e.HasQueryFilter(l => l.DeletedAt == null);
         });
         m.Entity<LogbookEntryCrew>(e =>

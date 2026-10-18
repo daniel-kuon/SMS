@@ -16,8 +16,9 @@ public record TripSummary(Guid Id, Guid ShipId, string ShipName, string Name, Da
 public record TripDto(Guid Id, Guid ShipId, string ShipName, string Name, string? Description, DateOnly StartDate, DateOnly EndDate, string TimeZone,
     Guid? PlannedStartHarbourId, Guid? PlannedEndHarbourId, Visibility Visibility, TripStatus Status, string Currency, DateTimeOffset? CostsLockedAt,
     IReadOnlyList<CrewDto> Crew, CrewDto? Me, bool CanEdit, bool CanWriteLogbook, bool IsCrew, bool CostsVisible, Visibility TrackVisibility, int PublicPositionDelayMinutes);
-public record LegUpsert(Guid FromHarbourId, Guid ToHarbourId, DateOnly? PlannedDate);
-public record LegDto(Guid Id, int Order, Guid FromHarbourId, string FromName, Guid ToHarbourId, string ToName, DateOnly? PlannedDate, decimal? DistanceNm, decimal? EtaHours);
+/// <summary>Order null = position in the list (single line, no alternatives).</summary>
+public record LegUpsert(Guid FromHarbourId, Guid ToHarbourId, DateOnly? PlannedDate, int? Order = null, int Alternative = 0);
+public record LegDto(Guid Id, int Order, int Alternative, Guid FromHarbourId, string FromName, Guid ToHarbourId, string ToName, DateOnly? PlannedDate, decimal? DistanceNm, decimal? EtaHours);
 public record TripInviteRequest(string? Email, CrewRole Role = CrewRole.Crew);
 public record DayDto(DateOnly Date, IReadOnlyList<LogbookEntryDto> Logbook, IReadOnlyList<PostDto> Posts, IReadOnlyList<MediaDto> Photos);
 
@@ -221,14 +222,23 @@ public static class TripEndpoints
             if (!await access.IsTripSkipperAsync(id, ct)) return Results.Forbid();
             var trip = await db.Trips.AsNoTracking().Include(t => t.Ship).FirstOrDefaultAsync(t => t.Id == id, ct);
             if (trip is null) return Results.NotFound();
+            var refs = legs.Select((l, i) => new PlannedLegRules.LegRef(l.Order ?? i, l.Alternative, l.FromHarbourId, l.ToHarbourId)).ToList();
+            if (PlannedLegRules.Validate(refs, trip.PlannedStartHarbourId) is { } error) return Invalid("legs", error);
+            // keep geometry/distance already computed for a harbour pair; route only new pairs
+            var known = (await db.PlannedLegs.AsNoTracking().Where(l => l.TripId == id && l.RouteGeometry != null).ToListAsync(ct))
+                .DistinctBy(l => (l.FromHarbourId, l.ToHarbourId)).ToDictionary(l => (l.FromHarbourId, l.ToHarbourId));
             await db.PlannedLegs.Where(l => l.TripId == id).ExecuteDeleteAsync(ct);
-            var order = 0;
-            foreach (var l in legs)
+            foreach (var (l, r) in legs.Zip(refs).OrderBy(x => x.Second.Order).ThenBy(x => x.Second.Alternative))
             {
-                var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct, (double?)trip.Ship.AirDraftM); // low bridges stay closed for this ship
-                var meters = route is null ? await db.Harbours.Where(h => h.Id == l.FromHarbourId).Select(h => h.Location.Distance(db.Harbours.First(x => x.Id == l.ToHarbourId).Location)).FirstOrDefaultAsync(ct) : 0;
-                db.PlannedLegs.Add(new PlannedLeg { TripId = id, Order = order++, FromHarbourId = l.FromHarbourId, ToHarbourId = l.ToHarbourId, PlannedDate = l.PlannedDate,
-                    DistanceNm = route?.DistanceNm ?? Math.Round((decimal)meters / 1852m, 1), RouteGeometry = route?.Geometry });
+                var leg = new PlannedLeg { TripId = id, Order = r.Order, Alternative = r.Alternative, FromHarbourId = l.FromHarbourId, ToHarbourId = l.ToHarbourId, PlannedDate = l.PlannedDate };
+                if (known.TryGetValue((l.FromHarbourId, l.ToHarbourId), out var k)) { leg.RouteGeometry = k.RouteGeometry; leg.DistanceNm = k.DistanceNm; }
+                else
+                {
+                    var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct, (double?)trip.Ship.AirDraftM); // low bridges stay closed for this ship
+                    var meters = route is null ? await db.Harbours.Where(h => h.Id == l.FromHarbourId).Select(h => h.Location.Distance(db.Harbours.First(x => x.Id == l.ToHarbourId).Location)).FirstOrDefaultAsync(ct) : 0;
+                    leg.DistanceNm = route?.DistanceNm ?? Math.Round((decimal)meters / 1852m, 1); leg.RouteGeometry = route?.Geometry;
+                }
+                db.PlannedLegs.Add(leg);
             }
             await db.SaveChangesAsync(ct);
             return Results.Ok(await LegDtos(trip, db, ct));
@@ -301,6 +311,39 @@ public static class TripEndpoints
             trip.Crew = await db.CrewMembers.AsNoTracking().Where(c => c.TripId == id).ToListAsync(ct);
             return Results.Ok(new { trip = Summary(trip), stats, legs, stops, items = photos.Concat<object>(posts), attribution = HarbourEndpoints.Attribution });
         });
+
+        // --- map payload for the Törn section (docs/14): planned legs incl. alternatives, logbook routes, harbours, located photos
+        g.MapGet("/{id:guid}/map", async (Guid id, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
+        {
+            var viewer = await Viewer.ForAsync(current, access, ct);
+            var trip = await db.Trips.AsNoTracking().Include(t => t.Ship).Where(viewer.Trips()).FirstOrDefaultAsync(t => t.Id == id, ct);
+            if (trip is null) return Results.NotFound();
+            var legs = await db.PlannedLegs.AsNoTracking().Where(l => l.TripId == id).OrderBy(l => l.Order).ThenBy(l => l.Alternative).ToListAsync(ct);
+            var entries = await db.LogbookEntries.AsNoTracking().Include(l => l.Ship).Include(l => l.Trip)
+                .Where(l => l.TripId == id).Where(viewer.Logbook()).OrderBy(l => l.DepartedAt).ToListAsync(ct);
+            // imported tracks follow the same visibility, delay and privacy-zone rules as /overview (spec 12 §12.5)
+            var isCrewForTrack = viewer.CrewTripIds.Contains(id) || viewer.IsAdmin;
+            var trackVisible = isCrewForTrack || await access.CanViewAsync(trip.TrackVisibility, trip, trip.Ship, null, ct);
+            var cutoff = isCrewForTrack ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow.AddMinutes(-trip.PublicPositionDelayMinutes);
+            var segments = trackVisible ? await db.TrackSegments.AsNoTracking()
+                .Where(s => s.TripId == id && s.LogbookEntryId != null && (s.SourceOverride ?? s.Source) != Sms.Domain.Tracking.TrackSource.Calculated && s.EndTime <= cutoff).ToListAsync(ct) : [];
+            var zones = isCrewForTrack ? [] : await db.PrivacyZones.AsNoTracking().Where(z => z.ShipId == trip.ShipId).ToListAsync(ct);
+            var tracks = segments.GroupBy(s => s.LogbookEntryId!.Value)
+                .Select(gp => (gp.Key, Line: TrackProcessor.StripZones(zones.Count > 0 ? gp.First().Geometry : gp.First().GeometryCoarse, zones)))
+                .Where(x => x.Line is not null).ToDictionary(x => x.Key, x => x.Line);
+            var harbourIds = legs.SelectMany(l => new[] { l.FromHarbourId, l.ToHarbourId }).Concat(entries.SelectMany(e => new[] { e.StartHarbourId, e.EndHarbourId }))
+                .Concat(new[] { trip.PlannedStartHarbourId, trip.PlannedEndHarbourId }.Where(h => h != null).Select(h => h!.Value)).Distinct().ToList();
+            var harbours = await db.Harbours.AsNoTracking().Where(h => harbourIds.Contains(h.Id)).Select(h => new { h.Id, h.Name, lat = h.Location.Y, lng = h.Location.X }).ToListAsync(ct);
+            var photos = await db.Media.AsNoTracking().Where(m => m.TripId == id && m.Location != null && m.Kind == MediaKind.Photo).Where(viewer.Media(trip, trip.Ship))
+                .OrderBy(m => m.TakenAt ?? m.CreatedAt).Select(m => new { m.Id, m.Location, m.TakenAt, m.LogbookEntryId }).ToListAsync(ct);
+            return Results.Ok(new
+            {
+                plannedLegs = legs.Select(l => new { l.Id, l.Order, l.Alternative, l.FromHarbourId, l.ToHarbourId, l.PlannedDate, l.DistanceNm, geometry = l.RouteGeometry }),
+                logbook = entries.Select(e => new { e.Id, e.StartHarbourId, e.EndHarbourId, e.DepartedAt, e.ArrivedAt, geometry = e.RouteGeometry ?? tracks.GetValueOrDefault(e.Id) }),
+                harbours,
+                photos = photos.Select(m => new { m.Id, thumbUrl = $"/api/media/{m.Id}/thumb", lat = m.Location!.Y, lng = m.Location.X, m.TakenAt, m.LogbookEntryId }),
+            });
+        });
     }
 
     internal static async Task<List<DayDto>> Timeline(Trip trip, DateOnly? from, DateOnly? to, SmsDbContext db, Viewer viewer, CancellationToken ct)
@@ -339,10 +382,10 @@ public static class TripEndpoints
 
     private static async Task<List<LegDto>> LegDtos(Trip trip, SmsDbContext db, CancellationToken ct)
     {
-        var legs = await db.PlannedLegs.AsNoTracking().Where(l => l.TripId == trip.Id).OrderBy(l => l.Order).ToListAsync(ct);
+        var legs = await db.PlannedLegs.AsNoTracking().Where(l => l.TripId == trip.Id).OrderBy(l => l.Order).ThenBy(l => l.Alternative).ToListAsync(ct);
         var ids = legs.SelectMany(l => new[] { l.FromHarbourId, l.ToHarbourId }).Distinct().ToList();
         var names = await db.Harbours.AsNoTracking().Where(h => ids.Contains(h.Id)).ToDictionaryAsync(h => h.Id, h => h.Name, ct);
-        return legs.Select(l => new LegDto(l.Id, l.Order, l.FromHarbourId, names.GetValueOrDefault(l.FromHarbourId, "?"), l.ToHarbourId, names.GetValueOrDefault(l.ToHarbourId, "?"), l.PlannedDate, l.DistanceNm,
+        return legs.Select(l => new LegDto(l.Id, l.Order, l.Alternative, l.FromHarbourId, names.GetValueOrDefault(l.FromHarbourId, "?"), l.ToHarbourId, names.GetValueOrDefault(l.ToHarbourId, "?"), l.PlannedDate, l.DistanceNm,
             l.DistanceNm is { } nm && trip.Ship.CruisingSpeedKn > 0 ? Math.Round(nm / trip.Ship.CruisingSpeedKn, 1) : null)).ToList();
     }
 

@@ -80,6 +80,7 @@ public static class MediaEndpoints
                 var p = await storage.StorePhotoAsync(stream, ct);
                 var media = new Media { OwnerId = current.RequiredId, HarbourId = harbourId, Kind = MediaKind.Photo, StorageKey = p.StorageKey, OriginalFileName = file.FileName, ContentType = "image/jpeg",
                     SizeBytes = file.Length, Width = p.Width, Height = p.Height, Visibility = Visibility.Public, ProcessingStatus = ProcessingStatus.Done, Day = DateOnly.FromDateTime(DateTime.UtcNow), CreatedById = current.Id };
+                ApplyExif(media, p);
                 db.Media.Add(media); ids.Add(media.Id);
             }
             await db.SaveChangesAsync(ct);
@@ -113,6 +114,7 @@ public static class MediaEndpoints
             var p = await storage.StorePhotoAsync(stream, ct);
             var media = new Media { OwnerId = current.RequiredId, ShipId = shipId, Kind = MediaKind.Photo, StorageKey = p.StorageKey, OriginalFileName = file.FileName, ContentType = "image/jpeg", SizeBytes = file.Length,
                 Width = p.Width, Height = p.Height, Visibility = Visibility.Public, ProcessingStatus = ProcessingStatus.Done };
+            ApplyExif(media, p);
             db.Media.Add(media);
             await db.Ships.Where(s => s.Id == shipId).ExecuteUpdateAsync(s => s.SetProperty(x => x.PhotoMediaId, media.Id), ct);
             await db.SaveChangesAsync(ct);
@@ -168,6 +170,7 @@ public static class MediaEndpoints
                 var p = await storage.StorePhotoAsync(stream, ct);
                 var media = new Media { OwnerId = current.RequiredId, ShipId = shipId, Kind = MediaKind.Photo, StorageKey = p.StorageKey, OriginalFileName = Path.GetFileName(file.FileName), ContentType = "image/jpeg",
                     SizeBytes = file.Length, Width = p.Width, Height = p.Height, Visibility = visibility, ProcessingStatus = ProcessingStatus.Done, CreatedById = current.Id };
+                ApplyExif(media, p);
                 db.Media.Add(media);
                 results.Add(ToDto(media, names));
             }
@@ -209,6 +212,13 @@ public static class MediaEndpoints
             storage.Delete(m.StorageKey);
             return Results.NoContent();
         }).RequireAuthorization();
+    }
+
+    /// <summary>EXIF for uploads outside a trip: no trip time zone, so TakenAt stays camera-local time (offset 0). Avatars are left out on purpose (home location).</summary>
+    private static void ApplyExif(Media m, MediaStorage.ProcessResult p)
+    {
+        m.TakenAt = p.TakenAt;
+        if (p.Location is not null) { m.Location = p.Location; m.LocationSource = LocationSource.Exif; }
     }
 
     private static async Task<Point?> TrackLocationAsync(SmsDbContext db, Guid tripId, DateTimeOffset at, CancellationToken ct)

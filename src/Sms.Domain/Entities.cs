@@ -132,11 +132,38 @@ public class PlannedLeg : Entity
 {
     public Guid TripId { get; set; }
     public int Order { get; set; }
+    /// <summary>0 = main line, 1… = alternative at the same <see cref="Order"/> (docs/14).</summary>
+    public int Alternative { get; set; }
     public Guid FromHarbourId { get; set; }
     public Guid ToHarbourId { get; set; }
     public DateOnly? PlannedDate { get; set; }
     public decimal? DistanceNm { get; set; }
     public LineString? RouteGeometry { get; set; }
+}
+
+public static class PlannedLegRules
+{
+    public readonly record struct LegRef(int Order, int Alternative, Guid FromHarbourId, Guid ToHarbourId);
+
+    /// <summary>Docs/14: steps 0..n without gaps, unique (Order, Alternative); a leg starts at a harbour reached by the previous step (any alternative), step 0 at the planned start when set. Null = valid.</summary>
+    public static string? Validate(IReadOnlyList<LegRef> legs, Guid? plannedStartHarbourId)
+    {
+        var sorted = legs.OrderBy(l => l.Order).ThenBy(l => l.Alternative).ToList();
+        for (var i = 0; i < sorted.Count; i++)
+        {
+            var l = sorted[i];
+            if (l.Order < 0 || l.Alternative < 0) return "Reihenfolge und Alternative dürfen nicht negativ sein.";
+            if (i > 0 && sorted[i - 1].Order == l.Order && sorted[i - 1].Alternative == l.Alternative) return $"Etappe {l.Order + 1} / Alternative {l.Alternative} ist doppelt.";
+            if (i > 0 ? l.Order > sorted[i - 1].Order + 1 : l.Order != 0) return $"Etappe {l.Order} fehlt.";
+            if (l.Order == 0)
+            {
+                if (plannedStartHarbourId is { } start && l.FromHarbourId != start) return "Die erste Etappe muss im geplanten Starthafen beginnen.";
+            }
+            else if (!sorted.Any(p => p.Order == l.Order - 1 && p.ToHarbourId == l.FromHarbourId))
+                return $"Etappe {l.Order + 1} beginnt nicht in einem Zielhafen der vorherigen Etappe.";
+        }
+        return null;
+    }
 }
 
 public class TaskItem : Entity
@@ -180,6 +207,8 @@ public class LogbookEntry : Entity
     public string? Notes { get; set; }
     public LineString? CalculatedRoute { get; set; }
     public decimal? CalculatedDistanceNm { get; set; }
+    /// <summary>The route as actually sailed/adjusted on the map (docs/14); null = calculated route or imported track.</summary>
+    public LineString? RouteGeometry { get; set; }
     public Visibility Visibility { get; set; } = Visibility.Crew;
     public Guid AuthorId { get; set; }
     public List<LogbookEntryCrew> Crew { get; set; } = [];

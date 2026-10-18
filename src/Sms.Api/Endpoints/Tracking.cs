@@ -148,7 +148,7 @@ public static class TrackingEndpoints
                 if (geom is null) continue;
                 features.Add(new { type = "Feature", geometry = geom, properties = new { kind = "track", day = s.Day, source = (s.SourceOverride ?? s.Source).ToString(), distanceNm = s.DistanceNm, durationMinutes = s.DurationMinutes, maxSogKn = s.MaxSogKn, avgSogKn = s.AvgSogKn, colourIndex = dayIndex++, logbookEntryId = s.LogbookEntryId, segmentId = s.Id } });
             }
-            foreach (var l in legs) features.Add(new { type = "Feature", geometry = l.RouteGeometry, properties = new { kind = "planned", order = l.Order, distanceNm = l.DistanceNm } });
+            foreach (var l in legs) features.Add(new { type = "Feature", geometry = l.RouteGeometry, properties = new { kind = "planned", order = l.Order, alternative = l.Alternative, distanceNm = l.DistanceNm } });
             return Results.Ok(new { type = "FeatureCollection", features });
         });
 

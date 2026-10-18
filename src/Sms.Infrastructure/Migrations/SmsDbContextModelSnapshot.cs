@@ -763,6 +763,9 @@ namespace Sms.Infrastructure.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
 
+                    b.Property<LineString>("RouteGeometry")
+                        .HasColumnType("geography (linestring, 4326)");
+
                     b.Property<decimal?>("SailedDistanceNm")
                         .HasPrecision(18, 4)
                         .HasColumnType("numeric(18,4)");
@@ -956,6 +959,9 @@ namespace Sms.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<int>("Alternative")
+                        .HasColumnType("integer");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -995,7 +1001,7 @@ namespace Sms.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TripId", "Order");
+                    b.HasIndex("TripId", "Order", "Alternative");
 
                     b.ToTable("PlannedLegs");
                 });

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NetTopologySuite.Geometries;
 using Sms.Domain;
 using Sms.Infrastructure;
 using Sms.Infrastructure.Routing;
@@ -9,11 +10,11 @@ namespace Sms.Api.Endpoints;
 public record EntryCrewRef(Guid? CrewMemberId, Guid? UserId, string? GuestName);
 public record LogbookEntryUpsert(Guid? TripId, Guid StartHarbourId, Guid EndHarbourId, DateTimeOffset DepartedAt, DateTimeOffset ArrivedAt,
     decimal? EngineHoursStart, decimal? EngineHoursEnd, decimal? LogStart, decimal? LogEnd, string? WindSpeed, WindDirection? WindDirection,
-    string? Weather, string? SeaState, decimal? SailedDistanceNm, string? SailsNotes, string? Notes, Visibility Visibility, List<EntryCrewRef>? Crew);
+    string? Weather, string? SeaState, decimal? SailedDistanceNm, string? SailsNotes, string? Notes, Visibility Visibility, List<EntryCrewRef>? Crew, LineString? RouteGeometry = null);
 public record LogbookEntryDto(Guid Id, Guid ShipId, Guid? TripId, Guid StartHarbourId, string StartHarbour, Guid EndHarbourId, string EndHarbour,
     DateTimeOffset DepartedAt, DateTimeOffset ArrivedAt, string Duration, decimal? EngineHoursStart, decimal? EngineHoursEnd, decimal? LogStart, decimal? LogEnd,
     string? WindSpeed, WindDirection? WindDirection, string? Weather, string? SeaState, decimal? SailedDistanceNm, string? SailsNotes, string? Notes,
-    Visibility Visibility, Guid AuthorId, IReadOnlyList<EntryCrewDto> Crew, string CrewList, bool CanEdit);
+    Visibility Visibility, Guid AuthorId, IReadOnlyList<EntryCrewDto> Crew, string CrewList, bool CanEdit, LineString? RouteGeometry);
 public record EntryCrewDto(Guid? CrewMemberId, Guid? UserId, string Name);
 public record LogbookDefaults(Guid? StartHarbourId, string? StartHarbourName, decimal? EngineHoursStart, decimal? LogStart, IReadOnlyList<EntryCrewDto> Crew);
 
@@ -63,7 +64,7 @@ public static class LogbookEndpoints
             return Results.Ok(new LogbookDefaults(last?.EndHarbourId, last?.EndHarbour.Name, last?.EngineHoursEnd, last?.LogEnd, crew));
         }).RequireAuthorization();
 
-        ships.MapPost("", async (Guid shipId, LogbookEntryUpsert req, SmsDbContext db, CurrentUser current, Access access, HtmlSanitizerService html, SeaRouter router, CancellationToken ct) =>
+        ships.MapPost("", async (Guid shipId, LogbookEntryUpsert req, SmsDbContext db, CurrentUser current, Access access, HtmlSanitizerService html, SeaRouter router, RoutingGraphBuilder builder, CancellationToken ct) =>
         {
             if (req.TripId is { } t)
             {
@@ -72,6 +73,7 @@ public static class LogbookEndpoints
             }
             else if (!await access.IsShipMemberAsync(shipId, null, ct)) return Results.Forbid();
             if (Validate(req) is { } problem) return problem;
+            if (await ValidateRouteAsync(req, db, builder, ct) is { } routeProblem) return routeProblem;
             var entry = new LogbookEntry { ShipId = shipId, AuthorId = current.RequiredId, CreatedById = current.Id };
             Apply(entry, req, html);
             await CalculateRouteAsync(entry, router, await AirDraftAsync(db, shipId, ct), ct);
@@ -96,12 +98,13 @@ public static class LogbookEndpoints
             return Results.Ok(new { entry = dto, days });
         });
 
-        g.MapPut("/{id:guid}", async (Guid id, LogbookEntryUpsert req, SmsDbContext db, CurrentUser current, Access access, HtmlSanitizerService html, SeaRouter router, CancellationToken ct) =>
+        g.MapPut("/{id:guid}", async (Guid id, LogbookEntryUpsert req, SmsDbContext db, CurrentUser current, Access access, HtmlSanitizerService html, SeaRouter router, RoutingGraphBuilder builder, CancellationToken ct) =>
         {
             var e = await db.LogbookEntries.Include(l => l.Crew).FirstOrDefaultAsync(l => l.Id == id, ct);
             if (e is null) return Results.NotFound();
             if (!await CanEditAsync(e, current, access, ct)) return Results.Forbid();
             if (Validate(req) is { } problem) return problem;
+            if (await ValidateRouteAsync(req, db, builder, ct) is { } routeProblem) return routeProblem;
             Apply(e, req with { TripId = e.TripId }, html);
             await CalculateRouteAsync(e, router, await AirDraftAsync(db, e.ShipId, ct), ct);
             e.UpdatedById = current.Id;
@@ -157,6 +160,21 @@ public static class LogbookEndpoints
         return null;
     }
 
+    /// <summary>Docs/14: an adjusted route has at most 2 000 points, stays inside the routing region and starts/ends within 3 km of the harbours.</summary>
+    private static async Task<IResult?> ValidateRouteAsync(LogbookEntryUpsert r, SmsDbContext db, RoutingGraphBuilder builder, CancellationToken ct)
+    {
+        if (r.RouteGeometry is not { IsEmpty: false } line) return null;
+        var c = line.Coordinates;
+        if (c.Length < 2 || c.Length > 2000) return Invalid("routeGeometry", "Die Route braucht 2 bis 2 000 Punkte.");
+        var box = builder.Options.Region;
+        if (c.Any(p => p.Y < box.MinLat || p.Y > box.MaxLat || p.X < box.MinLng || p.X > box.MaxLng)) return Invalid("routeGeometry", "Die Route liegt außerhalb des Fahrtgebiets.");
+        var ends = await db.Harbours.AsNoTracking().Where(h => h.Id == r.StartHarbourId || h.Id == r.EndHarbourId).ToDictionaryAsync(h => h.Id, h => h.Location, ct);
+        static bool Near(Point? h, Coordinate p) => h is not null && RoutingGraphBuilder.Haversine(h.Y, h.X, p.Y, p.X) <= 3000;
+        if (!Near(ends.GetValueOrDefault(r.StartHarbourId), c[0]) || !Near(ends.GetValueOrDefault(r.EndHarbourId), c[^1]))
+            return Invalid("routeGeometry", "Die Route muss höchstens 3 km vom Start- und Zielhafen beginnen und enden.");
+        return null;
+    }
+
     private static void Apply(LogbookEntry e, LogbookEntryUpsert r, HtmlSanitizerService html)
     {
         e.TripId = r.TripId; e.StartHarbourId = r.StartHarbourId; e.EndHarbourId = r.EndHarbourId; e.DepartedAt = r.DepartedAt; e.ArrivedAt = r.ArrivedAt;
@@ -164,6 +182,8 @@ public static class LogbookEndpoints
         e.WindSpeed = r.WindSpeed; e.WindDirection = r.WindDirection; e.Weather = r.Weather; e.SeaState = r.SeaState;
         e.SailedDistanceNm = r.SailedDistanceNm ?? (r.LogEnd is { } le && r.LogStart is { } ls && le >= ls ? le - ls : null);
         e.SailsNotes = r.SailsNotes; e.Notes = html.Sanitize(r.Notes); e.Visibility = r.Visibility;
+        // routeGeometry: omitted/null = keep (older clients), empty LineString = clear; GeoJSON input carries no SRID
+        if (r.RouteGeometry is { } g) e.RouteGeometry = g.IsEmpty ? null : Geo.Factory.CreateLineString(g.Coordinates);
         e.Crew.Clear();
         foreach (var c in r.Crew ?? [])
             if (c.CrewMemberId is not null || c.UserId is not null || !string.IsNullOrWhiteSpace(c.GuestName))
@@ -177,6 +197,6 @@ public static class LogbookEndpoints
         var d = e.Duration;
         return new LogbookEntryDto(e.Id, e.ShipId, e.TripId, e.StartHarbourId, e.StartHarbour.Name, e.EndHarbourId, e.EndHarbour.Name, e.DepartedAt, e.ArrivedAt,
             $"{(int)d.TotalHours}:{d.Minutes:00}", e.EngineHoursStart, e.EngineHoursEnd, e.LogStart, e.LogEnd, e.WindSpeed, e.WindDirection, e.Weather, e.SeaState,
-            e.SailedDistanceNm, e.SailsNotes, e.Notes, e.Visibility, e.AuthorId, crew, string.Join(", ", crew.Select(c => c.Name)), e.AuthorId == me);
+            e.SailedDistanceNm, e.SailsNotes, e.Notes, e.Visibility, e.AuthorId, crew, string.Join(", ", crew.Select(c => c.Name)), e.AuthorId == me, e.RouteGeometry);
     }
 }
