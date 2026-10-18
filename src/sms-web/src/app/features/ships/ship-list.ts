@@ -11,6 +11,7 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api, errorMessage } from '../../core/api';
 import { Paged, Ship } from '../../core/models';
 import { HarbourSelect, VisibilityPicker } from '../../shared/shared';
+import { RichEditor } from '../../shared/rich-editor';
 
 @Component({
   imports: [RouterLink, MatButtonModule, MatCardModule, MatIconModule, TranslatePipe],
@@ -39,7 +40,7 @@ export class ShipListPage {
 }
 
 @Component({
-  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, TranslatePipe, VisibilityPicker, HarbourSelect],
+  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, TranslatePipe, VisibilityPicker, HarbourSelect, RichEditor],
   template: `
     <h2 mat-dialog-title>{{ data?.name ?? ('ship.new' | translate) }}</h2>
     <mat-dialog-content class="form-grid">
@@ -55,7 +56,7 @@ export class ShipListPage {
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.mmsi' | translate }}</mat-label><input matInput [(ngModel)]="m.mmsi" /></mat-form-field>
       <app-harbour-select [label]="'ship.homeHarbour' | translate" [(harbourId)]="m.homeHarbourId" [harbourName]="data?.homeHarbourName ?? null" />
       <app-visibility [(value)]="m.visibility" [options]="['Private', 'Public']" />
-      <mat-form-field appearance="outline" class="full"><mat-label>{{ 'common.description' | translate }}</mat-label><textarea matInput rows="4" [(ngModel)]="m.description"></textarea></mat-form-field>
+      <sms-rich-editor class="full" [label]="'common.description' | translate" [(value)]="m.description" [context]="{ shipId: data?.id, visibility: 'Public' }" />
       @if (error()) { <div class="error full">{{ error() }}</div> }
     </mat-dialog-content>
     <mat-dialog-actions align="end"><button mat-button mat-dialog-close>{{ 'common.cancel' | translate }}</button><button mat-flat-button (click)="save()">{{ 'common.save' | translate }}</button></mat-dialog-actions>`,

@@ -14,6 +14,8 @@ public record TaskDto(Guid Id, TaskScope Scope, Guid? TripId, Guid? ShipId, Guid
 public record PageUpsert(string Slug, string Title, string Content, string Language, bool ShowInFooter, Guid? ParentId = null, int Order = 0, bool ShowInNav = false);
 public record PageNode(Guid Id, string Slug, string Path, string Title, string Language, bool ShowInFooter, bool ShowInNav, int Order, Guid? ParentId, List<PageNode> Children);
 
+public record LinkTarget(string Type, Guid Id, string Title, string? Subtitle, string Url);
+
 public static class TaskEndpoints
 {
     public static void MapTasks(this IEndpointRouteBuilder api)
@@ -113,6 +115,39 @@ public static class PageEndpoints
             await db.ContentPages.Where(x => x.Slug == slug && (lang == null || x.Language == lang)).ExecuteDeleteAsync(ct);
             return Results.NoContent();
         }).RequireAuthorization();
+    }
+}
+
+/// <summary>Rich editor link picker: internal targets the caller can see, one type per request, as app routes.</summary>
+public static class LinkTargetEndpoints
+{
+    public static void MapLinkTargets(this IEndpointRouteBuilder api)
+    {
+        api.MapGet("/link-targets", async (string type, string? q, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
+        {
+            var viewer = await Viewer.ForAsync(current, access, ct);
+            var like = $"%{q?.Trim()}%";
+            const int n = 20;
+            List<LinkTarget> items = type switch
+            {
+                "page" => (await db.ContentPages.AsNoTracking().Where(p => EF.Functions.ILike(p.Title, like) || EF.Functions.ILike(p.Slug, like)).OrderBy(p => p.Title).Take(n)
+                    .Select(p => new { p.Id, p.Title, p.Slug, p.Language }).ToListAsync(ct)).Select(p => new LinkTarget(type, p.Id, p.Title, p.Language, $"/p/{p.Slug}")).ToList(),
+                "harbour" => (await db.Harbours.AsNoTracking().Where(h => h.IsActive && h.MergedIntoId == null && EF.Functions.ILike(h.Name, like)).OrderBy(h => h.Name).Take(n)
+                    .Select(h => new { h.Id, h.Name, h.Country }).ToListAsync(ct)).Select(h => new LinkTarget(type, h.Id, h.Name, h.Country, $"/harbours/{h.Id}")).ToList(),
+                "ship" => (await db.Ships.AsNoTracking().Where(viewer.Ships()).Where(s => EF.Functions.ILike(s.Name, like)).OrderBy(s => s.Name).Take(n)
+                    .Select(s => new { s.Id, s.Name, s.Type }).ToListAsync(ct)).Select(s => new LinkTarget(type, s.Id, s.Name, s.Type, $"/ships/{s.Id}")).ToList(),
+                "trip" => (await db.Trips.AsNoTracking().Where(viewer.Trips()).Where(t => EF.Functions.ILike(t.Name, like) || EF.Functions.ILike(t.Ship.Name, like)).OrderByDescending(t => t.StartDate).Take(n)
+                    .Select(t => new { t.Id, t.Name, Ship = t.Ship.Name, t.StartDate }).ToListAsync(ct)).Select(t => new LinkTarget(type, t.Id, t.Name, $"{t.Ship} · {t.StartDate:dd.MM.yyyy}", $"/trips/{t.Id}")).ToList(),
+                "logbook" => (await db.LogbookEntries.AsNoTracking().Where(viewer.Logbook())
+                    .Where(l => EF.Functions.ILike(l.StartHarbour.Name, like) || EF.Functions.ILike(l.EndHarbour.Name, like) || EF.Functions.ILike(l.Ship.Name, like)).OrderByDescending(l => l.DepartedAt).Take(n)
+                    .Select(l => new { l.Id, Start = l.StartHarbour.Name, End = l.EndHarbour.Name, Ship = l.Ship.Name, l.DepartedAt }).ToListAsync(ct))
+                    .Select(l => new LinkTarget(type, l.Id, $"{l.Start} → {l.End}", $"{l.Ship} · {l.DepartedAt:dd.MM.yyyy}", $"/logbook/{l.Id}")).ToList(),
+                "post" => (await db.Posts.AsNoTracking().Where(viewer.Posts()).Where(p => EF.Functions.ILike(p.Title ?? "", like) || EF.Functions.ILike(p.Trip.Name, like)).OrderByDescending(p => p.Day).Take(n)
+                    .Select(p => new { p.Id, p.Title, Trip = p.Trip.Name, p.Day }).ToListAsync(ct)).Select(p => new LinkTarget(type, p.Id, p.Title ?? p.Trip, $"{p.Trip} · {p.Day:dd.MM.yyyy}", $"/posts/{p.Id}")).ToList(),
+                _ => [],
+            };
+            return Results.Ok(items);
+        }).RequireAuthorization().WithTags("Links");
     }
 }
 

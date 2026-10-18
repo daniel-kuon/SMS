@@ -159,6 +159,7 @@ api.MapMedia();
 api.MapCosts();
 api.MapTasks();
 api.MapPages();
+api.MapLinkTargets();
 api.MapCalendar();
 
 app.MapDefaultEndpoints();

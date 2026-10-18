@@ -15,6 +15,7 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { ShipPageNode, ShipSite, SiteService } from '../../core/site';
 import { confirm, fmtDate, fmtDateTime } from '../../shared/shared';
+import { RichEditor } from '../../shared/rich-editor';
 
 /** Landing page of a ship website (custom domain or /ships/:id/site preview): ship card, nav pages, latest logbook. */
 @Component({
@@ -125,7 +126,7 @@ export function flatten(nodes: ShipPageNode[], depth = 0): (ShipPageNode & { dep
 }
 
 @Component({
-  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe],
+  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe, RichEditor],
   template: `
     <h2 mat-dialog-title>{{ data.page ? data.page.title : ('site.newPage' | translate) }}</h2>
     <mat-dialog-content class="form-grid">
@@ -136,7 +137,7 @@ export function flatten(nodes: ShipPageNode[], depth = 0): (ShipPageNode & { dep
       <mat-form-field appearance="outline"><mat-label>{{ 'profile.language' | translate }}</mat-label><mat-select [(ngModel)]="m.language"><mat-option value="de">de</mat-option><mat-option value="en">en</mat-option></mat-select></mat-form-field>
       <mat-checkbox [(ngModel)]="m.published">{{ 'site.published' | translate }}</mat-checkbox>
       <mat-checkbox [(ngModel)]="m.showInNav">{{ 'site.showInNav' | translate }}</mat-checkbox>
-      <mat-form-field appearance="outline" class="full"><mat-label>{{ 'post.content' | translate }} (HTML)</mat-label><textarea matInput rows="14" [(ngModel)]="m.content"></textarea></mat-form-field>
+      <sms-rich-editor class="full" [label]="'post.content' | translate" [(value)]="m.content" [context]="{ shipId: data.shipId, visibility: 'Public' }" />
       @if (error()) { <div class="error full">{{ error() }}</div> }
     </mat-dialog-content>
     <mat-dialog-actions align="end"><button mat-button mat-dialog-close>{{ 'common.cancel' | translate }}</button><button mat-flat-button (click)="save()">{{ 'common.save' | translate }}</button></mat-dialog-actions>`,

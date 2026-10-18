@@ -24,7 +24,15 @@ html, body { height: 100%; margin: 0; font-family: Roboto, sans-serif; backgroun
 .chip.crew { background: #fff3cd; color: #7a5a00; }
 .chip.public { background: #e4f4e8; color: #1c5b2e; }
 .error { color: #b00020; }
-.rich img { max-width: 100%; }
+// rendered rich text (sms-rich-editor output): content pages, ship pages/description, logbook notes, posts
+.rich { overflow-wrap: anywhere; }
+.rich img { max-width: 100%; height: auto; border-radius: 4px; }
+.rich figure { margin: 12px 0; } .rich figcaption { font-size: 13px; color: #666; text-align: center; }
+.rich blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid #9ab; color: #555; }
+.rich pre { background: #f3f3f3; padding: 8px 12px; border-radius: 4px; overflow-x: auto; }
+.rich code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
+.rich hr { border: 0; border-top: 1px solid #ddd; margin: 16px 0; }
+.rich table { border-collapse: collapse; } .rich th, .rich td { border: 1px solid #ddd; padding: 4px 8px; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 12px; }
 .full { grid-column: 1 / -1; }
 .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }

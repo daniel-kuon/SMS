@@ -9,6 +9,7 @@ namespace Sms.Api.Endpoints;
 
 public record MediaDto(Guid Id, Guid OwnerId, string Owner, Guid? TripId, Guid? PostId, DateOnly? Day, DateTimeOffset? TakenAt, double? Lat, double? Lng,
     LocationSource? LocationSource, string? Caption, Visibility Visibility, int? Width, int? Height, string ThumbUrl, string PreviewUrl, string OriginalUrl);
+public record MediaPick(Guid Id, string ThumbUrl, string Url, string FileName, string? Caption);
 public record MediaUpdate(string? Caption, Visibility Visibility, DateOnly? Day, Guid? PostId, double? Lat, double? Lng);
 
 public static class MediaEndpoints
@@ -117,6 +118,62 @@ public static class MediaEndpoints
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { url = $"/api/media/{media.Id}/preview" });
         }).RequireAuthorization().WithTags("Media");
+
+        // Rich editor image picker: photos of the edited content's level (ship / trip / logbook entry / post) plus the caller's own uploads.
+        g.MapGet("", async (Guid? shipId, Guid? tripId, Guid? logbookEntryId, Guid? postId, bool? mine, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
+        {
+            var viewer = await Viewer.ForAsync(current, access, ct);
+            async Task<bool> CanUseTrip(Guid t) => viewer.CrewTripIds.Contains(t) || await db.Trips.AnyAsync(x => x.Id == t && viewer.MemberShipIds.Contains(x.ShipId), ct);
+            if (!viewer.IsAdmin)
+            {
+                if (shipId is { } s && !viewer.MemberShipIds.Contains(s)) return Results.Forbid();
+                if (tripId is { } t && !await CanUseTrip(t)) return Results.Forbid();
+                if (logbookEntryId is { } l)
+                {
+                    var e = await db.LogbookEntries.AsNoTracking().Where(x => x.Id == l).Select(x => new { x.ShipId, x.TripId }).FirstOrDefaultAsync(ct);
+                    if (e is null) return Results.NotFound();
+                    if (!(e.TripId is { } et ? await CanUseTrip(et) : viewer.MemberShipIds.Contains(e.ShipId))) return Results.Forbid();
+                }
+                if (postId is { } p)
+                {
+                    var pt = await db.Posts.AsNoTracking().Where(x => x.Id == p).Select(x => (Guid?)x.TripId).FirstOrDefaultAsync(ct);
+                    if (pt is null) return Results.NotFound();
+                    if (!await CanUseTrip(pt.Value)) return Results.Forbid();
+                }
+            }
+            var uid = current.RequiredId;
+            var items = await db.Media.AsNoTracking()
+                .Where(m => m.Kind == MediaKind.Photo && (m.OwnerId == uid || m.Visibility != Visibility.Private))
+                .Where(m => (mine == true && m.OwnerId == uid) || (shipId != null && m.ShipId == shipId) || (tripId != null && m.TripId == tripId)
+                            || (logbookEntryId != null && m.LogbookEntryId == logbookEntryId) || (postId != null && m.PostId == postId))
+                .OrderByDescending(m => m.CreatedAt).Take(200).Select(m => new { m.Id, m.OriginalFileName, m.Caption }).ToListAsync(ct);
+            return Results.Ok(items.Select(m => new MediaPick(m.Id, $"/api/media/{m.Id}/thumb", $"/api/media/{m.Id}/preview", m.OriginalFileName, m.Caption)));
+        }).RequireAuthorization();
+
+        // Rich editor upload outside a trip (ship pages/description: shipId; admin content pages: own upload only). Trips use /trips/{id}/media.
+        g.MapPost("", async (HttpRequest http, SmsDbContext db, CurrentUser current, Access access, MediaStorage storage, CancellationToken ct) =>
+        {
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
+            var form = await http.ReadFormAsync(ct);
+            Guid? shipId = Guid.TryParse(form["shipId"], out var sid) ? sid : null;
+            if (shipId is { } s && !await access.IsShipMemberAsync(s, null, ct) && !await current.IsAdminAsync(ct)) return Results.Forbid();
+            var visibility = Enum.TryParse<Visibility>(form["visibility"], true, out var v) ? v : Visibility.Public;
+            var names = await ShipEndpoints.DisplayNames(db, [current.RequiredId], ct);
+            var results = new List<MediaDto>();
+            foreach (var file in form.Files)
+            {
+                if (!Allowed.Contains(file.ContentType) || file.Length == 0 || file.Length > 50_000_000)
+                    return Invalid("files", $"Dieser Dateityp wird nicht unterstützt: {file.FileName}");
+                await using var stream = file.OpenReadStream();
+                var p = await storage.StorePhotoAsync(stream, ct);
+                var media = new Media { OwnerId = current.RequiredId, ShipId = shipId, Kind = MediaKind.Photo, StorageKey = p.StorageKey, OriginalFileName = Path.GetFileName(file.FileName), ContentType = "image/jpeg",
+                    SizeBytes = file.Length, Width = p.Width, Height = p.Height, Visibility = visibility, ProcessingStatus = ProcessingStatus.Done, CreatedById = current.Id };
+                db.Media.Add(media);
+                results.Add(ToDto(media, names));
+            }
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(results);
+        }).RequireAuthorization();
 
         // Authorised delivery (spec 11.2): visibility is checked per file.
         g.MapGet("/{id:guid}/{variant:regex(^(thumb|preview|original)$)}", async (Guid id, string variant, SmsDbContext db, CurrentUser current, Access access, MediaStorage storage, HttpResponse response, CancellationToken ct) =>

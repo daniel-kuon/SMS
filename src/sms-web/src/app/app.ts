@@ -1,6 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { UpperCasePipe } from '@angular/common';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -14,6 +14,7 @@ import { SiteService } from './core/site';
 
 @Component({
   selector: 'app-root',
+  host: { '(document:click)': 'routeRichLink($event)' },
   imports: [UpperCasePipe, RouterOutlet, RouterLink, RouterLinkActive, MatToolbarModule, MatButtonModule, MatIconModule, MatMenuModule, TranslatePipe, NotificationBell],
   template: `
     <mat-toolbar color="primary" class="nav">
@@ -86,6 +87,13 @@ export class App {
     this.translate.onLangChange.subscribe(() => this.loadPages());
   }
 
+  private router = inject(Router);
+  /** Internal anchors inside rendered rich text ([innerHTML] in .rich) navigate in-app instead of reloading the page. */
+  routeRichLink(e: MouseEvent): void {
+    const href = richLinkTarget(e);
+    if (href) { e.preventDefault(); void this.router.navigateByUrl(href); }
+  }
+
   setLang(lang: string): void {
     localStorage.setItem('lang', lang);
     this.translate.use(lang);
@@ -95,4 +103,13 @@ export class App {
     this.api.get<(Pick<ContentPage, 'slug' | 'title' | 'showInFooter'> & { children: unknown[] })[]>('/api/pages', { lang: this.translate.getCurrentLang() ?? 'de' })
       .subscribe(p => this.pages.set(p.filter(x => x.showInFooter)));
   }
+}
+
+/** App route of a plain left click on a same-origin anchor in rendered rich text (not in an editor, not /api), else null. */
+export function richLinkTarget(e: MouseEvent): string | null {
+  if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return null;
+  const a = (e.target as Element | null)?.closest?.('.rich a[href]') as HTMLAnchorElement | null;
+  if (!a || (a.target && a.target !== '_self') || a.closest('[contenteditable="true"]')) return null;
+  const href = a.getAttribute('href') ?? '';
+  return href.startsWith('/') && !href.startsWith('//') && !href.startsWith('/api/') ? href : null;
 }

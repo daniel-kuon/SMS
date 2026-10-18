@@ -19,6 +19,7 @@ import { TranslateService } from '@ngx-translate/core';
 
 interface WeatherSummary { samples: number; windBft: number; windKn: number; windDirection: string | null; gustKn: number | null; weather: string; seaState: string; waveHeightM: number | null; temperatureC: number | null; }
 import { confirm, fmtDateTime, HarbourSelect, VisibilityPicker } from '../../shared/shared';
+import { RichEditor } from '../../shared/rich-editor';
 
 const WIND = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 
@@ -84,7 +85,7 @@ export class LogbookPage {
 
 /** Entry dialog with the legacy fields (04 §4.6) plus weather/sea state/sails; defaults from the previous entry (05 §5.4). */
 @Component({
-  imports: [FormsModule, MatDialogModule, MatButtonModule, MatIconModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe, HarbourSelect, VisibilityPicker],
+  imports: [FormsModule, MatDialogModule, MatButtonModule, MatIconModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe, HarbourSelect, VisibilityPicker, RichEditor],
   template: `
     <h2 mat-dialog-title>{{ data.entry ? ('common.edit' | translate) : ('logbook.newEntry' | translate) }}</h2>
     <mat-dialog-content class="form-grid" (input)="saveDraft()" (change)="saveDraft()">
@@ -107,7 +108,8 @@ export class LogbookPage {
       <div class="full"><b>{{ 'logbook.crew' | translate }}:</b>
         @for (c of crew; track $index) { <mat-checkbox [(ngModel)]="c.selected">{{ c.name }}</mat-checkbox> }
         <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Gast hinzufügen</mat-label><input matInput [(ngModel)]="guest" (keydown.enter)="addGuest(); $event.preventDefault()" /></mat-form-field></div>
-      <mat-form-field appearance="outline" class="full"><mat-label>{{ 'logbook.notes' | translate }}</mat-label><textarea matInput rows="4" [(ngModel)]="m.notes"></textarea></mat-form-field>
+      <sms-rich-editor class="full" [label]="'logbook.notes' | translate" [value]="m.notes" (valueChange)="m.notes = $event; saveDraft()"
+        [context]="{ shipId: data.shipId, tripId: data.tripId, logbookEntryId: data.entry?.id, visibility: m.visibility }" />
       <app-visibility [(value)]="m.visibility" />
       @if (error()) { <div class="error full">{{ error() }}</div> }
     </mat-dialog-content>

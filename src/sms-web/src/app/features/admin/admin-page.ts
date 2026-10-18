@@ -13,11 +13,12 @@ import { Api, errorMessage } from '../../core/api';
 import { ContentPage } from '../../core/models';
 import { tenantPreview } from '../../core/site';
 import { RouterLink } from '@angular/router';
+import { RichEditor } from '../../shared/rich-editor';
 
 interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; waterways: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
 
 @Component({
-  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, TranslatePipe, RouterLink],
+  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, TranslatePipe, RouterLink, RichEditor],
   template: `
     <div class="page page-narrow">
       <h1>{{ 'admin.title' | translate }}</h1>
@@ -36,7 +37,7 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'site.order' | translate }}</mat-label><input matInput type="number" [(ngModel)]="page.order" /></mat-form-field>
           <mat-checkbox [(ngModel)]="page.showInNav">{{ 'site.showInNav' | translate }}</mat-checkbox></div>
         <mat-form-field appearance="outline" class="full-width"><mat-label>Titel</mat-label><input matInput [(ngModel)]="page.title" /></mat-form-field>
-        <mat-form-field appearance="outline" class="full-width"><mat-label>Inhalt (HTML)</mat-label><textarea matInput rows="10" [(ngModel)]="page.content"></textarea></mat-form-field>
+        <sms-rich-editor class="editor" [label]="'post.content' | translate" [(value)]="page.content" />
         <button mat-flat-button (click)="savePage()">{{ 'common.save' | translate }}</button>
       </mat-card-content></mat-card>
       <mat-card appearance="outlined"><mat-card-content>
@@ -88,7 +89,7 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
         <p>SigNoz UI: <a href="http://localhost:3302" target="_blank">http://localhost:3302</a> · Login: admin&#64;localhost.dev / SailingPortal2026!</p>
       </mat-card-content></mat-card>
     </div>`,
-  styles: `.full-width { width: 100%; } mat-card { margin-bottom: 12px; } .progress { font-size: 12px; list-style: none; padding: 0; } .report { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 13px; }`,
+  styles: `.full-width { width: 100%; } .editor { margin-bottom: 12px; } mat-card { margin-bottom: 12px; } .progress { font-size: 12px; list-style: none; padding: 0; } .report { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 13px; }`,
 })
 export class AdminPage {
   private api = inject(Api);

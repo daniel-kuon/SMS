@@ -23,7 +23,19 @@ public static class Geo
 /// <summary>Sanitises rich text from the editor (spec 06 #16 / 11.2).</summary>
 public sealed class HtmlSanitizerService
 {
-    private readonly HtmlSanitizer _sanitizer = new();
+    private readonly HtmlSanitizer _sanitizer = Create();
+
+    /// <summary>Ganss defaults plus what the TipTap editor emits (figures, link target/rel, image size); explicit so a library default change cannot strip them.</summary>
+    private static HtmlSanitizer Create()
+    {
+        var s = new HtmlSanitizer();
+        foreach (var tag in new[] { "p", "br", "h1", "h2", "h3", "h4", "strong", "b", "em", "i", "u", "s", "a", "img", "figure", "figcaption", "ul", "ol", "li", "blockquote", "pre", "code", "hr",
+                     "table", "thead", "tbody", "tr", "th", "td" })
+            s.AllowedTags.Add(tag);
+        foreach (var attr in new[] { "href", "target", "rel", "src", "alt", "title", "width", "height", "colspan", "rowspan" })
+            s.AllowedAttributes.Add(attr);
+        return s;
+    }
     public string Sanitize(string? html) => string.IsNullOrWhiteSpace(html) ? "" : _sanitizer.Sanitize(html);
 }
 
