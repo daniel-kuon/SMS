@@ -91,7 +91,13 @@ export class RoutingCorrections {
     effect(() => { const map = this.map; const fc = toFeatureCollection(this.items()); if (map?.getSource('corrections')) (map.getSource('corrections') as GeoJSONSource).setData(fc); });
   }
 
-  load(): void { this.api.get<Correction[]>('/api/admin/routing/corrections').subscribe(c => this.items.set(c)); }
+  /** The derived corrections run to hundreds of thousands: only the map's viewport is loaded (manual ones before the map exists). */
+  load(): void {
+    const b = this.map?.getBounds();
+    const q = b ? `?bbox=${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}&limit=3000` : '';
+    this.api.get<Correction[]>('/api/admin/routing/corrections' + q).subscribe(c => this.items.set(c));
+  }
+  private loadTimer?: ReturnType<typeof setTimeout>;
 
   private async initMap(el: HTMLElement): Promise<void> {
     const map = this.map = await createMap(el, { zoom: 8 });
@@ -106,7 +112,8 @@ export class RoutingCorrections {
     map.on('click', (e: MapMouseEvent) => { if (this.drawing()) { this.points.update(p => [...p, [e.lngLat.lng, e.lngLat.lat]]); this.renderDraft(); } });
     map.on('mouseenter', 'corr-lines', e => { const n = e.features?.[0]?.properties?.['note']; if (n) map.getCanvas().title = String(n); });
     map.on('mouseleave', 'corr-lines', () => { map.getCanvas().title = ''; });
-    setTimeout(() => map.resize(), 100);
+    map.on('moveend', () => { clearTimeout(this.loadTimer); this.loadTimer = setTimeout(() => this.load(), 300); });
+    setTimeout(() => { map.resize(); this.load(); }, 100);
   }
 
   startDraw(kind: 'Block' | 'Passage'): void { this.drawing.set(kind); this.points.set([]); this.note = ''; this.map?.getCanvas().style.setProperty('cursor', 'crosshair'); }

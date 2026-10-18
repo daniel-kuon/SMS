@@ -102,8 +102,25 @@ public static class RoutingEndpoints
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             return builder.TryStart() ? Results.Accepted("/api/routing/status") : Results.Problem(statusCode: 409, title: "Ein Build läuft bereits.");
         });
-        admin.MapGet("/corrections", async (CurrentUser current, SmsDbContext db, CancellationToken ct) =>
-            await current.IsAdminAsync(ct) ? Results.Ok(await db.RoutingCorrections.AsNoTracking().OrderByDescending(c => c.CreatedAt).ToListAsync(ct)) : Results.Forbid());
+        // the derived corrections run to hundreds of thousands (channel skeletons, fairways, lakes): the editor asks for its viewport,
+        // a call without bbox gets the manual corrections only
+        admin.MapGet("/corrections", async (string? bbox, int? limit, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var q = db.RoutingCorrections.AsNoTracking();
+            if (bbox is not null)
+            {
+                var b = bbox.Split(',');
+                if (b.Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
+                var v = b.Select(x => double.Parse(x, CultureInfo.InvariantCulture)).ToArray();
+                var box = Geo.Factory.ToGeometry(new Envelope(v[1], v[3], v[0], v[2])); box.SRID = 4326;
+                q = q.Where(c => c.Geometry.Intersects(box));
+            }
+            else q = q.Where(c => c.Source == CorrectionSource.Manual);
+            var max = Math.Clamp(limit ?? 3000, 1, 20000);
+            var items = await q.OrderBy(c => c.Source).ThenByDescending(c => c.CreatedAt).Take(max).ToListAsync(ct);
+            return Results.Ok(items);
+        });
         admin.MapPost("/corrections", async (CorrectionUpsert req, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
