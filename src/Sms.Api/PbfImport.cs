@@ -50,15 +50,56 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
     {
         lock (_progress) _progress.Clear();
         var path = await EnsureFileAsync(req.Url, ct);
+        // checkpoint key: this file (size + mtime) with these flags – a rerun after a failure resumes from the batch phase
+        var fi = new FileInfo(path);
+        var key = Path.Combine(fi.DirectoryName!, $"{fi.Name}.{(req.Seamarks ? "s" : "")}{(req.Harbours ? "h" : "")}{(req.Waterways ? "w" : "")}{(req.Pois ? "p" : "")}.{fi.Length}-{fi.LastWriteTimeUtc.Ticks}");
         await using var stream = File.OpenRead(path);
-        await ImportStreamAsync(new PBFOsmStreamSource(stream), req, userId, ct);
+        await ImportStreamAsync(new PBFOsmStreamSource(stream), req, userId, ct, key);
     }
 
-    /// <summary>Core of the job on an already opened OSM stream (tests feed a small PBF).</summary>
-    public async Task<Dictionary<string, int>> ImportStreamAsync(OsmStreamSource source, PbfImportRequest req, Guid? userId, CancellationToken ct)
+    /// <summary>Checkpoint files next to the PBF: the matched elements after the two scan passes, and the next batch to write.</summary>
+    private static (string elements, string progress) CheckpointFiles(string key) => (key + ".elements.json", key + ".progress.json");
+    private sealed record Checkpoint(int NextBatch, Dictionary<string, int> Totals);
+
+    /// <summary>Core of the job on an already opened OSM stream (tests feed a small PBF). With a checkpoint key the scan result is
+    /// saved and a rerun after a failure continues with the batches that were not written yet.</summary>
+    public async Task<Dictionary<string, int>> ImportStreamAsync(OsmStreamSource source, PbfImportRequest req, Guid? userId, CancellationToken ct, string? checkpointKey = null)
     {
         var sw = Stopwatch.StartNew();
         var bbox = ParseBbox(req.Bbox);
+        List<object> elements; Checkpoint? resume = null; NearIndex? scanPoiNear = null;
+        var (elementsFile, progressFile) = checkpointKey is null ? (null, null) : CheckpointFiles(checkpointKey);
+        if (elementsFile is not null && File.Exists(elementsFile))
+        {
+            Report("resume", "Checkpoint found: skipping the two scan passes…");
+            await using var cp = File.OpenRead(elementsFile);
+            var doc = await JsonDocument.ParseAsync(cp, cancellationToken: ct);
+            elements = doc.RootElement.GetProperty("elements").EnumerateArray().Select(e => (object)e).ToList();
+            if (progressFile is not null && File.Exists(progressFile)) resume = JsonSerializer.Deserialize<Checkpoint>(await File.ReadAllTextAsync(progressFile, ct));
+            Report("resume", $"{elements.Count} elements from the checkpoint, continuing at batch {(resume?.NextBatch ?? 0) / 4000 + 1} ({sw.Elapsed:hh\\:mm\\:ss})");
+        }
+        else
+        {
+            (elements, scanPoiNear) = await ScanAsync(source, req, bbox, sw, ct);
+            if (elementsFile is not null)
+            {
+                await using var cp = File.Create(elementsFile);
+                await JsonSerializer.SerializeAsync(cp, new { elements }, cancellationToken: ct);
+                Report("scan", $"Checkpoint written ({new FileInfo(elementsFile).Length / 1_000_000} MB), a failed run continues from here");
+            }
+        }
+        var totals = resume?.Totals ?? new Dictionary<string, int>();
+        void Add(string key, int v) => totals[key] = totals.GetValueOrDefault(key) + v;
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+        var result = await WriteBatchesAsync(elements, req, userId, db, totals, Add, resume?.NextBatch ?? 0, progressFile, scanPoiNear, sw, ct);
+        if (elementsFile is not null) { File.Delete(elementsFile); if (File.Exists(progressFile!)) File.Delete(progressFile!); }
+        return result;
+    }
+
+    /// <summary>Pass 1 and 2 over the extract: the matching nodes and ways as Overpass-style elements (nodes with lat/lon, ways with center + geometry).</summary>
+    private async Task<(List<object> elements, NearIndex? poiNear)> ScanAsync(OsmStreamSource source, PbfImportRequest req, Box? bbox, Stopwatch sw, CancellationToken ct)
+    {
         var nodes = new List<Node>(); var ways = new List<Way>();
         // POIs are kept only near harbours: the harbours already in the database plus harbour nodes met in this pass (marina areas
         // only get their centre in pass 2, so a new region needs a second run for the POIs around them)
@@ -108,14 +149,16 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             elements.Add(new { type = "way", id = w.Id ?? 0, center, geometry = geom, tags = ToDict(w.Tags) });
         }
         nodes.Clear(); ways.Clear(); coords.Clear();
+        return (elements, poiNear);
+    }
 
-        var totals = new Dictionary<string, int>();
-        void Add(string key, int v) => totals[key] = totals.GetValueOrDefault(key) + v;
-        await using var scope = scopes.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+    private async Task<Dictionary<string, int>> WriteBatchesAsync(List<object> elements, PbfImportRequest req, Guid? userId, SmsDbContext db, Dictionary<string, int> totals, Action<string, int> Add, int startAt, string? progressFile, NearIndex? scanPoiNear, Stopwatch sw, CancellationToken ct)
+    {
+        // the scan's index knows the harbours met in this extract; on a resume the harbours of earlier batches are in the database
+        var poiNear = scanPoiNear ?? (req.Pois ? await HarbourIndexAsync(req.PoiRadiusKm * 1000, ct) : null);
         // derived waterways/bridges/locks inside the extract's extent are replaced once, before the batches (a per-batch
-        // replacement would delete what earlier batches just added)
-        if (req.Waterways)
+        // replacement would delete what earlier batches just added); never again on a resume
+        if (req.Waterways && startAt == 0)
         {
             var env = new Envelope();
             foreach (var el in elements)
@@ -132,7 +175,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             }
         }
         const int batch = 4000;
-        for (var i = 0; i < elements.Count; i += batch)
+        for (var i = startAt; i < elements.Count; i += batch)
         {
             using var doc = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(new { elements = elements.Skip(i).Take(batch) }));
             // one bad element must not sink the whole Europe import: a failed batch is logged, counted and skipped
@@ -154,6 +197,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
                 Add("waterways", r.Created); Add("bridges", r.Bridges); Add("locks", r.Locks); Add("fairwayAreas", r.FairwayAreas); Add("noGoAreas", r.NoGoAreas);
             }
             db.ChangeTracker.Clear();
+            if (progressFile is not null) await File.WriteAllTextAsync(progressFile, JsonSerializer.Serialize(new Checkpoint(i + batch, totals)), ct);
             Report("import", $"{Math.Min(i + batch, elements.Count)}/{elements.Count} elements imported ({sw.Elapsed:hh\\:mm\\:ss})");
         }
         Report("done", $"Done: {string.Join(", ", totals.Select(t => $"{t.Key} {t.Value}"))} ({sw.Elapsed:hh\\:mm\\:ss})");
