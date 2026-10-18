@@ -32,20 +32,23 @@ public sealed class SeascapeDepthProvider(IHttpClientFactory http, IConfiguratio
         var z = Zoom;
         var (x1, y1) = TileXY(minLng, maxLat, z); var (x2, y2) = TileXY(maxLng, minLat, z);
         var failed = 0;
-        for (var x = x1; x <= x2; x++)
-            for (var y = y1; y <= y2; y++)
+        var tiles = Enumerable.Range(x1, x2 - x1 + 1).SelectMany(x => Enumerable.Range(y1, y2 - y1 + 1).Select(y => (x, y))).ToList();
+        logger.LogInformation("Seascape: fetching {Tiles} z{Z} tiles", tiles.Count, z);
+        // a region-wide import is ~20k tiles: fetched 8 at a time (the tile server is a CDN), decoded into one list under a lock
+        await Parallel.ForEachAsync(tiles, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct }, async (t, token) =>
+        {
+            var (x, y) = t;
+            try
             {
-                ct.ThrowIfCancellationRequested();
-                try
-                {
-                    using var resp = await client.GetAsync($"{baseUrl}/{z}/{x}/{y}.pbf", ct);
-                    if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) continue;
-                    resp.EnsureSuccessStatusCode();
-                    await using var stream = await resp.Content.ReadAsStreamAsync(ct);
-                    result.AddRange(Decode(stream, x, y, z));
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException) { failed++; logger.LogWarning(ex, "Seascape tile {Z}/{X}/{Y} failed", z, x, y); }
+                using var resp = await client.GetAsync($"{baseUrl}/{z}/{x}/{y}.pbf", token);
+                if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return;
+                resp.EnsureSuccessStatusCode();
+                await using var stream = await resp.Content.ReadAsStreamAsync(token);
+                var areas = Decode(stream, x, y, z);
+                lock (result) result.AddRange(areas);
             }
+            catch (Exception ex) when (ex is not OperationCanceledException) { Interlocked.Increment(ref failed); logger.LogWarning(ex, "Seascape tile {Z}/{X}/{Y} failed", z, x, y); }
+        });
         if (failed > 0) logger.LogWarning("Seascape: {Failed} tiles failed", failed);
         return result;
     }
