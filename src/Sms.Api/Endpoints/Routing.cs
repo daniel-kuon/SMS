@@ -148,11 +148,20 @@ public static class RoutingEndpoints
         // Spec 10 §10.5 step 1: OSM waterway centrelines for a bounding box become derived passages (reviewable in the corrections list).
         // depth areas for the region (or a bbox south,west,north,east) from the depth provider; the next rebuild uses them
         // automatic quality check of the active graph (sample harbours × nearest neighbours); findings carry a position to look at
-        admin.MapPost("/audit", async (int? sample, double? maxNm, int? neighbours, double? draft, CurrentUser current, RoutingAudit audit, CancellationToken ct) =>
+        // runs as a background job (one at a time); the admin page polls /audit/status
+        admin.MapPost("/audit", async (int? sample, double? maxNm, int? neighbours, double? draft, CurrentUser current, RoutingAuditJob job, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
-            return Results.Ok(await audit.RunAsync(Math.Clamp(sample ?? 150, 1, 2000), Math.Clamp(maxNm ?? 40, 1, 200), Math.Clamp(neighbours ?? 3, 1, 10), draft, ct));
+            var p = new AuditParameters(Math.Clamp(sample ?? 120, 1, 2000), Math.Clamp(maxNm ?? 40, 1, 200), Math.Clamp(neighbours ?? 3, 1, 10), draft is > 0 ? draft : null);
+            return job.Start(p, current.Id) ? Results.Accepted("/api/admin/routing/audit/status", p) : Results.Problem(statusCode: 409, title: "Ein Audit läuft bereits.");
         });
+        admin.MapGet("/audit/status", async (CurrentUser current, RoutingAuditJob job, CancellationToken ct) =>
+            await current.IsAdminAsync(ct)
+                ? Results.Ok(new { running = job.IsRunning, startedAt = job.StartedAt, parameters = job.Parameters, progress = job.Progress,
+                    report = job.Report is { } r ? new { r.Routes, r.Failed, r.Unroutable, r.Counts, r.Findings, r.Seconds, parameters = job.ReportParameters, finishedAt = job.ReportFinishedAt } : null })
+                : Results.Forbid());
+        admin.MapPost("/audit/cancel", async (CurrentUser current, RoutingAuditJob job, CancellationToken ct) =>
+            await current.IsAdminAsync(ct) ? (job.Cancel() ? Results.Accepted() : Results.NoContent()) : Results.Forbid());
         admin.MapPost("/import-depths", async (string? bbox, CurrentUser current, SmsDbContext db, IDepthProvider depths, RoutingGraphBuilder builder, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();

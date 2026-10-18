@@ -178,7 +178,10 @@ export class RoutingCorrections {
   private loadTimer?: ReturnType<typeof setTimeout>;
 
   async ngAfterViewInit(): Promise<void> {
-    const map = this.map = await createMap(this.mapEl().nativeElement, { zoom: 8 });
+    // ?lat=&lng=&zoom= (links from the routing audit) centre the map on a finding
+    const q = new URLSearchParams(location.search); const lat = Number(q.get('lat')), lng = Number(q.get('lng'));
+    const at = q.has('lat') && q.has('lng') && Number.isFinite(lat) && Number.isFinite(lng) ? { center: [lng, lat] as [number, number], zoom: Number(q.get('zoom')) || 13 } : { zoom: 8 };
+    const map = this.map = await createMap(this.mapEl().nativeElement, at);
     // promoteId: the string ids become feature ids, so hover/selection is a feature-state change, not a setData of 3000 features
     map.addSource('corrections', { type: 'geojson', data: toFeatureCollection(this.items()), promoteId: 'id' });
     map.addLayer({ id: 'corr-blocks', type: 'fill', source: 'corrections', paint: { 'fill-color': ['case', ['==', ['get', 'kind'], 'Fairway'], '#1e88e5', ['==', ['get', 'kind'], 'Avoid'], '#f9a825', ['==', ['get', 'kind'], 'Water'], '#26a69a', '#d32f2f'],

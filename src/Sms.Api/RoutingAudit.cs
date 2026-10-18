@@ -20,7 +20,9 @@ public sealed record AuditReport(int Routes, int Failed, int Unroutable, IReadOn
 /// </summary>
 public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, SmsDbContext db)
 {
-    public async Task<AuditReport> RunAsync(int sample, double maxNm, int neighbours, double? draftM, CancellationToken ct)
+    /// <param name="afterRoute">called after every routed pair with (routes so far, expected total = picked × neighbours, counts per check);
+    /// the background job reports progress and throttles there</param>
+    public async Task<AuditReport> RunAsync(int sample, double maxNm, int neighbours, double? draftM, CancellationToken ct, Func<int, int, IReadOnlyDictionary<string, int>, Task>? afterRoute = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var o = builder.Options;
@@ -52,6 +54,7 @@ public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, 
 
         var findings = new List<AuditFinding>(); var counts = new Dictionary<string, int>(); var routes = 0; var failedRoutes = 0; var unroutable = 0;
         void Count(string k) => counts[k] = counts.GetValueOrDefault(k) + 1;
+        var expected = picked.Count * neighbours;
         foreach (var h in picked)
         {
             ct.ThrowIfCancellationRequested();
@@ -62,7 +65,7 @@ public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, 
                 var to = harbours.FirstOrDefault(x => x.Id == n.HarbourId); if (to is null) continue;
                 routes++;
                 var r = await router.RouteAsync(h.Id, n.HarbourId, ct, null, draft > 0 ? draft : null);
-                if (r is null) { unroutable++; Count("unroutable"); findings.Add(new("unroutable", h.Name, to.Name, h.Location.Y, h.Location.X, $"no route for draft {draft} m")); continue; }
+                if (r is null) { unroutable++; Count("unroutable"); findings.Add(new("unroutable", h.Name, to.Name, h.Location.Y, h.Location.X, $"no route for draft {draft} m")); if (afterRoute is not null) await afterRoute(routes, expected, counts); continue; }
                 var failed = false;
                 var g = r.Geometry;
                 var a = h.Location.Coordinate; var b = to.Location.Coordinate;
@@ -90,6 +93,7 @@ public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, 
                     if (total > 1500 && inside / total < 0.5) { failed = true; Count("channel"); findings.Add(new("channel", h.Name, to.Name, b.Y, b.X, $"approach runs only {100 * inside / total:0}% inside the buoy chain")); }
                 }
                 if (failed) failedRoutes++;
+                if (afterRoute is not null) await afterRoute(routes, expected, counts);
             }
         }
         return new AuditReport(routes, failedRoutes, unroutable, counts, findings.Take(400).ToList(), Math.Round(sw.Elapsed.TotalSeconds, 1));
@@ -118,4 +122,61 @@ public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, 
     private static double LengthM(LineString l) { var m = 0.0; for (var i = 1; i < l.NumPoints; i++) m += DistM(l.GetCoordinateN(i - 1), l.GetCoordinateN(i)); return m; }
     private static STRtree<IPreparedGeometry> Index(IReadOnlyList<Geometry> gs) { var t = new STRtree<IPreparedGeometry>(); foreach (var g in gs) t.Insert(g.EnvelopeInternal, PreparedGeometryFactory.Prepare(g)); t.Build(); return t; }
     private sealed class GeomRow { public Geometry Geom { get; set; } = null!; }
+}
+
+public sealed record AuditParameters(int Sample, double MaxNm, int Neighbours, double? Draft);
+
+/// <summary>
+/// Runs <see cref="RoutingAudit"/> in the background (one at a time) with a progress list the admin page polls, like
+/// <see cref="PbfImportJob"/>. Pauses 150 ms between routes so route requests of other users are not starved meanwhile.
+/// </summary>
+public sealed class RoutingAuditJob(IServiceScopeFactory scopes, ILogger<RoutingAuditJob> logger)
+{
+    private readonly List<PbfProgress> _progress = [];
+    private int _running;
+    private CancellationTokenSource? _cts;
+    public bool IsRunning => _running == 1;
+    public DateTimeOffset? StartedAt { get; private set; }
+    public AuditParameters? Parameters { get; private set; }
+    public AuditReport? Report { get; private set; }
+    public AuditParameters? ReportParameters { get; private set; }
+    public DateTimeOffset? ReportFinishedAt { get; private set; }
+    public IReadOnlyList<PbfProgress> Progress { get { lock (_progress) return _progress.ToList(); } }
+
+    public bool Start(AuditParameters p, Guid? userId)
+    {
+        if (Interlocked.CompareExchange(ref _running, 1, 0) != 0) return false;
+        lock (_progress) _progress.Clear();
+        var cts = _cts = new CancellationTokenSource();
+        StartedAt = DateTimeOffset.UtcNow; Parameters = p;
+        Add("started", $"sample {p.Sample}, max {p.MaxNm} nm, {p.Neighbours} neighbours, draft {(p.Draft is { } d ? $"{d} m" : "default")} (user {userId})");
+        // ponytail: thread-pool task at normal priority; the 150 ms pause between routes is the throttle
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await using var scope = scopes.CreateAsyncScope();
+                var audit = scope.ServiceProvider.GetRequiredService<RoutingAudit>();
+                var report = await audit.RunAsync(p.Sample, p.MaxNm, p.Neighbours, p.Draft, cts.Token, async (n, total, counts) =>
+                {
+                    if (n % 10 == 0) Add("routing", $"{n}/~{total} routes, failed so far: {(counts.Count == 0 ? "none" : string.Join(", ", counts.Select(c => $"{c.Key} {c.Value}")))}");
+                    await Task.Delay(150, cts.Token);
+                });
+                Report = report; ReportParameters = p; ReportFinishedAt = DateTimeOffset.UtcNow;
+                Add("done", $"{report.Routes} routes, {report.Failed} failed, {report.Unroutable} unroutable, {report.Findings.Count} findings ({report.Seconds:0} s)");
+            }
+            catch (OperationCanceledException) { Add("cancelled", "Audit cancelled."); }
+            catch (Exception ex) { Add("failed", $"{ex.GetType().Name}: {ex.Message}"); logger.LogError(ex, "Routing audit failed"); }
+            finally { cts.Dispose(); _cts = null; Interlocked.Exchange(ref _running, 0); }
+        });
+        return true;
+    }
+
+    public bool Cancel() { try { _cts?.Cancel(); return IsRunning; } catch (ObjectDisposedException) { return false; } }
+
+    private void Add(string phase, string message)
+    {
+        lock (_progress) { if (_progress.Count > 200) _progress.RemoveAt(0); _progress.Add(new PbfProgress(phase, message, DateTimeOffset.UtcNow)); }
+        logger.LogInformation("Routing audit [{Phase}] {Message}", phase, message);
+    }
 }

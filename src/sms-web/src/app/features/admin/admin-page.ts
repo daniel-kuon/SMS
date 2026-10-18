@@ -1,5 +1,5 @@
 import { Component, inject, signal } from '@angular/core';
-import { DatePipe } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
 import { MatButtonModule } from '@angular/material/button';
@@ -8,6 +8,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatChipsModule } from '@angular/material/chips';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, errorMessage } from '../../core/api';
 import { ContentPage } from '../../core/models';
@@ -15,10 +16,14 @@ import { tenantPreview } from '../../core/site';
 import { RouterLink } from '@angular/router';
 import { RichEditor } from '../../shared/rich-editor';
 
+interface AuditParams { sample: number; maxNm: number; neighbours: number; draft: number | null; }
+interface AuditStatus { running: boolean; startedAt: string | null; parameters: AuditParams | null; progress: { phase: string; message: string; at: string }[];
+  report: { routes: number; failed: number; unroutable: number; counts: Record<string, number>; seconds: number; parameters: AuditParams; finishedAt: string;
+    findings: { check: string; from: string; to: string; lat: number; lng: number; detail: string }[] } | null; }
 interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; waterways: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
 
 @Component({
-  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, TranslatePipe, RouterLink, RichEditor],
+  imports: [DatePipe, DecimalPipe, MatChipsModule, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, TranslatePipe, RouterLink, RichEditor],
   template: `
     <div class="page page-narrow">
       <h1>{{ 'admin.title' | translate }}</h1>
@@ -78,6 +83,29 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
         }
       </mat-card-content></mat-card>
       <mat-card appearance="outlined"><mat-card-content>
+        <h3>{{ 'admin.audit' | translate }}</h3>
+        <p class="muted">{{ 'admin.auditHint' | translate }}</p>
+        <div class="row"><mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'admin.auditSample' | translate }}</mat-label><input matInput type="number" [(ngModel)]="audit.sample" /></mat-form-field>
+          <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'admin.auditMaxNm' | translate }}</mat-label><input matInput type="number" [(ngModel)]="audit.maxNm" /></mat-form-field>
+          <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'admin.auditNeighbours' | translate }}</mat-label><input matInput type="number" [(ngModel)]="audit.neighbours" /></mat-form-field>
+          <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>{{ 'admin.auditDraft' | translate }}</mat-label><input matInput type="number" [(ngModel)]="audit.draft" placeholder="optional" /></mat-form-field></div>
+        <div class="row"><button mat-flat-button (click)="startAudit()" [disabled]="auditStatus()?.running">{{ (auditStatus()?.running ? 'admin.auditRunning' : 'admin.auditStart') | translate }}</button>
+          @if (auditStatus()?.running) { <button mat-stroked-button (click)="cancelAudit()">{{ 'admin.auditCancel' | translate }}</button><mat-spinner diameter="20" /> }</div>
+        @if (auditStatus(); as st) {
+          @if (st.running || !st.report) { <ul class="progress">@for (p of st.progress.slice(-8); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul> }
+          @if (st.report; as rep) {
+            <p><b>{{ rep.routes }}</b> {{ 'admin.auditRoutes' | translate }} · <b>{{ rep.failed }}</b> {{ 'admin.auditFailed' | translate }} · <b>{{ rep.unroutable }}</b> {{ 'admin.auditUnroutable' | translate }} · {{ rep.seconds }} s
+              <span class="muted">· {{ rep.finishedAt | date:'dd.MM.yyyy HH:mm' }} ({{ rep.parameters.sample }} / {{ rep.parameters.maxNm }} sm / {{ rep.parameters.neighbours }} / {{ rep.parameters.draft ?? '–' }} m)</span></p>
+            <mat-chip-set>@for (c of counts(rep.counts); track c.key) { <mat-chip>{{ c.key }}: {{ c.value }}</mat-chip> }</mat-chip-set>
+            @if (rep.findings.length) {
+              <table class="findings"><thead><tr><th>{{ 'admin.auditCheck' | translate }}</th><th>{{ 'admin.auditFromTo' | translate }}</th><th>{{ 'admin.auditDetail' | translate }}</th><th>{{ 'admin.position' | translate }}</th></tr></thead>
+                <tbody>@for (f of rep.findings; track $index) { <tr><td>{{ f.check }}</td><td>{{ f.from }} → {{ f.to }}</td><td>{{ f.detail }}</td>
+                  <td><a routerLink="/admin/corrections" [queryParams]="{ lat: f.lat, lng: f.lng, zoom: 13 }">{{ f.lat | number:'1.4-4' }}, {{ f.lng | number:'1.4-4' }}</a></td></tr> }</tbody></table>
+            } @else { <p class="muted">{{ 'admin.auditNoFindings' | translate }}</p> }
+          }
+        }
+      </mat-card-content></mat-card>
+      <mat-card appearance="outlined"><mat-card-content>
         <h3>{{ 'admin.reports' | translate }}</h3>
         @for (r of reports(); track r.id) {
           <div class="row report"><span><b>{{ r.targetType }}</b> {{ r.targetId }} · {{ r.reporter }} · {{ r.reason }} · <i>{{ r.status }}</i></span>
@@ -89,7 +117,7 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
         <p>SigNoz UI: <a href="http://localhost:3302" target="_blank">http://localhost:3302</a> · Login: admin&#64;localhost.dev / SailingPortal2026!</p>
       </mat-card-content></mat-card>
     </div>`,
-  styles: `.full-width { width: 100%; } .editor { margin-bottom: 12px; } mat-card { margin-bottom: 12px; } .progress { font-size: 12px; list-style: none; padding: 0; } .report { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 13px; }`,
+  styles: `.full-width { width: 100%; } .editor { margin-bottom: 12px; } mat-card { margin-bottom: 12px; } .progress { font-size: 12px; list-style: none; padding: 0; } .findings { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; } .findings th, .findings td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #eee; } .report { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 13px; }`,
 })
 export class AdminPage {
   private api = inject(Api);
@@ -112,7 +140,7 @@ export class AdminPage {
   setTenant(): void { tenantPreview.set(this.tenantHost.trim() || null); location.href = '/'; }
   routing = signal<RoutingStatus | null>(null);
   private timer?: ReturnType<typeof setInterval>;
-  constructor() { this.loadPage(); this.loadAllPages(); this.loadSeamarks(); this.loadRouting(); this.loadReports(); this.loadPbf(); this.timer = setInterval(() => { if (this.pbfStatus()?.running) { this.loadPbf(); this.loadSeamarks(); } if (this.routing()?.building) this.loadRouting(); }, 5000); }
+  constructor() { this.loadPage(); this.loadAllPages(); this.loadSeamarks(); this.loadRouting(); this.loadReports(); this.loadPbf(); this.loadAudit(); this.timer = setInterval(() => { if (this.pbfStatus()?.running) { this.loadPbf(); this.loadSeamarks(); } if (this.auditStatus()?.running) this.loadAudit(); if (this.routing()?.building) this.loadRouting(); }, 5000); }
   ngOnDestroy(): void { clearInterval(this.timer); }
   reports = signal<{ id: string; targetType: string; targetId: string; reporter: string; reason: string; status: string }[]>([]);
   loadReports(): void { this.api.get<typeof this.reports extends () => infer T ? T : never>('/api/admin/reports').subscribe(r => this.reports.set(r)); }
@@ -127,6 +155,16 @@ export class AdminPage {
   startPbf(): void {
     this.api.post('/api/admin/routing/import-pbf', { ...this.pbf, bbox: this.pbf.bbox || null }).subscribe({ next: () => setTimeout(() => this.loadPbf(), 500), error: e => this.result.set(errorMessage(e)) });
   }
+  audit = { sample: 120, maxNm: 40, neighbours: 3, draft: null as number | null };
+  auditStatus = signal<AuditStatus | null>(null);
+  loadAudit(): void { this.api.get<AuditStatus>('/api/admin/routing/audit/status').subscribe(s => this.auditStatus.set(s)); }
+  startAudit(): void {
+    const q = new URLSearchParams({ sample: String(this.audit.sample), maxNm: String(this.audit.maxNm), neighbours: String(this.audit.neighbours) });
+    if (this.audit.draft) q.set('draft', String(this.audit.draft));
+    this.api.post(`/api/admin/routing/audit?${q}`, {}).subscribe({ next: () => setTimeout(() => this.loadAudit(), 500), error: e => this.result.set(errorMessage(e)) });
+  }
+  cancelAudit(): void { this.api.post('/api/admin/routing/audit/cancel', {}).subscribe(() => setTimeout(() => this.loadAudit(), 500)); }
+  counts(c: Record<string, number>): { key: string; value: number }[] { return Object.entries(c).map(([key, value]) => ({ key, value })); }
   deriveFairways(): void {
     this.busy.set(true);
     this.api.post<{ marks: number; created: number; removed: number }>(`/api/admin/routing/derive-fairways?bbox=${encodeURIComponent(this.seamarkBbox)}`, {}).subscribe({

@@ -73,6 +73,7 @@ builder.Services.AddHttpClient("routing");
 builder.Services.AddHttpClient("marinetraffic");
 builder.Services.AddSingleton<AisKeys>();
 builder.Services.AddSingleton<PbfImportJob>();
+builder.Services.AddSingleton<RoutingAuditJob>();
 builder.Services.AddHttpClient("weather", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IWeatherProvider, OpenMeteoProvider>();
