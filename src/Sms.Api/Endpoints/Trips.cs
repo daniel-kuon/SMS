@@ -333,14 +333,14 @@ public static class TripEndpoints
                 .Where(x => x.Line is not null).ToDictionary(x => x.Key, x => x.Line);
             var harbourIds = legs.SelectMany(l => new[] { l.FromHarbourId, l.ToHarbourId }).Concat(entries.SelectMany(e => new[] { e.StartHarbourId, e.EndHarbourId }))
                 .Concat(new[] { trip.PlannedStartHarbourId, trip.PlannedEndHarbourId }.Where(h => h != null).Select(h => h!.Value)).Distinct().ToList();
-            var harbours = await db.Harbours.AsNoTracking().Where(h => harbourIds.Contains(h.Id)).Select(h => new { h.Id, h.Name, lat = h.Location.Y, lng = h.Location.X }).ToListAsync(ct);
+            var harbours = await db.Harbours.AsNoTracking().Where(h => harbourIds.Contains(h.Id)).Select(h => new { h.Id, h.Name, h.Location }).ToListAsync(ct); // geography has no ST_Y, so the coordinates are read in memory
             var photos = await db.Media.AsNoTracking().Where(m => m.TripId == id && m.Location != null && m.Kind == MediaKind.Photo).Where(viewer.Media(trip, trip.Ship))
                 .OrderBy(m => m.TakenAt ?? m.CreatedAt).Select(m => new { m.Id, m.Location, m.TakenAt, m.LogbookEntryId }).ToListAsync(ct);
             return Results.Ok(new
             {
                 plannedLegs = legs.Select(l => new { l.Id, l.Order, l.Alternative, l.FromHarbourId, l.ToHarbourId, l.PlannedDate, l.DistanceNm, geometry = l.RouteGeometry }),
                 logbook = entries.Select(e => new { e.Id, e.StartHarbourId, e.EndHarbourId, e.DepartedAt, e.ArrivedAt, geometry = e.RouteGeometry ?? tracks.GetValueOrDefault(e.Id) }),
-                harbours,
+                harbours = harbours.Select(h => new { h.Id, h.Name, lat = h.Location.Y, lng = h.Location.X }),
                 photos = photos.Select(m => new { m.Id, thumbUrl = $"/api/media/{m.Id}/thumb", lat = m.Location!.Y, lng = m.Location.X, m.TakenAt, m.LogbookEntryId }),
             });
         });

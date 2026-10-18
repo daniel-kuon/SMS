@@ -100,8 +100,8 @@ public static class Waterways
         return result;
     }
 
-    /// <summary>Inland water bodies: lakes, reservoirs and lagoons with a perimeter above 3 km (ponds are noise), as ways and multipolygon relations with geometry.</summary>
-    public const string OverpassWaterQuery = """[out:json][timeout:180];(way["natural"="water"]["water"~"^(lake|reservoir|lagoon)$"](if:length()>3000)({0});relation["natural"="water"]["water"~"^(lake|reservoir|lagoon)$"]({0}););out geom;""";
+    /// <summary>Inland water bodies: lakes, reservoirs, lagoons and fjords (the Schlei is natural=water + water=fjord, not coastline: without it the whole Schlei was land) with a perimeter above 3 km (ponds are noise), as ways and multipolygon relations with geometry.</summary>
+    public const string OverpassWaterQuery = """[out:json][timeout:180];(way["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord)$"](if:length()>3000)({0});relation["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord)$"]({0}););out geom;""";
 
     /// <summary>Lakes as polygons with holes (islands): closed ways directly, multipolygon relations by stitching their outer/inner member ways into rings. Only areas of at least minKm2.</summary>
     public static List<(Polygon area, string? name)> ParseWaterAreas(JsonDocument doc, GeometryFactory f, double minKm2 = 0.5)
