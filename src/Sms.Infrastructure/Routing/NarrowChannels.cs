@@ -21,7 +21,7 @@ namespace Sms.Infrastructure.Routing;
 /// </summary>
 public static class NarrowChannels
 {
-    public sealed record Options(double FineBufferM = 20, double CoastBufferM = 150, double OpenMarginM = 100, double MinClearanceM = 20, double DensifyM = 15, double FillHoleKm2 = 3, double MinCoreAreaM2 = 20_000);
+    public sealed record Options(double FineBufferM = 20, double CoastBufferM = 150, double OpenMarginM = 100, double MinClearanceM = 20, double DensifyM = 15, double FillHoleKm2 = 3, double MinCoreAreaM2 = 20_000, double MinChannelM = 300);
 
     /// <summary>Channel centrelines (WGS84) inside <paramref name="tile"/> for the raw land polygons that touch it.</summary>
     public static List<LineString> Derive(IReadOnlyList<Geometry> rawLand, Envelope tile, Options o, GeometryFactory f)
@@ -93,7 +93,14 @@ public static class NarrowChannels
         if (segments.Count == 0) return [];
         var merger = new LineMerger();
         merger.Add(segments);
-        return merger.GetMergedLineStrings().OfType<LineString>().Select(l => (LineString)Scale(l, 1 / cos)).Where(l => l.NumPoints >= 2).ToList();
+        var merged = merger.GetMergedLineStrings().OfType<LineString>().ToList();
+        // the skeleton of a pond's fringe is a stub nobody can use: keep a line when it is long or joins another one
+        var ends = new Dictionary<(long, long), int>();
+        foreach (var l in merged) foreach (var c in new[] { l.StartPoint.Coordinate, l.EndPoint.Coordinate }) { var k = Key(c); ends[k] = ends.GetValueOrDefault(k) + 1; }
+        var minLen = Deg(o.MinChannelM);
+        return merged.Where(l => l.Length >= minLen || ends[Key(l.StartPoint.Coordinate)] > 1 || ends[Key(l.EndPoint.Coordinate)] > 1)
+            .Select(l => DouglasPeuckerSimplifier.Simplify(l, Deg(8)) as LineString ?? l)
+            .Select(l => (LineString)Scale(l, 1 / cos)).Where(l => l.NumPoints >= 2).ToList();
     }
 
     private static Geometry Diff(Geometry a, Geometry b) => OverlayNGRobust.Overlay(a, b, SpatialFunction.Difference);
