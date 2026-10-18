@@ -578,8 +578,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             // Sampled every 25 m with the prepared point-in-polygon test (an exact overlay against a mainland tile took minutes per node)
             var hits = landIndex.Query(seg.EnvelopeInternal).Where(l => l.prepared.Intersects(seg)).Select(l => l.prepared).ToList();
             if (hits.Count == 0) return n;
-            // Two shapes of land crossing are fine: up to 150 m anywhere (a mole), or a leading stretch of up to 600 m (the harbour's
-            // own basin, which the coastline polygons often count as land, plus its mole). Land after water on the way is a field.
+            // Two shapes of land crossing are fine: up to 150 m anywhere (a mole), or a leading stretch of up to 1.5 km (the harbour's
+            // own basin or creek, which the coastline polygons count as land, plus its mole or dike). Land after water on the way is a field.
             var steps = (int)Math.Ceiling(lenM / 25); var onLand = 0; var leading = 0; var water = false;
             for (var k = 1; k < steps; k++)
             {
@@ -587,7 +587,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 if (hits.Any(l => l.Contains(q))) { onLand++; if (!water) leading++; } else water = true;
                 if (onLand > 6 && onLand > leading) break; // scattered land beyond 150 m: no need to look further
             }
-            if (onLand <= 6 || (onLand == leading && leading * 25 <= 600)) return n;
+            if (onLand <= 6 || (onLand == leading && leading * 25 <= 1500)) return n; // a Siel harbour sits behind its dike, 1 km from the river (Schülperneuensiel on the Eider)
         }
         return null;
     }
