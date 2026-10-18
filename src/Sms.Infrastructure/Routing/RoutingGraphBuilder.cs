@@ -162,12 +162,12 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         var depthsByTile = new System.Collections.Concurrent.ConcurrentDictionary<string, List<(Geometry, double)>>();
         static string result_tile_key(Envelope e) => $"{e.MinX:0.####},{e.MinY:0.####}";
-        long gridNodeCount, gridEdgeCount, nextId;
+        long gridNodeCount, gridEdgeCount, nextId; List<GraphNode>? waterNodes = null;
         var tiler = new WaterGraphTiler(Geo.Factory, regionEnv, o.StartCellM, o.MinCellM, o.CoastPenaltyFactor, o.TileCells);
         var tileNo = 0;
         if (o.Mode == "areas")
         {
-            (gridNodeCount, gridEdgeCount, nextId) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, harbours.Select(h => h.Location.Coordinate).ToList(), sw, ct);
+            (gridNodeCount, gridEdgeCount, nextId, waterNodes) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, harbours.Select(h => h.Location.Coordinate).ToList(), sw, ct);
         }
         else
         {
@@ -230,6 +230,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         // the link checks below run in memory (an SQL probe per candidate took an hour); no-go blocks are not land for a link: a buoyed
         // fairway through a Wadden Sea zone-1 area must still hook into the water outside it
         var linkLand = await LandIndexAsync(conn, version, blocks, ct);
+        // nearest-node lookups of this phase run against an in-memory index of the water nodes (area mode); grid mode keeps the SQL path
+        var nodeIndex = waterNodes is null ? null : NodeIndex.Build(waterNodes);
         var channelEdgeFrom = new List<int>(); // index ranges of derived channel edges: they run through whatever depth the sound has
         foreach (var pc in await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => new { c.Geometry, c.Note }).ToListAsync(ct))
         {
@@ -250,7 +252,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 if (linkM > 0) sinceLink = 0;
                 if (linkM > 0 && linked.Add(id))
                 {
-                    var near = await NearestWaterLinkAsync(conn, version, linkLand, p, linkM, _ => true, ct);
+                    var near = await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, p, linkM, _ => true, ct);
                     if (near is { } n) { extraEdges.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)]))); linkNodes.Add(id); }
                 }
                 prev = id;
@@ -309,6 +311,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.CompleteAsync(ct);
         }
         await WriteEdgesAsync(conn, version, extraEdges, ct);
+        if (nodeIndex is not null) nodeIndex = NodeIndex.Build(waterNodes!.Concat(extraNodes).ToList());
         // inland harbours: no water cell nearby (rivers/canals count as land) but maybe a passage node; in area mode every harbour is linked here
         if (extraNodes.Count > 0 || o.Mode == "areas")
         {
@@ -325,7 +328,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             foreach (var (id, p) in passageEndIds)
             {
                 var own = adjacent.GetValueOrDefault(id);
-                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, 200, m => m.Id != id && (own is null || !own.Contains(m.Id)) && !gapSeen.Contains((Math.Min(m.Id, id), Math.Max(m.Id, id))), ct);
+                var n = await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, p, 200, m => m.Id != id && (own is null || !own.Contains(m.Id)) && !gapSeen.Contains((Math.Min(m.Id, id), Math.Max(m.Id, id))), ct);
                 if (n is null) continue;
                 gapSeen.Add((Math.Min(n.Id, id), Math.Max(n.Id, id)));
                 gapLinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
@@ -343,7 +346,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             {
                 if (Find(id) == Find(giant)) continue;
                 strays++;
-                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, o.HarbourAccessM, m => Find(m.Id) != Find(id), ct);
+                var n = await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, p, o.HarbourAccessM, m => Find(m.Id) != Find(id), ct);
                 if (n is null) continue;
                 relinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
                 Union(id, n.Id);
@@ -356,8 +359,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 // the access link may not cross land: a harbour on a river or lake the graph does not know stays unreachable rather than
                 // being routed across a field (the audit found 35 such routes); a node of the main component is preferred, any other
                 // connected node is taken when none is within reach
-                var n = await NearestWaterLinkAsync(conn, version, linkLand, h.Location.Coordinate, o.HarbourAccessM, m => Find(m.Id) == giantRoot, ct)
-                    ?? await NearestWaterLinkAsync(conn, version, linkLand, h.Location.Coordinate, o.HarbourAccessM, _ => true, ct);
+                var n = await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, h.Location.Coordinate, o.HarbourAccessM, m => Find(m.Id) == giantRoot, ct)
+                    ?? await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, h.Location.Coordinate, o.HarbourAccessM, _ => true, ct);
                 if (n is not null) access.Add((h.Id, n.Id, Haversine(h.Location.Y, h.Location.X, n.Y, n.X)));
             }
             Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {gapLinks.Count} gap links, {strays} stray passage ends, {relinks.Count} relinked; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
@@ -412,7 +415,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     /// Area mode (VisibilityGraph): buffered, simplified land from routing_land → corner nodes + open-sea lattice + anchors for
     /// harbours and passage ends + corners of shallow banks → visibility edges, decorated like grid edges (channel preference, depth).
     /// </summary>
-    private async Task<(long nodes, long edges, long nextId)> BuildAreasAsync(NpgsqlConnection conn, SmsDbContext db, int version, Envelope region, RoutingOptions o,
+    private async Task<(long nodes, long edges, long nextId, List<GraphNode> waterNodes)> BuildAreasAsync(NpgsqlConnection conn, SmsDbContext db, int version, Envelope region, RoutingOptions o,
         IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Coordinate> harbourPoints, Stopwatch sw, CancellationToken ct)
     {
         // 1. obstacles: land buffered by the coast distance, unioned and simplified, in 2° chunks (polygons on a chunk border appear twice – harmless for tests, corners are deduplicated)
@@ -498,7 +501,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.CompleteAsync(ct);
         }
         await WriteEdgesAsync(conn, version, edges, ct);
-        return (nodes.Count, edges.Count, nodes.Count + 1);
+        return (nodes.Count, edges.Count, nodes.Count + 1, nodes);
     }
 
     /// <summary>The obstacle polygons of the area build (land buffered by the coast distance, unioned and simplified per 2° chunk,
@@ -545,9 +548,10 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
 
     /// <summary>The nearest acceptable node whose link from <paramref name="p"/> does not cross land. The first 150 m at the start are
     /// ignored (a harbour point sits on its pier, a channel end on the shore).</summary>
-    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, STRtree<(IPreparedGeometry prepared, Geometry geom)> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct, long maxId = long.MaxValue)
+    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, NodeIndex? index, STRtree<(IPreparedGeometry prepared, Geometry geom)> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct, long maxId = long.MaxValue)
     {
-        foreach (var n in await NearestNodesAsync(conn, version, p.X, p.Y, maxM, 40, ct, maxId))
+        var candidates = index is not null ? index.Nearest(p, maxM, 40, maxId) : await NearestNodesAsync(conn, version, p.X, p.Y, maxM, 40, ct, maxId);
+        foreach (var n in candidates)
         {
             if (!accept(n)) continue;
             var lenM = Haversine(p.Y, p.X, n.Y, n.X);
