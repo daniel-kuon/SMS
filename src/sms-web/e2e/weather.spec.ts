@@ -52,9 +52,11 @@ test('weather overlays can be combined and render through MapsGL when credential
 
 test('a selected harbour shows the distance to a hovered harbour and to any clicked point', async ({ page }) => {
   const list = await (await page.request.get('/api/harbours?q=Meldorfer')).json() as { id: string }[];
+  // listen before navigating: a cached nearby-ports answer can arrive before the canvas is visible
+  const nearby = page.waitForResponse(r => r.url().includes('/api/routing/nearby-ports') && r.ok());
   await page.goto(`/harbours/${list[0].id}`);
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
-  await page.waitForResponse(r => r.url().includes('/api/routing/nearby-ports') && r.ok());
+  await nearby;
   await page.waitForTimeout(1500);
   const route = page.waitForResponse(r => r.url().includes('/api/routing/route?from=') && r.ok(), { timeout: 30_000 });
   await page.locator('.maplibregl-canvas').click({ position: { x: 60, y: 420 } });
@@ -67,9 +69,11 @@ test('a selected harbour shows the distance to a hovered harbour and to any clic
 
 test('ship context hides deep hazards and routes carry the draft', async ({ page }) => {
   const list = await (await page.request.get('/api/harbours?q=Meldorfer')).json() as { id: string }[];
+  // listen before navigating: a cached nearby-ports answer can arrive before the canvas is visible
+  const nearby = page.waitForResponse(r => r.url().includes('/api/routing/nearby-ports') && r.ok());
   await page.goto(`/harbours/${list[0].id}`);
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
-  await page.waitForResponse(r => r.url().includes('/api/routing/nearby-ports') && r.ok());
+  await nearby;
   await page.locator('.ship-ctx input').first().fill('1.8');
   await page.locator('.ship-ctx input').first().dispatchEvent('input');
   await expect(page.locator('.ship-ctx .small')).toBeVisible();

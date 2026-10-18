@@ -7,6 +7,8 @@ public record HarbourService(string Kind, int DistanceM, string? Name, long? Poi
 public static class HarbourServices
 {
     public const int MaxDistanceM = 1500;
+    /// <summary>A road petrol station this close is on the harbour premises and counts as fuel for boats; farther away only boat fuel counts.</summary>
+    public const int FuelAtHarbourM = 150;
 
     /// <summary>Service → (Pois.Class, Pois.Kind). Several kinds may provide one service; the nearest wins.</summary>
     public static readonly (string Service, string Class, string Kind)[] PoiKinds =
@@ -39,12 +41,18 @@ public static class HarbourServices
         "supermarket", "convenience", "bakery", "restaurant", "cafe", "pharmacy", "atm", "internet_access", "bicycle_rental", "bus_station",
     ];
 
-    /// <summary>Nearest candidate per service within <see cref="MaxDistanceM"/>; a facility flag of the harbour itself counts as on site (0 m).</summary>
-    public static List<HarbourService> Select(IReadOnlyDictionary<string, bool> facilities, IEnumerable<HarbourService> candidates)
+    /// <summary>
+    /// Nearest candidate per service within <see cref="MaxDistanceM"/>; a facility flag of the harbour itself counts as on site (0 m).
+    /// Fuel counts only for boats: a POI in <paramref name="boatFuel"/> (OSM boat=yes/only or waterway=fuel) or one within <see cref="FuelAtHarbourM"/>.
+    /// </summary>
+    public static List<HarbourService> Select(IReadOnlyDictionary<string, bool> facilities, IEnumerable<HarbourService> candidates, IReadOnlySet<long>? boatFuel = null)
     {
         var best = new Dictionary<string, HarbourService>();
         foreach (var c in candidates)
+        {
+            if (c.Kind == "fuel" && c.DistanceM > FuelAtHarbourM && !(c.PoiId is { } id && boatFuel?.Contains(id) == true)) continue;
             if (c.DistanceM <= MaxDistanceM && Order.Contains(c.Kind) && (!best.TryGetValue(c.Kind, out var b) || c.DistanceM < b.DistanceM)) best[c.Kind] = c;
+        }
         foreach (var (key, on) in facilities)
             if (on && Order.Contains(key)) best[key] = new HarbourService(key, 0, null, null);
         return Order.Where(best.ContainsKey).Select(k => best[k]).ToList();

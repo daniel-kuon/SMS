@@ -248,6 +248,7 @@ public static class HarbourEndpoints
     /// <summary>
     /// Stores the nearest service per kind (HarbourServices) for the given harbours. One statement: candidate POIs within range of each harbour
     /// (Pois are EPSG:3857, so the radius is scaled by 1/cos(lat) and the distance back by cos(lat)), nearest per (harbour, service).
+    /// Fuel: boat fuel (boat=yes/only, waterway=fuel) or a station at the harbour is preferred over a nearer road station, which Select then drops.
     /// </summary>
     public static async Task ComputeServicesAsync(SmsDbContext db, IReadOnlyCollection<Guid> ids, CancellationToken ct)
     {
@@ -257,20 +258,23 @@ public static class HarbourEndpoints
         var rows = await db.Database.SqlQueryRaw<ServiceRow>($$"""
             WITH h AS (SELECT "Id", ST_Transform("Location"::geometry, 3857) AS g, cos(radians(ST_Y("Location"::geometry))) AS k FROM "Harbours" WHERE "Id" = ANY({0})),
                  s(svc, cls, kind) AS (VALUES {{kinds}})
-            SELECT DISTINCT ON (h."Id", s.svc) h."Id" AS "HarbourId", s.svc AS "Kind", p."Id" AS "PoiId", p."Name" AS "Name", ST_Distance(h.g, p."Location") * h.k AS "DistanceM"
+            SELECT DISTINCT ON (h."Id", s.svc) h."Id" AS "HarbourId", s.svc AS "Kind", p."Id" AS "PoiId", p."Name" AS "Name", ST_Distance(h.g, p."Location") * h.k AS "DistanceM",
+                   (p."TagsJson"->>'boat' IN ('yes', 'only') OR p."TagsJson"->>'waterway' = 'fuel') IS TRUE AS "Boat"
             FROM h JOIN "Pois" p ON ST_DWithin(p."Location", h.g, {{HarbourServices.MaxDistanceM}} / h.k)
                    JOIN s ON s.cls = p."Class" AND s.kind = p."Kind"
-            ORDER BY h."Id", s.svc, "DistanceM"
+            ORDER BY h."Id", s.svc, (s.svc = 'fuel' AND NOT (p."TagsJson"->>'boat' IN ('yes', 'only') OR p."TagsJson"->>'waterway' = 'fuel') IS TRUE
+                                     AND ST_Distance(h.g, p."Location") * h.k > {{HarbourServices.FuelAtHarbourM}}), "DistanceM"
             """, ids.ToArray()).ToListAsync(ct);
         var byHarbour = rows.ToLookup(r => r.HarbourId);
+        var boatFuel = rows.Where(r => r.Boat).Select(r => r.PoiId).ToHashSet();
         foreach (var h in await db.Harbours.Where(h => ids.Contains(h.Id)).ToListAsync(ct))
         {
-            var services = HarbourServices.Select(Facilities(h), byHarbour[h.Id].Select(r => new HarbourService(r.Kind, (int)Math.Round(r.DistanceM), r.Name, r.PoiId)));
+            var services = HarbourServices.Select(Facilities(h), byHarbour[h.Id].Select(r => new HarbourService(r.Kind, (int)Math.Round(r.DistanceM), r.Name, r.PoiId)), boatFuel);
             h.Services = services.Count > 0 ? JsonSerializer.Serialize(services, JsonOpts) : null;
         }
         await db.SaveChangesAsync(ct);
     }
-    private sealed class ServiceRow { public Guid HarbourId { get; set; } public string Kind { get; set; } = ""; public long PoiId { get; set; } public string? Name { get; set; } public double DistanceM { get; set; } }
+    private sealed class ServiceRow { public Guid HarbourId { get; set; } public string Kind { get; set; } = ""; public long PoiId { get; set; } public string? Name { get; set; } public double DistanceM { get; set; } public bool Boat { get; set; } }
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 

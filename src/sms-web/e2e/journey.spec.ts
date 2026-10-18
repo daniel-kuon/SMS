@@ -113,7 +113,8 @@ test.describe.serial('skipper journey', () => {
     await page.getByRole('button', { name: /Neue Seite|New page/ }).click();
     const dialog = page.locator('mat-dialog-container');
     await dialog.getByLabel(/Titel|Title/).fill('Über uns');
-    await dialog.getByLabel(/Text|Content/).fill('<p>Willkommen an Bord</p>');
+    // the content field is the TipTap rich-text editor (a contenteditable, not a labelled textarea)
+    await dialog.locator('sms-rich-editor .tiptap').fill('Willkommen an Bord');
     await dialog.getByRole('button', { name: /Speichern|Save/ }).click();
     await expect(dialog).toBeHidden();
     const host = `e2e-${stamp}.example.com`;

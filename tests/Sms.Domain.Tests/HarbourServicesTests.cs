@@ -21,6 +21,15 @@ public class HarbourServicesTests
     }
 
     [Fact]
+    public void Fuel_counts_only_for_boats_or_at_the_harbour()
+    {
+        HarbourService road = new("fuel", 898, "Shell", 83), quay = new("fuel", 140, "Hafentankstelle", 7), boat = new("fuel", 1200, "Bootstankstelle", 9);
+        Assert.Empty(HarbourServices.Select(new Dictionary<string, bool>(), [road]));                       // road petrol station 900 m away
+        Assert.Equal([quay], HarbourServices.Select(new Dictionary<string, bool>(), [road, quay]));          // on the harbour premises
+        Assert.Equal([boat], HarbourServices.Select(new Dictionary<string, bool>(), [road, boat], new HashSet<long> { 9 })); // boat=yes / waterway=fuel
+    }
+
+    [Fact]
     public void Every_poi_service_has_a_display_slot() =>
         Assert.All(HarbourServices.PoiKinds, k => Assert.Contains(k.Service, HarbourServices.Order));
 }
