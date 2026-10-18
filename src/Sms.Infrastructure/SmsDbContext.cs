@@ -173,6 +173,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.HasIndex(h => h.Location).HasMethod("gist");
             e.HasIndex(h => new { h.OsmType, h.OsmId });
             e.Property(h => h.Description).HasMaxLength(100_000);
+            e.Property(h => h.Services).HasColumnType("jsonb");
         });
         m.Entity<HarbourWifi>(e => e.HasOne<Harbour>().WithMany(h => h.Wifis).HasForeignKey(w => w.HarbourId).OnDelete(DeleteBehavior.Cascade));
         m.Entity<HarbourReview>(e => e.HasOne<Harbour>().WithMany(h => h.Reviews).HasForeignKey(r => r.HarbourId).OnDelete(DeleteBehavior.Cascade));

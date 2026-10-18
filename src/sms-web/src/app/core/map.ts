@@ -134,7 +134,7 @@ export function addWeatherOverlayControl(map: MlMap): void {
 }
 
 /** Material Symbols glyph per POI kind (the font is already loaded for mat-icon). */
-const POI_ICON: Record<string, string> = {
+export const POI_ICON: Record<string, string> = {
   restaurant: 'restaurant', cafe: 'local_cafe', bar: 'local_bar', pub: 'sports_bar', fast_food: 'fastfood', ice_cream: 'icecream', biergarten: 'sports_bar', bakery: 'bakery_dining',
   supermarket: 'shopping_cart', convenience: 'shopping_basket', chandler: 'sailing', boat: 'sailing', boat_repair: 'build', fuel: 'local_gas_station', toilets: 'wc', shower: 'shower', drinking_water: 'water_drop',
   hotel: 'hotel', guest_house: 'hotel', hostel: 'hotel', apartment: 'apartment', camp_site: 'camping', caravan_site: 'rv_hookup', pharmacy: 'local_pharmacy', hospital: 'local_hospital', doctors: 'medical_services', dentist: 'dentistry',
@@ -197,24 +197,101 @@ export function addPoiOverlay(map: MlMap, tilesUrl: string): void {
     const [, cls, kind] = e.id.split('|');
     try { const img = await poiBadge(kind, cls); if (map.hasImage(e.id)) map.removeImage(e.id); map.addImage(e.id, img, { pixelRatio: 2 }); } catch { /* keep placeholder */ } finally { pending.delete(e.id); }
   });
-  map.addLayer({
-    id: 'poi-icons', type: 'symbol', source: 'poi', 'source-layer': 'poi', minzoom: 13,
-    layout: { 'icon-image': ['concat', 'poi|', ['get', 'class'], '|', ['get', 'kind']], 'icon-size': ['interpolate', ['linear'], ['zoom'], 13, 0.6, 16, 0.9], 'icon-allow-overlap': false, 'text-field': ['step', ['zoom'], '', 15, ['coalesce', ['get', 'name'], '']], 'text-size': 10, 'text-offset': [0, 1.2], 'text-anchor': 'top', 'text-font': ['Noto Sans Regular'], 'text-optional': true },
-    paint: { 'text-color': '#37474f', 'text-halo-color': '#ffffff', 'text-halo-width': 1.2 },
-  }, map.getLayer('seamark-points') ? 'seamark-points' : undefined);
-  map.on('click', 'poi-icons', e => { const f = e.features?.[0]; if (f) void showPoiPopup(map, f.properties as Record<string, unknown>, e.lngLat); });
-  map.on('mouseenter', 'poi-icons', () => { map.getCanvas().style.cursor = 'pointer'; });
-  map.on('mouseleave', 'poi-icons', () => { map.getCanvas().style.cursor = ''; });
+  // everywhere from z16; from z13 only around the selected harbour (setPoiFocus). Our icons sit above the basemap, so the
+  // basemap's label for the same restaurant loses the collision and is hidden.
+  const before = map.getLayer('seamark-points') ? 'seamark-points' : undefined;
+  const layout = { 'icon-image': ['concat', 'poi|', ['get', 'class'], '|', ['get', 'kind']], 'icon-size': ['interpolate', ['linear'], ['zoom'], 13, 0.6, 16, 0.9], 'icon-allow-overlap': false, 'text-field': ['step', ['zoom'], '', 15, ['coalesce', ['get', 'name'], '']], 'text-size': 10, 'text-offset': [0, 1.2], 'text-anchor': 'top', 'text-font': ['Noto Sans Regular'], 'text-optional': true } as const;
+  const paint = { 'text-color': '#37474f', 'text-halo-color': '#ffffff', 'text-halo-width': 1.2 };
+  map.addLayer({ id: 'poi-icons', type: 'symbol', source: 'poi', 'source-layer': 'poi', minzoom: 16, layout: layout as never, paint }, before);
+  map.addLayer({ id: 'poi-icons-near', type: 'symbol', source: 'poi', 'source-layer': 'poi', minzoom: 13, maxzoom: 16, layout: { ...layout, visibility: 'none' } as never, paint }, before);
+  for (const id of ['poi-icons', 'poi-icons-near']) clickable(map, id, e => { const f = e.features?.[0]; if (f) void showPoiPopup(map, f.properties as Record<string, unknown>, e.lngLat); });
+  // the basemap's own POI labels (OpenMapTiles "poi" layer): name and kind, details from our Pois table when it knows the place
+  for (const l of map.getStyle().layers) if ('source-layer' in l && l['source-layer'] === 'poi' && l.type === 'symbol') clickable(map, l.id, e => {
+    const p = e.features?.[0]?.properties as Record<string, unknown> | undefined; if (!p) return;
+    const name = p['name:de'] ?? p['name'];
+    void showPoiPopup(map, { name, kind: p['subclass'] ?? p['class'] }, e.lngLat, name ? `/api/pois/lookup?${new URLSearchParams({ name: String(name), lat: e.lngLat.lat.toFixed(6), lng: e.lngLat.lng.toFixed(6) })}` : null);
+  });
+}
+
+/** POI layers that open a popup on click: pages with their own map click (e.g. routes) skip clicks on them. */
+const clickableLayers = new Set<string>();
+function clickable(map: MlMap, id: string, onClick: (e: maplibregl.MapLayerMouseEvent) => void): void {
+  clickableLayers.add(id);
+  map.on('click', id, onClick);
+  map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; });
+}
+/** True when a POI with a popup is rendered at the point. */
+export const poiAt = (map: MlMap, point: maplibregl.PointLike) => map.queryRenderedFeatures(point, { layers: [...clickableLayers].filter(id => map.getLayer(id)) }).length > 0;
+
+/** Shows our POIs from z13 within ~1.5 km of the given position (the selected harbour); null = only from z16 as usual. */
+export function setPoiFocus(map: MlMap, at: { lat: number; lng: number } | null): void {
+  if (!map.getLayer('poi-icons-near')) return;
+  map.setLayoutProperty('poi-icons-near', 'visibility', at ? 'visible' : 'none');
+  if (!at) return;
+  const dLat = 1500 / 111_320, dLng = dLat / Math.cos(at.lat * Math.PI / 180);
+  const ring = [[at.lng - dLng, at.lat - dLat], [at.lng + dLng, at.lat - dLat], [at.lng + dLng, at.lat + dLat], [at.lng - dLng, at.lat + dLat], [at.lng - dLng, at.lat - dLat]];
+  map.setFilter('poi-icons-near', ['within', { type: 'Polygon', coordinates: [ring] }] as never);
+}
+
+/** Map view in the URL (?c=lat,lng,zoom), like Google Maps: survives reloads, Back returns to the previous view. */
+export interface MapView { lat: number; lng: number; zoom: number; }
+export function parseView(c: string | null | undefined): MapView | null {
+  const [lat, lng, zoom] = (c ?? '').split(',').map(s => (s.trim() === '' ? NaN : Number(s)));
+  return Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(zoom) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && zoom >= 0 && zoom <= 24 ? { lat, lng, zoom } : null;
+}
+export const formatView = (v: MapView) => `${v.lat.toFixed(5)},${v.lng.toFixed(5)},${Math.round(v.zoom * 100) / 100}`;
+/** The view in a path with query string ("/harbours/x?c=…"), or null. */
+export const viewFromUrl = (url: string) => parseView(new URLSearchParams(url.split('?')[1] ?? '').get('c'));
+/** Map options for createMap: the URL's view, if any (it wins over any default). */
+export const urlViewOptions = (url: string): Partial<MapOptions> => { const v = viewFromUrl(url); return v ? { center: [v.lng, v.lat], zoom: v.zoom } : {}; };
+
+/** What syncViewWithUrl needs from Angular's Location (kept minimal so map.ts stays framework-free and testable). */
+export interface UrlHistory { path(): string; replaceState(path: string, query?: string, state?: unknown): void; go(path: string, query?: string, state?: unknown): void; getState(): unknown; subscribe(fn: (e: { url?: string }) => void): { unsubscribe(): void }; }
+/**
+ * Keeps ?c= in step with the map: every settled move replaces the current entry (reload keeps the view); once the map rested for
+ * a second away from the view the entry was created with, that entry gets its old view back and a new one is pushed, so Back
+ * returns to the previous view. Back/forward (popstate) jumps the map to the entry's view. Returns the teardown.
+ */
+export function syncViewWithUrl(map: MlMap, history: UrlHistory, settleMs = 1000): () => void {
+  const current = (): MapView => { const c = map.getCenter(); return { lat: c.lat, lng: c.lng, zoom: map.getZoom() }; };
+  const withView = (url: string, v: MapView): [string, string] => { const [path, q = ''] = url.split('?'); const p = new URLSearchParams(q); p.set('c', formatView(v)); return [path, p.toString().replace(/%2C/g, ',')]; };
+  let entry = { path: history.path().split('?')[0], view: current() };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const moved = (a: MapView, b: MapView) => Math.abs(a.zoom - b.zoom) >= 0.5 || map.project([a.lng, a.lat]).dist(map.project([b.lng, b.lat])) > 100;
+  const onMoveEnd = () => {
+    const v = current();
+    history.replaceState(...withView(history.path(), v), history.getState());
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const url = history.path(), path = url.split('?')[0], now = current();
+      if (path === entry.path && moved(entry.view, now)) {
+        history.replaceState(...withView(url, entry.view), history.getState());
+        history.go(...withView(url, now));
+      }
+      entry = { path, view: now };
+    }, settleMs);
+  };
+  map.on('moveend', onMoveEnd);
+  const sub = history.subscribe(e => {
+    clearTimeout(timer);
+    const v = viewFromUrl(e.url ?? history.path());
+    entry = { path: (e.url ?? history.path()).split('?')[0], view: v ?? current() };
+    if (v) map.jumpTo({ center: [v.lng, v.lat], zoom: v.zoom });
+  });
+  return () => { clearTimeout(timer); sub.unsubscribe(); map.off('moveend', onMoveEnd); };
 }
 
 export interface PoiDetails { osmType: string; osmId: number; name: string | null; class: string; kind: string; openingHours: string | null; website: string | null; phone: string | null; email: string | null; address: string | null; cuisine: string | null; wheelchair: string | null; description: string | null; osmUrl: string; }
-export async function showPoiPopup(map: MlMap, p: Record<string, unknown>, lngLat: maplibregl.LngLat): Promise<void> {
+export async function showPoiPopup(map: MlMap, p: Record<string, unknown>, lngLat: maplibregl.LngLat, detailsUrl: string | null = `/api/pois/${p['osm_type']}/${p['osm_id']}`): Promise<void> {
   const div = document.createElement('div'); div.className = 'poi-popup';
   div.appendChild(textEl(String(p['name'] ?? kindLabel(String(p['kind']))), 'b'));
   div.appendChild(textEl(kindLabel(String(p['kind'])), 'div')).className = 'muted';
   const popup = new maplibregl.Popup({ offset: 12 }).setLngLat(lngLat).setDOMContent(div).addTo(map);
+  if (!detailsUrl) return;
   try {
-    const d = await (await fetch(`/api/pois/${p['osm_type']}/${p['osm_id']}`)).json() as PoiDetails;
+    const r = await fetch(detailsUrl); if (!r.ok) return;
+    const d = await r.json() as PoiDetails;
     const row = (label: string, value: string | null, href?: string) => {
       if (!value) return;
       const r = document.createElement('div'); r.appendChild(textEl(label + ': '));

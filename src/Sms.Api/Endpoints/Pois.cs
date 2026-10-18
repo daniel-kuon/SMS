@@ -15,17 +15,30 @@ public static class PoiEndpoints
         api.MapGet("/pois/{osmType}/{osmId:long}", async (string osmType, long osmId, SmsDbContext db, CancellationToken ct) =>
         {
             var p = await db.Pois.AsNoTracking().FirstOrDefaultAsync(x => x.OsmType == osmType && x.OsmId == osmId, ct);
-            if (p is null) return Results.NotFound();
-            using var tags = JsonDocument.Parse(p.TagsJson);
-            string? T(string k) => tags.RootElement.TryGetProperty(k, out var v) ? v.GetString() : null;
-            var addr = string.Join(", ", new[] { string.Join(" ", new[] { T("addr:street"), T("addr:housenumber") }.Where(s => s != null)), string.Join(" ", new[] { T("addr:postcode"), T("addr:city") }.Where(s => s != null)) }.Where(s => s.Length > 0));
-            return Results.Ok(new
-            {
-                p.OsmType, p.OsmId, p.Name, p.Class, p.Kind, openingHours = T("opening_hours"), website = HttpUrl(T("website") ?? T("contact:website")), phone = T("phone") ?? T("contact:phone"), email = T("email") ?? T("contact:email"),
-                address = addr.Length > 0 ? addr : null, cuisine = T("cuisine"), wheelchair = T("wheelchair"), description = T("description"), osmUrl = $"https://www.openstreetmap.org/{p.OsmType}/{p.OsmId}",
-            });
+            return p is null ? Results.NotFound() : Results.Ok(Details(p));
+        }).WithTags("Pois");
+        // a basemap POI label (no OSM id in the tiles): the same details for the POI of that name within 150 m
+        api.MapGet("/pois/lookup", async (string name, double lat, double lng, SmsDbContext db, CancellationToken ct) =>
+        {
+            // Pois are EPSG:3857: Web Mercator metres, stretched by 1/cos(lat)
+            var at = new NetTopologySuite.Geometries.Point(lng * 20037508.34 / 180, Math.Log(Math.Tan((90 + lat) * Math.PI / 360)) * 6378137) { SRID = 3857 };
+            var radius = 150 / Math.Cos(lat * Math.PI / 180);
+            var p = await db.Pois.AsNoTracking().Where(x => x.Name == name && x.Location.IsWithinDistance(at, radius)).OrderBy(x => x.Location.Distance(at)).FirstOrDefaultAsync(ct);
+            return p is null ? Results.NotFound() : Results.Ok(Details(p));
         }).WithTags("Pois");
         api.MapGet("/pois/status", async (SmsDbContext db, CancellationToken ct) => Results.Ok(new { count = await db.Pois.CountAsync(ct) })).WithTags("Pois");
+    }
+
+    private static object Details(Poi p)
+    {
+        using var tags = JsonDocument.Parse(p.TagsJson);
+        string? T(string k) => tags.RootElement.TryGetProperty(k, out var v) ? v.GetString() : null;
+        var addr = string.Join(", ", new[] { string.Join(" ", new[] { T("addr:street"), T("addr:housenumber") }.Where(s => s != null)), string.Join(" ", new[] { T("addr:postcode"), T("addr:city") }.Where(s => s != null)) }.Where(s => s.Length > 0));
+        return new
+        {
+            p.OsmType, p.OsmId, p.Name, p.Class, p.Kind, openingHours = T("opening_hours"), website = HttpUrl(T("website") ?? T("contact:website")), phone = T("phone") ?? T("contact:phone"), email = T("email") ?? T("contact:email"),
+            address = addr.Length > 0 ? addr : null, cuisine = T("cuisine"), wheelchair = T("wheelchair"), description = T("description"), osmUrl = $"https://www.openstreetmap.org/{p.OsmType}/{p.OsmId}",
+        };
     }
 
     private static string? Cut(string? v, int max) => v is null ? null : v.Length <= max ? v : v[..max];

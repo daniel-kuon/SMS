@@ -18,14 +18,17 @@ import type { GeoJSONSource, MapMouseEvent } from 'maplibre-gl';
 import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, NearbyPort, Wifi } from '../../core/models';
-import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
+import { Location } from '@angular/common';
+import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, setPoiFocus, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
 import { UploadZone } from '../../shared/shared';
 import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
 import { ShipContextService } from '../../core/ship-context';
 import { applyDepthShading, applyHazardFilter } from '../../core/map';
 
-const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
+/** Service glyphs not covered by the POI icons (Material Symbols). */
+const SERVICE_ICON: Record<string, string> = { power_supply: 'electrical_services', sanitary_dump_station: 'plumbing', waste_disposal: 'delete', internet_access: 'wifi', bus_station: 'directions_bus', chandlery: 'sailing', slipway: 'rowing' };
+const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
 
 @Component({
   imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone, MatListModule, RouterLink, WeatherCard, MatSelectModule, MatFormFieldModule, MatInputModule],
@@ -58,7 +61,11 @@ const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: numb
           </div>
           @if (h.phone) { <div>{{ 'harbour.phone' | translate }}: {{ h.phone }}</div> }
           @if (h.vhfChannel) { <div>{{ 'harbour.vhf' | translate }}: {{ h.vhfChannel }}</div> }
-          @if (facilities(); as f) { <div class="chips">@for (k of f; track k) { <span class="chip">{{ k }}</span> }</div> }
+          @if (services().length) {
+            <div class="services" [attr.aria-label]="'harbour.services' | translate">@for (s of services(); track s.kind) {
+              <span class="chip svc" [title]="('harbour.svc.' + s.kind | translate) + (s.name ? ': ' + s.name : '')"><mat-icon inline>{{ serviceIcon(s.kind) }}</mat-icon> {{ s.distanceM ? s.distanceM + ' m' : ('harbour.onSite' | translate) }}</span>
+            }</div>
+          }
           @if (h.photoUrls.length) { <div class="photo-grid">@for (p of h.photoUrls; track p) { <img [src]="p" /> }</div> }
           @if (auth.me() && h.id) { <app-upload [url]="'/api/harbours/' + h.id + '/photos'" (uploaded)="load(h.id)" /> }
           @if (h.description) { <div class="rich" [innerHTML]="h.description"></div> }
@@ -67,7 +74,7 @@ const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: numb
             <mat-tab [label]="'harbour.nearby' | translate">
               <p class="disclaimer">{{ 'harbour.disclaimer' | translate }}</p>
               <table mat-table [dataSource]="nearby()" class="full-width">
-                <ng-container matColumnDef="name"><th mat-header-cell *matHeaderCellDef>{{ 'common.name' | translate }}</th><td mat-cell *matCellDef="let p"><a href="" (click)="$event.preventDefault(); select(p.harbourId)">{{ p.name }}</a></td></ng-container>
+                <ng-container matColumnDef="name"><th mat-header-cell *matHeaderCellDef>{{ 'common.name' | translate }}</th><td mat-cell *matCellDef="let p"><a href="" (click)="$event.preventDefault(); select(p.harbourId, true)">{{ p.name }}</a></td></ng-container>
                 <ng-container matColumnDef="distanceNm"><th mat-header-cell *matHeaderCellDef>{{ 'harbour.distance' | translate }}</th><td mat-cell *matCellDef="let p">{{ p.distanceNm }} sm</td></ng-container>
                 <ng-container matColumnDef="etaHours"><th mat-header-cell *matHeaderCellDef>{{ 'harbour.eta' | translate }}</th><td mat-cell *matCellDef="let p">{{ p.etaHours }} h</td></ng-container>
                 <ng-container matColumnDef="route"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let p"><button mat-button (click)="pinRoute(p)">{{ 'harbour.showRoute' | translate }}</button></td></ng-container>
@@ -114,6 +121,7 @@ const straightNm = (a: { lat: number; lng: number }, b: { lat: number; lng: numb
     .ship-ctx { position: absolute; left: 50px; top: 10px; background: rgba(255,255,255,.95); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.3); padding: 4px 8px; display: flex; gap: 8px; align-items: center; font-size: 12px; z-index: 2; }
     .ship-ctx input { width: 44px; } .ship-ctx select { max-width: 140px; } .ship-ctx .small { font-size: 11px; }
     .full-width { width: 100%; }
+    .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: default; } .svc mat-icon { font-size: 16px; }
     @media (max-width: 800px) { .layout { flex-direction: column; } .panel.open { width: 100%; } }
   `,
 })
@@ -134,21 +142,36 @@ export class HarbourMapPage {
   fmt = fmtDate;
   position = (h: HarbourMarker) => formatPosition(h.lat, h.lng);
   skipperGuideUrl = (h: HarbourMarker) => `https://www.skipperguide.de/index.php?search=${encodeURIComponent(h.name)}`;
-  facilities = computed(() => { const f = this.harbour()?.facilities; return f ? Object.keys(f).filter(k => f[k]) : null; });
+  /** Nearest services (computed server-side); until they are computed the harbour's own facility flags, on site. */
+  services = computed(() => { const h = this.harbour(); return !h ? [] : h.services?.length ? h.services : Object.keys(h.facilities).filter(k => h.facilities[k]).map(kind => ({ kind, distanceM: 0, name: null, poiId: null })); });
+  serviceIcon = (kind: string) => SERVICE_ICON[kind] ?? POI_ICON[kind] ?? 'check';
   hovered: string | null = null;
   private map?: MlMap;
   private harbours = new Map<string, HarbourMarker>();
   private pinned = false;
+  private location = inject(Location);
+  private unsyncView?: () => void;
+  /** How the map follows the next loaded harbour: a deep link without a view centres it, a pick from a list only when it is off-screen; a click on the map never moves it. */
+  private reveal: 'centre' | 'offscreen' | null = viewFromUrl(this.location.path()) ? null : 'centre';
 
   constructor() {
     effect(() => { const id = this.id(); if (id) this.load(id); else this.harbour.set(null); });
+    effect(() => { const h = this.harbour(); if (this.map) setPoiFocus(this.map, h?.id ? h : null); });
     effect(() => { const draft = this.shipCtx.draftM(); if (this.map) { applyHazardFilter(this.map, draft); applyDepthShading(this.map, draft); } });
   }
   pickShip(id: string): void { this.shipCtx.select(this.shipCtx.myShips().find(s => s.id === id) ?? null); }
 
   async ngAfterViewInit(): Promise<void> {
-    const map = await createMap(this.mapEl().nativeElement);
+    const map = await createMap(this.mapEl().nativeElement, urlViewOptions(this.location.path()));
     this.map = map;
+    this.unsyncView = syncViewWithUrl(map, this.location);
+    // the side panel opening/closing resizes the map: keep the top-left corner where it was instead of re-centring (the map stays still)
+    let size = { w: map.getContainer().clientWidth, h: map.getContainer().clientHeight };
+    map.on('resize', () => {
+      const w = map.getContainer().clientWidth, h = map.getContainer().clientHeight;
+      if (w !== size.w || h !== size.h) map.panBy([(w - size.w) / 2, (h - size.h) / 2], { animate: false });
+      size = { w, h };
+    });
     map.addSource('harbours', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, cluster: true, clusterRadius: 40, clusterMaxZoom: 10 });
     map.addLayer({ id: 'harbour-clusters', type: 'circle', source: 'harbours', filter: ['has', 'point_count'], paint: { 'circle-color': '#1b4d7a', 'circle-radius': ['step', ['get', 'point_count'], 14, 10, 18, 50, 24], 'circle-opacity': 0.85 } });
     map.addLayer({ id: 'harbour-cluster-count', type: 'symbol', source: 'harbours', filter: ['has', 'point_count'], layout: { 'text-field': ['get', 'point_count_abbreviated'], 'text-size': 12, 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#ffffff' } });
@@ -161,7 +184,7 @@ export class HarbourMapPage {
 
     map.on('moveend', () => this.refresh());
     map.on('click', 'harbour-points', e => { const id = e.features?.[0]?.properties?.['id']; if (id) this.select(id); });
-    map.on('click', e => { if (map.queryRenderedFeatures(e.point, { layers: ['harbour-points', 'harbour-clusters'] }).length === 0) this.clickPoint(e.lngLat.lat, e.lngLat.lng); });
+    map.on('click', e => { if (map.queryRenderedFeatures(e.point, { layers: ['harbour-points', 'harbour-clusters'] }).length === 0 && !poiAt(map, e.point)) this.clickPoint(e.lngLat.lat, e.lngLat.lng); });
     map.on('click', 'harbour-clusters', e => { const f = e.features?.[0]; if (f) map.easeTo({ center: (f.geometry as GeoPoint).coordinates as [number, number], zoom: map.getZoom() + 2 }); });
     map.on('mouseenter', 'harbour-points', e => { map.getCanvas().style.cursor = 'pointer'; const id = e.features?.[0]?.properties?.['id']; if (id) this.hoverHarbour(id); });
     map.on('mouseleave', 'harbour-points', () => { map.getCanvas().style.cursor = ''; this.hideRoute(); });
@@ -169,10 +192,24 @@ export class HarbourMapPage {
     applyHazardFilter(map, this.shipCtx.draftM()); applyDepthShading(map, this.shipCtx.draftM());
     this.refresh();
     const h = this.harbour();
-    if (h) map.easeTo({ center: [h.lng, h.lat], zoom: Math.max(map.getZoom(), 11) });
+    if (h) { setPoiFocus(map, h.id ? h : null); this.revealHarbour(h); }
   }
 
-  ngOnDestroy(): void { this.map?.remove(); }
+  ngOnDestroy(): void { this.unsyncView?.(); this.map?.remove(); }
+
+  private revealHarbour(h: Harbour): void {
+    const map = this.map, how = this.reveal;
+    if (!map || !how) return;
+    this.reveal = null;
+    if (how === 'centre') map.easeTo({ center: [h.lng, h.lat], zoom: Math.max(map.getZoom(), 11) });
+    else if (!map.getBounds().contains([h.lng, h.lat])) map.easeTo({ center: [h.lng, h.lat] });
+  }
+
+  /** The current view as query params, so router navigations keep it in the URL. */
+  private viewParams(): { c?: string } {
+    const m = this.map; if (!m) return {};
+    const c = m.getCenter(); return { c: formatView({ lat: c.lat, lng: c.lng, zoom: m.getZoom() }) };
+  }
 
   refresh(): void {
     const map = this.map; if (!map) return;
@@ -188,13 +225,14 @@ export class HarbourMapPage {
     src?.setData({ type: 'FeatureCollection', features: [...this.harbours.values()].map(h => ({ type: 'Feature', id: h.id, properties: { id: h.id, name: h.name, selected: h.id === this.harbour()?.id }, geometry: { type: 'Point', coordinates: [h.lng, h.lat] } })) });
   }
 
-  select(id: string): void { this.router.navigate(['/harbours', id]); }
+  /** fromList: picked in a list (nearby ports), so the map moves to it if it is off-screen; a click on the map never moves it. */
+  select(id: string, fromList = false): void { this.reveal = fromList ? 'offscreen' : null; this.router.navigate(['/harbours', id], { queryParams: this.viewParams() }); }
 
   load(id: string): void {
     this.api.get<Harbour>(`/api/harbours/${id}`).subscribe(h => {
       this.harbour.set(h);
       this.pinned = false; this.hideRoute(true);
-      if (this.map) { this.map.easeTo({ center: [h.lng, h.lat] }); this.setHarbourData(); }
+      if (this.map) { this.revealHarbour(h); this.setHarbourData(); }
       this.api.get<{ ports: NearbyPort[] }>('/api/routing/nearby-ports', { harbour: id, maxNm: 60, limit: 30 }).subscribe(r => this.nearby.set(r.ports));
       this.api.get<ReturnType<HarbourMapPage['visits']>>(`/api/harbours/${id}/visits`).subscribe(v => this.visits.set(v));
       loadForecast(this.api, `/api/harbours/${id}/weather`, undefined, this.weather, this.weatherError);
@@ -202,7 +240,7 @@ export class HarbourMapPage {
     });
   }
 
-  close(): void { this.hideRoute(true); this.router.navigate(['/']); }
+  close(): void { this.hideRoute(true); this.router.navigate(['/'], { queryParams: this.viewParams() }); }
 
   private hoverHarbour(id: string): void {
     const h = this.harbour(); const m = this.harbours.get(id);
@@ -272,7 +310,7 @@ export class HarbourMapPage {
 
   private nearbyFrom(lat: number, lng: number): void {
     this.api.get<{ ports: NearbyPort[] }>('/api/routing/nearby-ports', { lat, lng, maxNm: 60, limit: 30 }).subscribe(r => {
-      this.harbour.set({ id: '', name: `${lat.toFixed(3)}, ${lng.toFixed(3)}`, lat, lng, category: null, country: null, website: null, description: null, phone: null, vhfChannel: null, facilities: {}, source: 'User', osmType: null, osmId: null, wifis: [], reviews: [], averageRating: null, photoUrls: [] });
+      this.harbour.set({ id: '', name: `${lat.toFixed(3)}, ${lng.toFixed(3)}`, lat, lng, category: null, country: null, website: null, description: null, phone: null, vhfChannel: null, facilities: {}, source: 'User', osmType: null, osmId: null, wifis: [], reviews: [], averageRating: null, photoUrls: [], services: [] });
       this.nearby.set(r.ports);
       loadForecast(this.api, '/api/weather', { lat, lng }, this.weather, this.weatherError);
       loadTides(this.api, '/api/weather/tides', { lat, lng }, this.tides);

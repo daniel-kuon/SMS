@@ -7,8 +7,10 @@ export interface Wifi { id: string; name: string; password: string | null; speed
 export interface Review { id: string; authorId: string; author: string; rating: number; text: string | null; visitedOn: string | null; createdAt: string; }
 export interface Harbour extends HarbourMarker {
   website: string | null; description: string | null; phone: string | null; vhfChannel: string | null; facilities: Record<string, boolean>;
-  source: string; osmType: string | null; osmId: number | null; wifis: Wifi[]; reviews: Review[]; averageRating: number | null; photoUrls: string[];
+  source: string; osmType: string | null; osmId: number | null; wifis: Wifi[]; reviews: Review[]; averageRating: number | null; photoUrls: string[]; services: HarbourService[];
 }
+/** Nearest service of a kind (0 m = on site, from the harbour's facility flags). */
+export interface HarbourService { kind: string; distanceM: number; name: string | null; poiId: number | null; }
 export interface NearbyPort { harbourId: string; name: string; lat: number; lng: number; distanceNm: number; straightLineNm: number; etaHours: number; method: string; }
 
 export type ShipRole = 'Owner' | 'Skipper';

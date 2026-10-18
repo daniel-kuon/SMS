@@ -14,7 +14,8 @@ public record WifiUpsert(string Name, string? Password, int Speed, bool Free);
 public record ReviewDto(Guid Id, Guid AuthorId, string Author, int Rating, string? Text, DateOnly? VisitedOn, DateTimeOffset CreatedAt);
 public record ReviewUpsert(int Rating, string? Text, DateOnly? VisitedOn);
 public record HarbourDto(Guid Id, string Name, double Lat, double Lng, string? Country, string? Website, string? Description, string? Category, string? Phone, string? VhfChannel,
-    Dictionary<string, bool> Facilities, HarbourSource Source, string? OsmType, long? OsmId, IReadOnlyList<WifiDto> Wifis, IReadOnlyList<ReviewDto> Reviews, double? AverageRating, IReadOnlyList<string> PhotoUrls);
+    Dictionary<string, bool> Facilities, HarbourSource Source, string? OsmType, long? OsmId, IReadOnlyList<WifiDto> Wifis, IReadOnlyList<ReviewDto> Reviews, double? AverageRating, IReadOnlyList<string> PhotoUrls,
+    IReadOnlyList<HarbourService> Services);
 public record NearbyPort(Guid HarbourId, string Name, double Lat, double Lng, decimal DistanceNm, decimal StraightLineNm, decimal EtaHours, string Method);
 
 public static class HarbourEndpoints
@@ -60,6 +61,7 @@ public static class HarbourEndpoints
             Apply(h, req, html);
             db.Harbours.Add(h);
             await db.SaveChangesAsync(ct);
+            await ComputeServicesAsync(db, [h.Id], ct);
             return Results.Created($"/api/harbours/{h.Id}", new { h.Id });
         }).RequireAuthorization();
 
@@ -72,6 +74,7 @@ public static class HarbourEndpoints
             Apply(h, req, html);
             h.UpdatedById = current.Id;
             await db.SaveChangesAsync(ct);
+            await ComputeServicesAsync(db, [h.Id], ct);
             return Results.NoContent();
         }).RequireAuthorization();
 
@@ -160,7 +163,20 @@ public static class HarbourEndpoints
             using var doc = await Overpass.QueryAsync(http, cfg, query, ct);
             if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
             var r = await ImportAsync(doc, db, current.Id, ct);
+            var s = p.Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            var area = Geo.Factory.ToGeometry(new Envelope(s[1], s[3], s[0], s[2]));
+            await ComputeServicesAsync(db, await db.Harbours.Where(h => h.IsActive && h.MergedIntoId == null && h.Location.Intersects(area)).Select(h => h.Id).ToListAsync(ct), ct);
             return Results.Ok(new { r.created, r.updated, r.skipped });
+        }).RequireAuthorization().WithTags("Admin");
+
+        // Nearest services (HarbourServices) for all active harbours: one PostGIS query per batch, ~14 k harbours in seconds.
+        api.MapPost("/admin/harbours/compute-services", async (SmsDbContext db, CurrentUser current, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var ids = await db.Harbours.AsNoTracking().Where(h => h.IsActive && h.MergedIntoId == null).OrderBy(h => h.Id).Select(h => h.Id).ToListAsync(ct);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            foreach (var batch in ids.Chunk(1000)) { await ComputeServicesAsync(db, batch, ct); db.ChangeTracker.Clear(); }
+            return Results.Ok(new { harbours = ids.Count, seconds = Math.Round(sw.Elapsed.TotalSeconds, 1) });
         }).RequireAuthorization().WithTags("Admin");
 
         api.MapPost("/admin/harbours/{id:guid}/merge-into/{targetId:guid}", async (Guid id, Guid targetId, SmsDbContext db, CurrentUser current, CancellationToken ct) =>
@@ -229,6 +245,33 @@ public static class HarbourEndpoints
         return (created, updated, skipped);
     }
 
+    /// <summary>
+    /// Stores the nearest service per kind (HarbourServices) for the given harbours. One statement: candidate POIs within range of each harbour
+    /// (Pois are EPSG:3857, so the radius is scaled by 1/cos(lat) and the distance back by cos(lat)), nearest per (harbour, service).
+    /// </summary>
+    public static async Task ComputeServicesAsync(SmsDbContext db, IReadOnlyCollection<Guid> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0) return;
+        // constants from HarbourServices, no user input
+        var kinds = string.Join(",", HarbourServices.PoiKinds.Select(k => $"('{k.Service}','{k.Class}','{k.Kind}')"));
+        var rows = await db.Database.SqlQueryRaw<ServiceRow>($$"""
+            WITH h AS (SELECT "Id", ST_Transform("Location"::geometry, 3857) AS g, cos(radians(ST_Y("Location"::geometry))) AS k FROM "Harbours" WHERE "Id" = ANY({0})),
+                 s(svc, cls, kind) AS (VALUES {{kinds}})
+            SELECT DISTINCT ON (h."Id", s.svc) h."Id" AS "HarbourId", s.svc AS "Kind", p."Id" AS "PoiId", p."Name" AS "Name", ST_Distance(h.g, p."Location") * h.k AS "DistanceM"
+            FROM h JOIN "Pois" p ON ST_DWithin(p."Location", h.g, {{HarbourServices.MaxDistanceM}} / h.k)
+                   JOIN s ON s.cls = p."Class" AND s.kind = p."Kind"
+            ORDER BY h."Id", s.svc, "DistanceM"
+            """, ids.ToArray()).ToListAsync(ct);
+        var byHarbour = rows.ToLookup(r => r.HarbourId);
+        foreach (var h in await db.Harbours.Where(h => ids.Contains(h.Id)).ToListAsync(ct))
+        {
+            var services = HarbourServices.Select(Facilities(h), byHarbour[h.Id].Select(r => new HarbourService(r.Kind, (int)Math.Round(r.DistanceM), r.Name, r.PoiId)));
+            h.Services = services.Count > 0 ? JsonSerializer.Serialize(services, JsonOpts) : null;
+        }
+        await db.SaveChangesAsync(ct);
+    }
+    private sealed class ServiceRow { public Guid HarbourId { get; set; } public string Kind { get; set; } = ""; public long PoiId { get; set; } public string? Name { get; set; } public double DistanceM { get; set; } }
+
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
     private static string? Tag(JsonElement tags, string key) => tags.TryGetProperty(key, out var v) ? v.GetString() : null;
@@ -250,5 +293,6 @@ public static class HarbourEndpoints
         h.Id, h.Name, h.Location.Y, h.Location.X, h.Country, h.Website, h.Description, h.Category, h.Phone, h.VhfChannel, Facilities(h), h.Source, h.OsmType, h.OsmId,
         h.Wifis.Select(w => new WifiDto(w.Id, w.Name, registered ? w.Password : null, w.Speed, w.Free)).ToList(),
         h.Reviews.OrderByDescending(r => r.CreatedAt).Select(r => new ReviewDto(r.Id, r.AuthorId, names.GetValueOrDefault(r.AuthorId, "?"), r.Rating, r.Text, r.VisitedOn, r.CreatedAt)).ToList(),
-        h.Reviews.Count > 0 ? Math.Round(h.Reviews.Average(r => r.Rating), 1) : null, photos);
+        h.Reviews.Count > 0 ? Math.Round(h.Reviews.Average(r => r.Rating), 1) : null, photos,
+        string.IsNullOrEmpty(h.Services) ? [] : JsonSerializer.Deserialize<List<HarbourService>>(h.Services, JsonOpts) ?? []);
 }

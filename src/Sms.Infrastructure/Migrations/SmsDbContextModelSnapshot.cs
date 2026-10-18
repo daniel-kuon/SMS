@@ -562,6 +562,10 @@ namespace Sms.Infrastructure.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
 
+                    b.Property<string>("Services")
+                        .HasMaxLength(4000)
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(32)

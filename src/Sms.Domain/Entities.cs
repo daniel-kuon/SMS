@@ -335,6 +335,8 @@ public class Harbour : Entity
     public string? Category { get; set; }
     /// <summary>JSON object with facility flags (fuel, water, power, toilets, showers, ...).</summary>
     public string? Facilities { get; set; }
+    /// <summary>JSON array of <see cref="HarbourService"/>: nearest services (OSM POIs, on-site facility flags) with straight-line distance.</summary>
+    public string? Services { get; set; }
     public string? Phone { get; set; }
     public string? VhfChannel { get; set; }
     public bool IsActive { get; set; } = true;
