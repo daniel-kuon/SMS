@@ -171,6 +171,24 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             var shallow = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_depth WHERE min_depth_m < {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", dm + builder.Options.DepthSafetyMarginM, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
             foreach (var g in shallow) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
         }
+        // the channel zone (water next to a buoy chain, minus the chain's own corridor) counts as an obstacle too: where the chart
+        // has no depth data (Wadden Sea gaps) nothing else stops the string from cutting straight across the flats the chain avoids
+        var o = builder.Options;
+        if (o.ChannelPreferenceM > 0)
+        {
+            var box = Geo.Factory.ToGeometry(env); box.SRID = 4326;
+            var fairways = (await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Geometry.Intersects(box)).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
+            if (fairways.Count > 0)
+            {
+                var corridorDeg = 150 / WaterGraphTiler.MPerDegLat;
+                var corridor = NetTopologySuite.Operation.Union.UnaryUnionOp.Union(fairways.Select(f => f.Buffer(corridorDeg)).ToList());
+                foreach (var z in ChannelPreference.Zone(fairways, [], o.ChannelPreferenceM))
+                {
+                    var g = z.Difference(corridor);
+                    if (!g.IsEmpty) index.Insert(g.EnvelopeInternal, PreparedGeometryFactory.Prepare(g));
+                }
+            }
+        }
         index.Build();
         var result = new List<Coordinate> { path[0] };
         var i = 0;
