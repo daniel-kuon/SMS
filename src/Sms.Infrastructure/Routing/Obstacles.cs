@@ -39,11 +39,13 @@ public static class Obstacles
                 var window = scaled.Intersection(sp.Buffer(windowDeg));
                 if (window.IsEmpty) continue;
                 windows.Add(sp.Buffer(windowDeg));
-                window.Apply(new Scale(1 / cos));
+                // overlay results share Coordinate objects with their input: copy before scaling back, or the scaled source line
+                // (and every other piece) is corrupted into a line spanning tens of degrees
+                window = window.Copy(); window.Apply(new Scale(1 / cos));
                 result.Add((window, o.kind, p.clearanceM ?? o.clearanceM));
             }
             if (windows.Count == 0) { result.Add(o); continue; }
-            var rest = scaled.Difference(new GeometryCollection(windows.ToArray()).Union());
+            var rest = scaled.Difference(new GeometryCollection(windows.ToArray()).Union()).Copy();
             if (!rest.IsEmpty) { rest.Apply(new Scale(1 / cos)); result.Add((rest, o.kind, 0)); }
         }
         return result;

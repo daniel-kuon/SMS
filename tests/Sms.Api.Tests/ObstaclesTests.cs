@@ -53,6 +53,10 @@ public class ObstaclesTests
         Assert.Contains(pieces, p => p.geom is not Point && p.clearanceM == 65);
         Assert.Contains(pieces, p => p.geom is not Point && p.clearanceM == 0);
         Assert.Single(Obstacles.SpanPoints(raw));
+        // every piece stays inside the bridge's own extent (overlay results share coordinates with the scaled input: a scale-back
+        // on a shared Coordinate once stretched pieces across ten degrees of longitude)
+        var two = Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, 20), (span, Sms.Domain.CorrectionKind.Bridge, 65), (F.CreatePoint(new Coordinate(11.07, 55.3405)), Sms.Domain.CorrectionKind.Bridge, 30)]);
+        Assert.All(two.Where(p => p.geom is not Point), p => Assert.True(line.EnvelopeInternal.Contains(p.geom.EnvelopeInternal), p.geom.EnvelopeInternal.ToString()));
         var atSpan = Edge(1, 2, 11.045, 55.33, 11.045, 55.35);   // crosses inside the window
         var outside = Edge(3, 4, 11.01, 55.33, 11.01, 55.35);    // crosses 2.2 km west of the span
         var away = Edge(5, 6, 11.045, 55.36, 11.045, 55.38);    // north of the bridge

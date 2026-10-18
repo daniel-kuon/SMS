@@ -2,6 +2,8 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 using NetTopologySuite.Geometries;
+using NetTopologySuite.Geometries.Prepared;
+using Npgsql;
 using Sms.Domain;
 using Sms.Infrastructure;
 using Sms.Infrastructure.Routing;
@@ -158,6 +160,63 @@ public static class RoutingEndpoints
             var b = bbox.Split(',').Select(x => double.Parse(x, CultureInfo.InvariantCulture)).ToArray();
             return Results.Ok(await ImportWaterwaysAsync(doc, db, current.Id, ct, bbox: new Envelope(b[1], b[3], b[0], b[2])));
         });
+        // diagnostics: why is there no visibility leg between two points? Lists the obstacle polygons of the area build that the segment meets
+        admin.MapGet("/visible", async (string a, string b, CurrentUser current, SmsDbContext db, RoutingGraphBuilder builder, SeaRouter router, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (!TryParsePoint(a, out var pa) || !TryParsePoint(b, out var pb)) return Invalid("a", "a=lat,lng&b=lat,lng");
+            try {
+            var version = await router.ActiveVersionAsync(ct);
+            var env = new Envelope(pa.Coordinate, pb.Coordinate);
+            var conn = (NpgsqlConnection)db.Database.GetDbConnection(); await conn.OpenAsync(ct);
+            var polygons = await RoutingGraphBuilder.ObstaclePolygonsAsync(conn, version, env, builder.Options, ct);
+            var seg = Geo.Factory.CreateLineString([pa.Coordinate, pb.Coordinate]);
+            var hits = polygons.Where(p => p.EnvelopeInternal.Intersects(seg.EnvelopeInternal)).Select(p => new
+            {
+                intersects = p.Intersects(seg), prepared = PreparedGeometryFactory.Prepare(p).Intersects(seg), valid = p.IsValid, points = p.NumPoints, holes = p.NumInteriorRings,
+                km2 = Math.Round(p.Area * Math.Cos(p.Centroid.Y * Math.PI / 180) * WaterGraphTiler.MPerDegLat * WaterGraphTiler.MPerDegLat / 1e6, 1), bbox = p.EnvelopeInternal.ToString(),
+            }).ToList();
+            // the raw land of the safety net (routing_land: coast tiles, lakes cut out, no-go blocks) as the build sees it in NTS
+            var land = await db.Database.SqlQueryRaw<LandRow>("SELECT geom AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", version, env.MinX, env.MinY, env.MaxX, env.MaxY).Select(r => r.Geom).ToListAsync(ct);
+            var landHits = land.SelectMany(g => g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []).Select(p => new
+            {
+                intersects = p.Intersects(seg), prepared = PreparedGeometryFactory.Prepare(p).Intersects(seg), valid = p.IsValid, points = p.NumPoints,
+                km2 = Math.Round(p.Area * Math.Cos(p.Centroid.Y * Math.PI / 180) * WaterGraphTiler.MPerDegLat * WaterGraphTiler.MPerDegLat / 1e6, 1), bbox = p.EnvelopeInternal.ToString(),
+            }).Where(h => h.intersects || h.prepared).ToList();
+            // the bridge/lock step: which obstacle pieces (after chains and charted spans) would touch this leg, and with what clearance
+            var raw = (await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+                .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+            List<(Geometry geom, CorrectionKind kind, double? clearanceM)> pieces;
+            try { pieces = Obstacles.WithSpans(raw); }
+            catch (Exception ex) { return Results.Ok(new { polygons = polygons.Count, landPolygons = land.Count, landHits, withSpansError = ex.ToString()[..Math.Min(1500, ex.ToString().Length)] }); }
+            var tolDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
+            var lat = seg.Centroid.Y;
+            var bridgeHits = pieces.Where(pc => seg.EnvelopeInternal.Distance(pc.geom.EnvelopeInternal) <= tolDeg)
+                .Where(pc => pc.geom is Point pt ? seg.Distance(pt) * WaterGraphTiler.MPerDegLat * (Math.Abs(pt.X - seg.Centroid.X) > Math.Abs(pt.Y - lat) ? Math.Cos(lat * Math.PI / 180) : 1) <= builder.Options.BridgeMatchAreaM : pc.geom.Intersects(seg))
+                .Select(pc => new { type = pc.geom.GeometryType, pc.kind, pc.clearanceM, points = pc.geom.NumPoints, bbox = pc.geom.EnvelopeInternal.ToString() }).ToList();
+            return Results.Ok(new { polygons = polygons.Count, candidates = hits.Count, hits = hits.Where(h => h.intersects || h.prepared).ToList(), envelopeOnly = hits.Count(h => !h.intersects && !h.prepared), landPolygons = land.Count, landHits, obstaclePieces = pieces.Count, bridgeHits });
+            } catch (Exception ex) { return Results.Ok(new { error = ex.ToString()[..Math.Min(2000, ex.ToString().Length)] }); }
+        });
+        // diagnostics: replay the visibility neighbour search of one node of the active graph
+        admin.MapGet("/visible-from", async (long node, CurrentUser current, SmsDbContext db, RoutingGraphBuilder builder, SeaRouter router, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var version = await router.ActiveVersionAsync(ct);
+            var conn = (NpgsqlConnection)db.Database.GetDbConnection(); await conn.OpenAsync(ct);
+            var o = builder.Options;
+            var maxDeg = o.MaxVisibilityM / WaterGraphTiler.MPerDegLat;
+            var n = (await db.Database.SqlQueryRaw<NodeRow>("SELECT id AS \"Id\", ST_X(geom) AS \"X\", ST_Y(geom) AS \"Y\" FROM routing_node WHERE graph_version = {0} AND id = {1}", version, node).ToListAsync(ct)).FirstOrDefault();
+            if (n is null) return Results.NotFound();
+            var cos = Math.Cos(n.Y * Math.PI / 180);
+            var env = new Envelope(n.X - maxDeg / cos, n.X + maxDeg / cos, n.Y - maxDeg, n.Y + maxDeg);
+            var others = await db.Database.SqlQueryRaw<NodeRow>("SELECT id AS \"Id\", ST_X(geom) AS \"X\", ST_Y(geom) AS \"Y\" FROM routing_node WHERE graph_version = {0} AND id <> {1} AND geom && ST_MakeEnvelope({2},{3},{4},{5},4326)", version, node, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
+            var polygons = await RoutingGraphBuilder.ObstaclePolygonsAsync(conn, version, env, o, ct);
+            var index = VisibilityGraph.Index(polygons);
+            var me = new GraphNode(n.Id, n.X, n.Y, false);
+            var rows = others.Select(m => (m, d: RoutingGraphBuilder.Haversine(n.Y, n.X, m.Y, m.X))).Where(x => x.d <= o.MaxVisibilityM).OrderBy(x => x.d).Take(60)
+                .Select(x => new { x.m.Id, x.m.X, x.m.Y, km = Math.Round(x.d / 1000, 1), sector = (int)Math.Floor((Math.Atan2(x.m.Y - n.Y, (x.m.X - n.X) * cos) + Math.PI) / (2 * Math.PI) * 8) & 7, visible = VisibilityGraph.Visible(me, new GraphNode(x.m.Id, x.m.X, x.m.Y, false), index) }).ToList();
+            return Results.Ok(new { node = n, candidates = others.Count, polygons = polygons.Count, rows });
+        });
         // narrow natural channels (archipelago sounds, gaps between islands) closed by the coast buffer: medial axes as derived passages
         admin.MapPost("/derive-channels", async (string bbox, CurrentUser current, SmsDbContext db, RoutingGraphBuilder builder, SeaRouter router, CancellationToken ct) =>
         {
@@ -303,6 +362,7 @@ public static class RoutingEndpoints
     };
 
     private sealed class LandRow { public Geometry Geom { get; set; } = null!; }
+    private sealed class NodeRow { public long Id { get; set; } public double X { get; set; } public double Y { get; set; } }
 
     private static double LengthNm(LineString l)
     {

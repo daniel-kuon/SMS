@@ -337,23 +337,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Coordinate> harbourPoints, Stopwatch sw, CancellationToken ct)
     {
         // 1. obstacles: land buffered by the coast distance, unioned and simplified, in 2° chunks (polygons on a chunk border appear twice – harmless for tests, corners are deduplicated)
-        var polygons = new List<Polygon>();
+        var polygons = await ObstaclePolygonsAsync(conn, version, region, o, ct);
         var tol = o.SimplifyM / WaterGraphTiler.MPerDegLat;
-        for (var x = region.MinX; x < region.MaxX; x += 2)
-            for (var y = region.MinY; y < region.MaxY; y += 2)
-            {
-                await using var cmd = new NpgsqlCommand("""
-                    SELECT ST_SimplifyPreserveTopology(ST_UnaryUnion(ST_Collect(ST_Buffer(geom::geography, @buf)::geometry)), @tol)
-                    FROM routing_land WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
-                    """, conn);
-                cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("buf", o.CoastBufferM); cmd.Parameters.AddWithValue("tol", tol);
-                cmd.Parameters.AddWithValue("x1", x); cmd.Parameters.AddWithValue("y1", y); cmd.Parameters.AddWithValue("x2", Math.Min(x + 2, region.MaxX)); cmd.Parameters.AddWithValue("y2", Math.Min(y + 2, region.MaxY));
-                var g = await cmd.ExecuteScalarAsync(ct) as Geometry;
-                if (g is null || g.IsEmpty) continue;
-                // pockets of water enclosed by the buffered coast (marina basins behind a narrow entrance) are filled: a node inside
-                // would be unreachable; such harbours get their anchor on the outer coast and reach it across the mole, as before
-                polygons.AddRange((g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).Select(poly => VisibilityGraph.FillSmallHoles(poly, o.FillHoleKm2)));
-            }
         var obstacles = VisibilityGraph.Index(polygons);
         Report("areas", $"{polygons.Count} obstacle polygons ({sw.Elapsed:hh\\:mm\\:ss})");
 
@@ -435,6 +420,31 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         }
         await WriteEdgesAsync(conn, version, edges, ct);
         return (nodes.Count, edges.Count, nodes.Count + 1);
+    }
+
+    /// <summary>The obstacle polygons of the area build (land buffered by the coast distance, unioned and simplified per 2° chunk,
+    /// small enclosed pockets filled) for the chunks that touch <paramref name="region"/>. Public for the admin diagnostics.</summary>
+    public static async Task<List<Polygon>> ObstaclePolygonsAsync(NpgsqlConnection conn, int version, Envelope region, RoutingOptions o, CancellationToken ct)
+    {
+        var polygons = new List<Polygon>();
+        var tol = o.SimplifyM / WaterGraphTiler.MPerDegLat;
+        var x0 = o.Region.MinLng + Math.Floor((region.MinX - o.Region.MinLng) / 2) * 2; var y0 = o.Region.MinLat + Math.Floor((region.MinY - o.Region.MinLat) / 2) * 2;
+        for (var x = x0; x < region.MaxX; x += 2)
+            for (var y = y0; y < region.MaxY; y += 2)
+            {
+                await using var cmd = new NpgsqlCommand("""
+                    SELECT ST_SimplifyPreserveTopology(ST_UnaryUnion(ST_Collect(ST_Buffer(geom::geography, @buf)::geometry)), @tol)
+                    FROM routing_land WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
+                    """, conn);
+                cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("buf", o.CoastBufferM); cmd.Parameters.AddWithValue("tol", tol);
+                cmd.Parameters.AddWithValue("x1", x); cmd.Parameters.AddWithValue("y1", y); cmd.Parameters.AddWithValue("x2", Math.Min(x + 2, o.Region.MaxLng)); cmd.Parameters.AddWithValue("y2", Math.Min(y + 2, o.Region.MaxLat));
+                var g = await cmd.ExecuteScalarAsync(ct) as Geometry;
+                if (g is null || g.IsEmpty) continue;
+                // pockets of water enclosed by the buffered coast (marina basins behind a narrow entrance) are filled: a node inside
+                // would be unreachable; such harbours get their anchor on the outer coast and reach it across the mole, as before
+                polygons.AddRange((g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).Select(poly => VisibilityGraph.FillSmallHoles(poly, o.FillHoleKm2)));
+            }
+        return polygons;
     }
 
     /// <summary>Connected components of the graph written so far (union-find over routing_edge): node id → component root.</summary>

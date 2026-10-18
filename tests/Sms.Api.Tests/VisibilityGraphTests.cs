@@ -89,4 +89,17 @@ public class VisibilityGraphTests
         Assert.True(VisibilityGraph.OnTileEdge(new Coordinate(10.546875, 54.5)));  // 10.546875 = tile 2168 / 4096 * 360 - 180
         Assert.False(VisibilityGraph.OnTileEdge(new Coordinate(10.50, 54.50)));
     }
+
+    [Fact]
+    public void An_open_sea_lattice_connects_across_rows()
+    {
+        // 3 rows x 4 columns, 20 km apart, no obstacles: every node must reach the row above and below
+        var nodes = new List<GraphNode>(); long id = 1;
+        for (var r = 0; r < 3; r++) for (var c = 0; c < 4; c++) nodes.Add(new GraphNode(id++, 17.0 + c * 0.3375, 57.66 + r * 0.17967, false));
+        var edges = VisibilityGraph.Edges(nodes, [], new VisibilityGraph.Options(MaxVisibilityM: 40_000, VisibleNeighbours: 24));
+        var n5 = nodes[5]; // middle row, second column
+        var nbrs = edges.Where(e => e.Source == n5.Id || e.Target == n5.Id).Select(e => e.Source == n5.Id ? e.Target : e.Source).Select(i => nodes.First(n => n.Id == i)).ToList();
+        Assert.Contains(nbrs, n => n.Y > n5.Y + 0.1);
+        Assert.Contains(nbrs, n => n.Y < n5.Y - 0.1);
+    }
 }
