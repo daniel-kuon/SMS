@@ -177,7 +177,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
 
         // 3. tile by tile: land from PostGIS (clipped), quadtree, edges, straight into COPY
         // derived fairways (buoy chains) make the water next to them expensive, spec 10 §10.5 step 3
-        var fairways = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
+        // buoy chains and the OSM waterway lines ("… (n OSM-Wege)": waterway=fairway/river/canal ways) both get the ×3 band around them:
+        // in the middle Schlei there is no buoy chain, and without a band the shortest path hugged the inner bank instead of the fairway
+        var fairways = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.EndsWith("OSM-Wege)"))).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
         var fairwayAreas = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Fairway).Select(c => c.Geometry).ToListAsync(ct)).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         var depthsByTile = new System.Collections.Concurrent.ConcurrentDictionary<string, List<(Geometry, double)>>();
@@ -584,16 +586,17 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             // Sampled every 25 m with the prepared point-in-polygon test (an exact overlay against a mainland tile took minutes per node)
             var hits = landIndex.Query(seg.EnvelopeInternal).Where(l => l.prepared.Intersects(seg)).Select(l => l.prepared).ToList();
             if (hits.Count == 0) return n;
-            // Two shapes of land crossing are fine: up to 150 m anywhere (a mole), or a leading stretch of up to 1.5 km (the harbour's
-            // own basin or creek, which the coastline polygons count as land, plus its mole or dike). Land after water on the way is a field.
+            // Two shapes of land crossing are fine: up to 50 m anywhere (a mole or pier), or a leading stretch of up to 1.5 km (the harbour's
+            // own basin or creek, which the coastline polygons count as land, plus its mole or dike). Land after water on the way is a field
+            // or a spit (150 m let the Schleimünde links cross the Lotseninsel, so routes cut through the island instead of using the mole gap).
             var steps = (int)Math.Ceiling(lenM / 25); var onLand = 0; var leading = 0; var water = false;
             for (var k = 1; k < steps; k++)
             {
                 var q = Geo.Factory.CreatePoint(new Coordinate(p.X + (n.X - p.X) * k / steps, p.Y + (n.Y - p.Y) * k / steps));
                 if (hits.Any(l => l.Contains(q))) { onLand++; if (!water) leading++; } else water = true;
-                if (onLand > 6 && onLand > leading) break; // scattered land beyond 150 m: no need to look further
+                if (onLand > 2 && onLand > leading) break; // scattered land beyond 50 m: no need to look further
             }
-            if (onLand <= 6 || (onLand == leading && leading * 25 <= 1500)) return n; // a Siel harbour sits behind its dike, 1 km from the river (Schülperneuensiel on the Eider)
+            if (onLand <= 2 || (onLand == leading && leading * 25 <= 1500)) return n; // a Siel harbour sits behind its dike, 1 km from the river (Schülperneuensiel on the Eider)
         }
         return null;
     }
