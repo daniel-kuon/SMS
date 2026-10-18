@@ -225,13 +225,16 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         foreach (var passage in await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => c.Geometry).ToListAsync(ct))
         {
             if (passage is not LineString ls) continue;
-            long? prev = null;
+            long? prev = null; var sinceLink = 0.0;
             for (var i = 0; i < ls.NumPoints; i++)
             {
                 var p = ls.GetCoordinateN(i);
                 var id = NodeAt(p);
-                if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); extraEdges.Add(new GraphEdge(pv, id, Haversine(q.Y, q.X, p.Y, p.X) * o.PassageCostFactor, Geo.Factory.CreateLineString([q, p]))); }
-                var linkM = i == 0 || i == ls.NumPoints - 1 ? o.HarbourAccessM : o.PassageLinkM;
+                if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); var segM = Haversine(q.Y, q.X, p.Y, p.X); sinceLink += segM; extraEdges.Add(new GraphEdge(pv, id, segM * o.PassageCostFactor, Geo.Factory.CreateLineString([q, p]))); }
+                // ends always hook into the water graph; inner vertices every ~1 km (derived channels have a vertex every few metres)
+                var isEnd = i == 0 || i == ls.NumPoints - 1;
+                var linkM = isEnd ? o.HarbourAccessM : sinceLink >= 1000 ? o.PassageLinkM : 0;
+                if (linkM > 0) sinceLink = 0;
                 if (linkM > 0 && linked.Add(id))
                 {
                     var near = await NearestNodeAsync(conn, version, p.X, p.Y, linkM, ct);
