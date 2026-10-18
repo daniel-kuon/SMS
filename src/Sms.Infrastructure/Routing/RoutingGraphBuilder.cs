@@ -319,9 +319,13 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             // are joined when the gap is short and land-free – both may already belong to the main component and still force a
             // detour of miles around an island (Dalarö: 6.5 nm around instead of 1 km through the sound)
             var gapLinks = new List<GraphEdge>(); var gapSeen = new HashSet<(long, long)>();
+            // nodes already joined to an end by a passage edge are not gap candidates (half a million links to the own line otherwise)
+            var adjacent = new Dictionary<long, HashSet<long>>();
+            foreach (var e in extraEdges) { (adjacent.TryGetValue(e.Source, out var sa) ? sa : adjacent[e.Source] = []).Add(e.Target); (adjacent.TryGetValue(e.Target, out var ta) ? ta : adjacent[e.Target] = []).Add(e.Source); }
             foreach (var (id, p) in passageEndIds)
             {
-                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, 200, m => m.Id != id && !gapSeen.Contains((Math.Min(m.Id, id), Math.Max(m.Id, id))), ct);
+                var own = adjacent.GetValueOrDefault(id);
+                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, 200, m => m.Id != id && (own is null || !own.Contains(m.Id)) && !gapSeen.Contains((Math.Min(m.Id, id), Math.Max(m.Id, id))), ct);
                 if (n is null) continue;
                 gapSeen.Add((Math.Min(n.Id, id), Math.Max(n.Id, id)));
                 gapLinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
