@@ -42,6 +42,30 @@ public class ObstaclesTests
     }
 
     [Fact]
+    public void A_bridge_with_charted_spans_is_passable_at_the_spans_only()
+    {
+        // a 6 km bridge line (east-west) with one charted span node 100 m south of its middle, 65 m; the line itself says 20 m
+        var line = F.CreateLineString([new Coordinate(11.00, 55.34), new Coordinate(11.09, 55.34)]);
+        var span = F.CreatePoint(new Coordinate(11.045, 55.339));
+        var raw = new List<(NetTopologySuite.Geometries.Geometry geom, Sms.Domain.CorrectionKind kind, double? clearanceM)> { (line, Sms.Domain.CorrectionKind.Bridge, 20), (span, Sms.Domain.CorrectionKind.Bridge, 65) };
+        var pieces = Obstacles.WithSpans(raw);
+        Assert.Equal(3, pieces.Count); // span point, window, remainder
+        Assert.Contains(pieces, p => p.geom is not Point && p.clearanceM == 65);
+        Assert.Contains(pieces, p => p.geom is not Point && p.clearanceM == 0);
+        Assert.Single(Obstacles.SpanPoints(raw));
+        var atSpan = Edge(1, 2, 11.045, 55.33, 11.045, 55.35);   // crosses inside the window
+        var outside = Edge(3, 4, 11.01, 55.33, 11.01, 55.35);    // crosses 2.2 km west of the span
+        var away = Edge(5, 6, 11.045, 55.36, 11.045, 55.38);    // north of the bridge
+        var result = Obstacles.Apply(new[] { atSpan, outside, away }, pieces, 1852, 926, 60);
+        Assert.Equal(2, result.Count);
+        Assert.Equal(65, result.Single(e => e.Source == 1).ClearanceM);
+        Assert.Null(result.Single(e => e.Source == 5).ClearanceM);
+        // without a charted span the whole line keeps its own clearance
+        var plain = Obstacles.Apply(new[] { outside }, Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, 20)]), 1852, 926, 60);
+        Assert.Equal(20, plain[0].ClearanceM);
+    }
+
+    [Fact]
     public void Parses_bridge_clearance_and_locks_from_overpass_json()
     {
         using var doc = JsonDocument.Parse("""

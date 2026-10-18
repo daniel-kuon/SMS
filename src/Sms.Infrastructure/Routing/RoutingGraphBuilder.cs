@@ -232,8 +232,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 prev = id;
             }
         }
-        var obstacles = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
-            .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+        var obstacles = Obstacles.WithSpans((await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+            .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList());
         extraEdges = Obstacles.Apply(extraEdges, obstacles, o.LockPenaltyM, o.BridgeOpeningPenaltyM, Obstacles.MatchM);
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
@@ -330,7 +330,12 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var lattice = VisibilityGraph.Lattice(region, obstacles, vo);
         var passageEnds = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>()
             .SelectMany(l => new[] { l.StartPoint.Coordinate, l.EndPoint.Coordinate }).ToList();
-        var anchors = harbourPoints.Concat(passageEnds).Select(p => VisibilityGraph.Anchor(p, obstacles, polygons)).ToList();
+        // a visibility leg through a sound passes under its bridge: clearance, lock and opening costs apply here as on passages;
+        // a long bridge with charted spans is passable at the spans only, so the span points become anchors (legs through them)
+        var bridgesRaw = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+            .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+        var bridges = Obstacles.WithSpans(bridgesRaw);
+        var anchors = harbourPoints.Concat(passageEnds).Concat(Obstacles.SpanPoints(bridgesRaw)).Select(p => VisibilityGraph.Anchor(p, obstacles, polygons)).ToList();
         var shallowTol = tol * 2;
         await using var shallowCmd = new NpgsqlCommand("SELECT ST_SimplifyPreserveTopology(geom, @tol) FROM routing_depth WHERE max_depth_m <= @d AND ST_Area(geom) >= @minArea AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn); // planar deg²: geography area fails on the invalid Seascape rings
         var midCos = Math.Cos((region.MinY + region.MaxY) / 2 * Math.PI / 180);
@@ -380,9 +385,6 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         }
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         edges = DepthLimits.Apply(Avoid.Apply(ChannelPreference.Apply(edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), avoids, o.AvoidPenaltyFactor), depths);
-        // a visibility leg through a sound passes under its bridge: clearance, lock and opening costs apply here as on passages
-        var bridges = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
-            .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
         edges = Obstacles.Apply(edges, bridges, o.LockPenaltyM, o.BridgeOpeningPenaltyM, o.BridgeMatchAreaM); // a bridge over a sound is a point, the leg may pass a few hundred metres from it
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {

@@ -7,6 +7,69 @@ namespace Sms.Infrastructure.Routing;
 public static class Obstacles
 {
     public const double MatchM = 60;
+    /// <summary>A charted bridge point (seamark:type=bridge node) within this distance of a bridge line marks a navigation span of that line.</summary>
+    public const double SpanMatchM = 250;
+    /// <summary>Half-width of the passable window around a charted span point; the rest of the line is impassable.</summary>
+    public const double SpanWindowM = 500;
+
+    /// <summary>
+    /// Long bridges (Great Belt, Fehmarnsund, Øresund) may only be passed at their charted navigation spans: OSM has the bridge
+    /// as a way with one clearance and the spans as seamark bridge nodes with their own clearance. A line with span points
+    /// is replaced by the window pieces around the spans (the span's clearance) and the remainder (clearance 0, impassable).
+    /// Lines without charted spans are kept whole.
+    /// </summary>
+    public static List<(Geometry geom, CorrectionKind kind, double? clearanceM)> WithSpans(IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles, double spanMatchM = SpanMatchM, double windowM = SpanWindowM)
+    {
+        var points = obstacles.Where(o => o.geom is Point && o.kind != CorrectionKind.Lock).ToList();
+        if (points.Count == 0) return obstacles.ToList();
+        var result = new List<(Geometry, CorrectionKind, double?)>(obstacles.Count);
+        foreach (var o in obstacles)
+        {
+            if (o.geom is not LineString line || o.kind == CorrectionKind.Lock) { result.Add(o); continue; }
+            var lat = line.Centroid.Y;
+            var cos = Math.Cos(lat * Math.PI / 180);
+            var matchDeg = spanMatchM / WaterGraphTiler.MPerDegLat; var windowDeg = windowM / WaterGraphTiler.MPerDegLat;
+            var scaled = (LineString)line.Copy(); scaled.Apply(new Scale(cos));
+            var windows = new List<Geometry>();
+            foreach (var p in points)
+            {
+                var sp = (Point)p.geom.Copy(); sp.Apply(new Scale(cos));
+                if (sp.Distance(scaled) > matchDeg) continue;
+                var window = scaled.Intersection(sp.Buffer(windowDeg));
+                if (window.IsEmpty) continue;
+                windows.Add(sp.Buffer(windowDeg));
+                window.Apply(new Scale(1 / cos));
+                result.Add((window, o.kind, p.clearanceM ?? o.clearanceM));
+            }
+            if (windows.Count == 0) { result.Add(o); continue; }
+            var rest = scaled.Difference(new GeometryCollection(windows.ToArray()).Union());
+            if (!rest.IsEmpty) { rest.Apply(new Scale(1 / cos)); result.Add((rest, o.kind, 0)); }
+        }
+        return result;
+    }
+
+    /// <summary>The charted span points of the bridge lines (visibility anchors: a leg through a span starts or ends there).</summary>
+    public static List<Coordinate> SpanPoints(IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles, double spanMatchM = SpanMatchM)
+    {
+        var lines = obstacles.Where(o => o.geom is LineString && o.kind != CorrectionKind.Lock).Select(o => o.geom).ToList();
+        var result = new List<Coordinate>();
+        foreach (var p in obstacles.Where(o => o.geom is Point && o.kind != CorrectionKind.Lock))
+        {
+            var cos = Math.Cos(p.geom.Coordinate.Y * Math.PI / 180);
+            foreach (var l in lines)
+            {
+                var sp = (Point)p.geom.Copy(); sp.Apply(new Scale(cos)); var sl = l.Copy(); sl.Apply(new Scale(cos));
+                if (sp.Distance(sl) <= spanMatchM / WaterGraphTiler.MPerDegLat) { result.Add(p.geom.Coordinate); break; }
+            }
+        }
+        return result;
+    }
+
+    private sealed class Scale(double sx) : ICoordinateSequenceFilter
+    {
+        public bool Done => false; public bool GeometryChanged => true;
+        public void Filter(CoordinateSequence seq, int i) => seq.SetX(i, seq.GetX(i) * sx);
+    }
 
     public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Point point, bool isLock, double? clearanceM)> obstacles, double lockPenaltyM) =>
         Apply(edges, obstacles.Select(o => (o.point, o.isLock ? CorrectionKind.Lock : CorrectionKind.Bridge, o.clearanceM)).ToList(), lockPenaltyM, 0);
@@ -14,7 +77,8 @@ public static class Obstacles
     public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Point point, CorrectionKind kind, double? clearanceM)> obstacles, double lockPenaltyM, double openingPenaltyM, double matchM = MatchM) =>
         Apply(edges, obstacles.Select(o => ((Geometry)o.point, o.kind, o.clearanceM)).ToList(), lockPenaltyM, openingPenaltyM, matchM);
 
-    /// <summary>Point obstacles match edges within matchM; line obstacles (bridge ways) match every edge that intersects the line.</summary>
+    /// <summary>Point obstacles match edges within matchM; line obstacles (bridge ways) match every edge that intersects the line.
+    /// An edge whose clearance ends up at 0 (the impassable part of a bridge with charted spans) is dropped.</summary>
     public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles, double lockPenaltyM, double openingPenaltyM, double matchM)
     {
         if (obstacles.Count == 0) return edges.ToList();
@@ -36,6 +100,7 @@ public static class Obstacles
                 else if (kind == CorrectionKind.OpeningBridge) cost += openingPenaltyM;
                 if (kind != CorrectionKind.Lock && clearanceM is { } cm) clearance = clearance is { } cur ? Math.Min(cur, cm) : cm;
             }
+            if (clearance is <= 0) continue;
             result.Add(e with { Cost = cost, ClearanceM = clearance });
         }
         return result;

@@ -141,12 +141,18 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var land = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", version, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
         var index = new STRtree<IPreparedGeometry>();
         foreach (var g in land) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
-        // what A* avoided must stay avoided when the string is pulled: too-low bridges (a circle around the point) and too-shallow areas count as land
-        if (airDraftM is { } ad)
+        // what A* avoided must stay avoided when the string is pulled: too-low bridges (a circle around the point, a band along a
+        // line), the impassable parts of bridges with charted spans, and too-shallow areas count as land
         {
             var radiusDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
-            var low = await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge) && c.ClearanceM != null && c.ClearanceM < ad).Select(c => c.Geometry).ToListAsync(ct);
-            foreach (var g in low) { var b = g is LineString ? g.Buffer(300 / WaterGraphTiler.MPerDegLat) : g.Centroid.Buffer(radiusDeg); if (b.EnvelopeInternal.Intersects(env)) index.Insert(b.EnvelopeInternal, PreparedGeometryFactory.Prepare(b)); }
+            var bridges = Obstacles.WithSpans((await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+                .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList());
+            foreach (var (g, _, clearance) in bridges)
+            {
+                if (clearance is not { } cl || (cl > 0 && (airDraftM is not { } ad || cl >= ad))) continue;
+                var b = g is Point ? g.Buffer(radiusDeg) : g.Buffer(300 / WaterGraphTiler.MPerDegLat);
+                if (b.EnvelopeInternal.Intersects(env)) index.Insert(b.EnvelopeInternal, PreparedGeometryFactory.Prepare(b));
+            }
         }
         if (draftM is { } dm)
         {
