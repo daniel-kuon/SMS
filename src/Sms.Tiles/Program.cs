@@ -33,7 +33,7 @@ app.MapGet("/tiles/depth/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int 
                        ST_AsMVTGeom(ST_Transform(ST_Union(ST_SimplifyPreserveTopology(d.geom, @tol)), 3857), b.geom, 4096, 32, true) AS geom
                 FROM routing_depth d, b WHERE d.geom && ST_Expand(b.geom4326, (ST_XMax(b.geom4326) - ST_XMin(b.geom4326)) / 32)
                   AND (@z >= 10 OR d.max_depth_m <= 10)
-                GROUP BY d.min_depth_m, d.max_depth_m
+                GROUP BY d.min_depth_m, d.max_depth_m, b.geom
             )
             SELECT COALESCE(ST_AsMVT(q, 'depth', 4096, 'geom'), ''::bytea) FROM q WHERE geom IS NOT NULL
             """);

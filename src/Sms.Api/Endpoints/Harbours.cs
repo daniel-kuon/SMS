@@ -168,6 +168,15 @@ public static class HarbourEndpoints
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             var h = await db.Harbours.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (h is null || !await db.Harbours.AnyAsync(x => x.Id == targetId, ct) || id == targetId) return Results.NotFound();
+            await MergeAsync(db, h, targetId, ct);
+            return Results.NoContent();
+        }).RequireAuthorization().WithTags("Admin");
+    }
+
+    /// <summary>Moves logbook entries, wifis, reviews and media to the target and marks the harbour as merged.</summary>
+    public static async Task MergeAsync(SmsDbContext db, Harbour h, Guid targetId, CancellationToken ct)
+    {
+            var id = h.Id;
             await db.LogbookEntries.IgnoreQueryFilters().Where(l => l.StartHarbourId == id).ExecuteUpdateAsync(s => s.SetProperty(l => l.StartHarbourId, targetId), ct);
             await db.LogbookEntries.IgnoreQueryFilters().Where(l => l.EndHarbourId == id).ExecuteUpdateAsync(s => s.SetProperty(l => l.EndHarbourId, targetId), ct);
             await db.HarbourWifis.Where(w => w.HarbourId == id).ExecuteUpdateAsync(s => s.SetProperty(w => w.HarbourId, targetId), ct);
@@ -175,8 +184,6 @@ public static class HarbourEndpoints
             await db.Media.IgnoreQueryFilters().Where(m => m.HarbourId == id).ExecuteUpdateAsync(s => s.SetProperty(m => m.HarbourId, targetId), ct);
             h.MergedIntoId = targetId; h.IsActive = false;
             await db.SaveChangesAsync(ct);
-            return Results.NoContent();
-        }).RequireAuthorization().WithTags("Admin");
     }
 
     /// <summary>Upserts OSM harbours (Overpass-style elements); OSM fills empty fields only, user text wins (spec 10.3).</summary>

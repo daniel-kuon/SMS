@@ -55,5 +55,24 @@ public static class Seed
         }
 
         await db.SaveChangesAsync();
+        await MergeLegacyHarboursAsync(db);
+    }
+
+    /// <summary>
+    /// The sample harbours have rough positions (Laboe sat 900 m out in the bay). Once the OSM import has a harbour with the same
+    /// place name within 2 km, the sample one is merged into it; samples without such a match (Schleimünde, Lippe) stay.
+    /// </summary>
+    internal static async Task MergeLegacyHarboursAsync(SmsDbContext db)
+    {
+        var legacy = await db.Harbours.Where(h => h.Source == HarbourSource.Legacy && h.IsActive && h.MergedIntoId == null).ToListAsync();
+        foreach (var h in legacy)
+        {
+            var token = Norm(h.Name.Split(' ', '(')[0] is var t && t == "Kiel" ? h.Name.Split(' ')[^1] : t);
+            var near = await db.Harbours.Where(o => o.Source == HarbourSource.Osm && o.IsActive && o.MergedIntoId == null && o.Location.IsWithinDistance(h.Location, 2000))
+                .OrderBy(o => o.Location.Distance(h.Location)).Select(o => new { o.Id, o.Name }).ToListAsync();
+            var match = near.FirstOrDefault(o => Norm(o.Name).Contains(token));
+            if (match is not null) await Endpoints.HarbourEndpoints.MergeAsync(db, h, match.Id, CancellationToken.None);
+        }
+        static string Norm(string s) => s.ToLowerInvariant().Replace("å", "aa").Replace("ø", "oe").Replace("æ", "ae").Replace("ö", "oe").Replace("ü", "ue").Replace("ä", "ae");
     }
 }

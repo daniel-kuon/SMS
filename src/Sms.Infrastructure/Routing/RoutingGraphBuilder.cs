@@ -177,9 +177,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
 
         // 3. tile by tile: land from PostGIS (clipped), quadtree, edges, straight into COPY
         // derived fairways (buoy chains) make the water next to them expensive, spec 10 §10.5 step 3
-        // buoy chains and the OSM waterway lines ("… (n OSM-Wege)": waterway=fairway/river/canal ways) both get the ×3 band around them:
-        // in the middle Schlei there is no buoy chain, and without a band the shortest path hugged the inner bank instead of the fairway
-        var fairways = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.EndsWith("OSM-Wege)"))).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
+        // only buoy chains: a ×3 band around the OSM waterway lines too (tried in v50 for the Schlei) covered whole firths such as the
+        // Kiel Förde, and as a smoother obstacle it left zigzags and a U-turn off Laboe; the Schlei problem was missing water (water=fjord)
+        var fairways = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
         var fairwayAreas = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Fairway).Select(c => c.Geometry).ToListAsync(ct)).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         var depthsByTile = new System.Collections.Concurrent.ConcurrentDictionary<string, List<(Geometry, double)>>();
