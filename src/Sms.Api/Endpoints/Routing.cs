@@ -158,6 +158,27 @@ public static class RoutingEndpoints
             var b = bbox.Split(',').Select(x => double.Parse(x, CultureInfo.InvariantCulture)).ToArray();
             return Results.Ok(await ImportWaterwaysAsync(doc, db, current.Id, ct, bbox: new Envelope(b[1], b[3], b[0], b[2])));
         });
+        // narrow natural channels (archipelago sounds, gaps between islands) closed by the coast buffer: medial axes as derived passages
+        admin.MapPost("/derive-channels", async (string bbox, CurrentUser current, SmsDbContext db, RoutingGraphBuilder builder, SeaRouter router, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (bbox.Split(',').Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
+            var b = bbox.Split(',').Select(x => double.Parse(x, CultureInfo.InvariantCulture)).ToArray();
+            var tile = new Envelope(b[1], b[3], b[0], b[2]);
+            var version = await router.ActiveVersionAsync(ct);
+            if (version <= 0) return Invalid("graph", "Kein aktiver Routing-Graph – zuerst bauen.");
+            var margin = new Envelope(tile); margin.ExpandBy(0.02);
+            var land = await db.Database.SqlQueryRaw<LandRow>("SELECT ST_CollectionExtract(ST_Intersection(geom, ST_MakeEnvelope({1},{2},{3},{4},4326)), 3) AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", version, margin.MinX, margin.MinY, margin.MaxX, margin.MaxY).Select(r => r.Geom).ToListAsync(ct);
+            land = land.Where(g => g is not null && !g.IsEmpty).ToList();
+            var o = builder.Options;
+            var lines = NarrowChannels.Derive(land, tile, new NarrowChannels.Options(CoastBufferM: o.CoastBufferM, FillHoleKm2: o.FillHoleKm2), Geo.Factory);
+            var extent = Geo.Factory.ToGeometry(tile); extent.SRID = 4326;
+            var old = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Enge") && c.Geometry.Intersects(extent)).ToListAsync(ct);
+            db.RoutingCorrections.RemoveRange(old);
+            foreach (var l in lines) db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = Srid(l), Active = true, CreatedById = current.Id, Note = $"Enge (abgeleitet, {LengthNm(l):0.0} sm)" });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new { landPieces = land.Count, created = lines.Count, removed = old.Count, totalNm = Math.Round(lines.Sum(LengthNm), 1) });
+        });
         // inland water bodies (lakes, IJsselmeer, Randmeren) – the coastline-based land polygons count them as land
         admin.MapPost("/import-water", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
         {
@@ -250,7 +271,7 @@ public static class RoutingEndpoints
         if (replaceExisting && env is not null)
         {
             var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-            old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && c.Note.StartsWith("Fahrwasser"))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
+            old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge")))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
         }
         db.RoutingCorrections.RemoveRange(old);
         foreach (var w in ways)
@@ -280,6 +301,8 @@ public static class RoutingEndpoints
         Kind = ob.IsLock ? CorrectionKind.Lock : ob.Opening ? CorrectionKind.OpeningBridge : CorrectionKind.Bridge, Source = CorrectionSource.Derived, Geometry = (Geometry?)ob.Line ?? Geo.Point(ob.Lat, ob.Lng), ClearanceM = ob.ClearanceM, Active = true, CreatedById = userId,
         Note = ob.IsLock ? $"Schleuse{(ob.Name is null ? "" : " " + ob.Name)}" : $"{(ob.Opening ? "Klappbrücke" : "Brücke")}{(ob.Name is null ? "" : " " + ob.Name)}{(ob.ClearanceM is { } c ? $" – Durchfahrtshöhe {c.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} m{(ob.Opening ? " (geöffnet)" : "")}" : "")}",
     };
+
+    private sealed class LandRow { public Geometry Geom { get; set; } = null!; }
 
     private static double LengthNm(LineString l)
     {
