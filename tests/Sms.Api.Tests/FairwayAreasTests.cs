@@ -39,8 +39,8 @@ public class FairwayAreasTests
         var noGo = Waterways.ParseNoGoAreas(doc, F);
         Assert.Equal(2, noGo.Count);
         Assert.Equal("Sperrgebiet Todendorf (entry_prohibited)", noGo[0].label);
-        Assert.Equal("Sperrgebiet (military_area)", noGo[1].label);
-        Assert.All(noGo, n => Assert.True(n.hard));
+        Assert.Equal("Warngebiet (military_area)", noGo[1].label); // a practice area is avoided, not blocked
+        Assert.True(noGo[0].hard); Assert.False(noGo[1].hard);
         // a warning area (firing range, restricted entry at times) is avoided, not blocked
         Assert.True(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "restricted_entry" }));
         Assert.False(Waterways.IsHardNoGo(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "restricted_entry" }));

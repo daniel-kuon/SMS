@@ -60,6 +60,11 @@ public class ObstaclesTests
         Assert.Equal(2, result.Count);
         Assert.Equal(65, result.Single(e => e.Source == 1).ClearanceM);
         Assert.Null(result.Single(e => e.Source == 5).ClearanceM);
+        // an approach way sharing an end node with the main span belongs to the same chain: the span governs it too
+        var approach = F.CreateLineString([new Coordinate(11.09, 55.34), new Coordinate(11.13, 55.345)]);
+        var chained = Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, (double?)null), (approach, Sms.Domain.CorrectionKind.Bridge, null), (span, Sms.Domain.CorrectionKind.Bridge, 65)]);
+        var onApproach = Edge(7, 8, 11.11, 55.33, 11.11, 55.36);
+        Assert.Empty(Obstacles.Apply(new[] { onApproach }, chained, 1852, 926, 60));
         // without a charted span the whole line keeps its own clearance
         var plain = Obstacles.Apply(new[] { outside }, Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, 20)]), 1852, 926, 60);
         Assert.Equal(20, plain[0].ClearanceM);

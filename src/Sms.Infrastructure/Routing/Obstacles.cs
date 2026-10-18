@@ -24,7 +24,7 @@ public static class Obstacles
         var points = obstacles.Where(o => o.geom is Point && o.kind != CorrectionKind.Lock).ToList();
         if (points.Count == 0) return obstacles.ToList();
         var result = new List<(Geometry, CorrectionKind, double?)>(obstacles.Count);
-        foreach (var o in obstacles)
+        foreach (var o in Chains(obstacles))
         {
             if (o.geom is not LineString line || o.kind == CorrectionKind.Lock) { result.Add(o); continue; }
             var lat = line.Centroid.Y;
@@ -49,10 +49,24 @@ public static class Obstacles
         return result;
     }
 
+    /// <summary>OSM maps a long bridge as several ways (main span, approach viaducts) sharing end nodes: lines of the same kind and
+    /// clearance that meet end to end are merged into one chain, so the charted spans of the main span govern the approaches too.</summary>
+    public static List<(Geometry geom, CorrectionKind kind, double? clearanceM)> Chains(IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles)
+    {
+        var result = obstacles.Where(o => o.geom is not LineString || o.kind == CorrectionKind.Lock).ToList();
+        foreach (var group in obstacles.Where(o => o.geom is LineString && o.kind != CorrectionKind.Lock).GroupBy(o => (o.kind, o.clearanceM)))
+        {
+            var merger = new NetTopologySuite.Operation.Linemerge.LineMerger();
+            merger.Add(group.Select(o => o.geom).ToList());
+            foreach (var line in merger.GetMergedLineStrings().OfType<LineString>()) result.Add((line, group.Key.kind, group.Key.clearanceM));
+        }
+        return result;
+    }
+
     /// <summary>The charted span points of the bridge lines (visibility anchors: a leg through a span starts or ends there).</summary>
     public static List<Coordinate> SpanPoints(IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles, double spanMatchM = SpanMatchM)
     {
-        var lines = obstacles.Where(o => o.geom is LineString && o.kind != CorrectionKind.Lock).Select(o => o.geom).ToList();
+        var lines = Chains(obstacles).Where(o => o.geom is LineString).Select(o => o.geom).ToList();
         var result = new List<Coordinate>();
         foreach (var p in obstacles.Where(o => o.geom is Point && o.kind != CorrectionKind.Lock))
         {

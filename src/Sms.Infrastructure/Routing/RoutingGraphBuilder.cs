@@ -214,6 +214,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var extraNodes = new List<GraphNode>(); var extraEdges = new List<GraphEdge>();
         var shared = new Dictionary<(long, long), long>();
         var linked = new HashSet<long>(); // one grid link per passage node
+        var passageEndIds = new List<(long id, Coordinate p)>();
         long NodeAt(Coordinate p)
         {
             var key = ((long)Math.Round(p.X * 1e6), (long)Math.Round(p.Y * 1e6));
@@ -233,6 +234,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); var segM = Haversine(q.Y, q.X, p.Y, p.X); sinceLink += segM; extraEdges.Add(new GraphEdge(pv, id, segM * o.PassageCostFactor, Geo.Factory.CreateLineString([q, p]))); }
                 // ends always hook into the water graph; inner vertices every ~1 km (derived channels have a vertex every few metres)
                 var isEnd = i == 0 || i == ls.NumPoints - 1;
+                if (isEnd) passageEndIds.Add((id, p));
                 var linkM = isEnd ? o.HarbourAccessM : sinceLink >= 1000 ? o.PassageLinkM : 0;
                 if (linkM > 0) sinceLink = 0;
                 if (linkM > 0 && linked.Add(id))
@@ -252,14 +254,34 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.CompleteAsync(ct);
         }
         await WriteEdgesAsync(conn, version, extraEdges, ct);
-        // inland harbours: no water cell nearby (rivers/canals count as land) but maybe a passage node; in area mode every harbour is linked here (to its anchor)
+        // inland harbours: no water cell nearby (rivers/canals count as land) but maybe a passage node; in area mode every harbour is linked here
         if (extraNodes.Count > 0 || o.Mode == "areas")
         {
+            // the nearest node is not always a connected one: a channel skeleton in an enclosed basin, an anchor without a visible
+            // neighbour. Components over everything written so far; stray passage ends get a link into the main component, and a
+            // harbour is attached to the nearest node that belongs to it (or to a component that just got linked)
+            var find = await ComponentsAsync(conn, version, ct);
+            var giant = find.Values.GroupBy(c => c).OrderByDescending(g => g.Count()).First().Key;
+            var attached = new HashSet<long> { giant };
+            var relinks = new List<GraphEdge>(); var strays = 0;
+            foreach (var (id, p) in passageEndIds)
+            {
+                if (!find.TryGetValue(id, out var c) || c == giant || attached.Contains(c)) continue;
+                strays++;
+                var n = (await NearestNodesAsync(conn, version, p.X, p.Y, o.HarbourAccessM, 40, ct)).FirstOrDefault(m => find.TryGetValue(m.Id, out var mc) && mc == giant);
+                if (n is null) continue;
+                relinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
+                attached.Add(c);
+            }
+            await WriteEdgesAsync(conn, version, relinks, ct);
             var reached = access.Select(a => a.harbourId).ToHashSet();
             foreach (var h in harbours.Where(h => !reached.Contains(h.Id)))
-                if (await NearestNodeAsync(conn, version, h.Location.X, h.Location.Y, o.HarbourAccessM, ct) is { } n)
-                    access.Add((h.Id, n.Id, Haversine(h.Location.Y, h.Location.X, n.Y, n.X)));
-            Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
+            {
+                var cands = await NearestNodesAsync(conn, version, h.Location.X, h.Location.Y, o.HarbourAccessM, 40, ct);
+                var n = cands.FirstOrDefault(m => find.TryGetValue(m.Id, out var mc) && attached.Contains(mc)) ?? cands.FirstOrDefault();
+                if (n is not null) access.Add((h.Id, n.Id, Haversine(h.Location.Y, h.Location.X, n.Y, n.X)));
+            }
+            Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {strays} stray passage ends, {relinks.Count} relinked; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
         }
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_harbour_access (graph_version, harbour_id, node_id, distance_m) FROM STDIN (FORMAT BINARY)", ct))
         {
@@ -358,9 +380,12 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var bankCorners = VisibilityGraph.Corners(banks, region).Where(c => !VisibilityGraph.OnTileEdge(c)).ToList(); // the depth areas are cut per z12 tile: corners on tile edges are artefacts
         var seen = new HashSet<(long, long)>();
         var nodes = new List<GraphNode>();
+        // nodes closer than ~25 m are one node: a cluster of near-coincident anchors (hundreds of channel ends at one mouth) would
+        // otherwise fill each other's nearest-neighbour slots and form a component of its own
+        var gridDeg = 25.0 / WaterGraphTiler.MPerDegLat;
         foreach (var c in corners.Concat(lattice).Concat(anchors).Concat(bankCorners))
         {
-            if (!seen.Add(((long)Math.Round(c.X * 1e6), (long)Math.Round(c.Y * 1e6)))) continue;
+            if (!seen.Add(((long)Math.Round(c.X * midCos / gridDeg), (long)Math.Round(c.Y / gridDeg)))) continue;
             if (obstacles.Query(new Envelope(c)).Any(ob => ob.ContainsProperly(Geo.Factory.CreatePoint(c)))) continue; // bank corners on land
             nodes.Add(new GraphNode(nodes.Count + 1, c.X, c.Y, false));
         }
@@ -410,6 +435,39 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         }
         await WriteEdgesAsync(conn, version, edges, ct);
         return (nodes.Count, edges.Count, nodes.Count + 1);
+    }
+
+    /// <summary>Connected components of the graph written so far (union-find over routing_edge): node id → component root.</summary>
+    private static async Task<Dictionary<long, long>> ComponentsAsync(NpgsqlConnection conn, int version, CancellationToken ct)
+    {
+        var parent = new Dictionary<long, long>();
+        long Find(long x)
+        {
+            if (!parent.TryGetValue(x, out var p)) { parent[x] = x; return x; }
+            while (p != x) { var gp = parent[p]; parent[x] = gp; x = p; p = gp; }
+            return x;
+        }
+        await using var cmd = new NpgsqlCommand("SELECT source, target FROM routing_edge WHERE graph_version = @v", conn);
+        cmd.Parameters.AddWithValue("v", version);
+        await using (var r = await cmd.ExecuteReaderAsync(ct))
+            while (await r.ReadAsync(ct)) { var a = Find(r.GetInt64(0)); var b = Find(r.GetInt64(1)); if (a != b) parent[a] = b; }
+        return parent.Keys.ToList().ToDictionary(k => k, Find);
+    }
+
+    private static async Task<List<GraphNode>> NearestNodesAsync(NpgsqlConnection conn, int version, double x, double y, double maxM, int limit, CancellationToken ct)
+    {
+        var dLat = maxM / WaterGraphTiler.MPerDegLat; var dLng = dLat / Math.Max(0.1, Math.Cos(y * Math.PI / 180));
+        await using var cmd = new NpgsqlCommand($"""
+            SELECT id, ST_X(geom), ST_Y(geom) FROM routing_node
+            WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
+            ORDER BY geom <-> ST_SetSRID(ST_MakePoint(@x, @y), 4326) LIMIT {limit}
+            """, conn);
+        cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y);
+        cmd.Parameters.AddWithValue("x1", x - dLng); cmd.Parameters.AddWithValue("y1", y - dLat); cmd.Parameters.AddWithValue("x2", x + dLng); cmd.Parameters.AddWithValue("y2", y + dLat);
+        var result = new List<GraphNode>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) { var n = new GraphNode(r.GetInt64(0), r.GetDouble(1), r.GetDouble(2), false); if (Haversine(y, x, n.Y, n.X) <= maxM) result.Add(n); }
+        return result;
     }
 
     private static async Task<GraphNode?> NearestNodeAsync(NpgsqlConnection conn, int version, double x, double y, double maxM, CancellationToken ct)

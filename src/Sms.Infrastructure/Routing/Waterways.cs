@@ -16,7 +16,7 @@ public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? Clear
 /// </summary>
 public static class Waterways
 {
-    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0});way["bridge"](if:length()>800)({0}););out geom;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
+    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0});way["bridge"](if:length()>300)({0}););out geom;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
 
     /// <summary>Navigable for yachts: an explicit boat/motorboat/ship permission, a CEMT class, or a fairway.</summary>
     public static bool IsNavigable(IReadOnlyDictionary<string, string> tags)
@@ -60,7 +60,7 @@ public static class Waterways
     /// <summary>True when the area must never be entered (Block); false for a restricted/warning area (Avoid).</summary>
     public static bool IsHardNoGo(IReadOnlyDictionary<string, string> tags)
     {
-        if (tags.GetValueOrDefault("seamark:type") == "military_area") return true;
+        // a military practice area (Tofta, Todendorf) is closed during exercises only: avoided unless it says no entry
         var r = tags.GetValueOrDefault("seamark:restricted_area:restriction") ?? tags.GetValueOrDefault("seamark:restriction") ?? "";
         return r.Split(';').Any(x => NoEntry.Contains(x.Trim()));
     }
@@ -211,7 +211,7 @@ public static class Waterways
                 if (coords.Length >= 2 && !coords[0].Equals2D(coords[^1])) line = new LineString(coords) { SRID = 4326 };
             }
             // a long bridge way (Great Belt, Øresund: >800 m) counts even without a charted clearance – its charted span nodes carry it
-            var longBridge = line is not null && tags.ContainsKey("bridge") && LengthM(line) > 800;
+            var longBridge = line is not null && tags.ContainsKey("bridge") && LengthM(line) > 300;
             var isBridge = tags.GetValueOrDefault("seamark:type") == "bridge" || (tags.ContainsKey("bridge") && (tags.ContainsKey("seamark:bridge:clearance_height") || opening)) || longBridge;
             var isLock = tags.GetValueOrDefault("waterway") == "lock_gate" || tags.GetValueOrDefault("lock") == "yes" || tags.GetValueOrDefault("seamark:type") == "gate";
             if (!isBridge && !isLock) continue;
