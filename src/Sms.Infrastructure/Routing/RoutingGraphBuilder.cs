@@ -115,7 +115,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
         var conn = (NpgsqlConnection)db.Database.GetDbConnection();
         await conn.OpenAsync(ct);
-        var version = Convert.ToInt32(await new NpgsqlCommand("SELECT COALESCE(MAX(graph_version),0)+1 FROM routing_land", conn).ExecuteScalarAsync(ct));
+        var version = Convert.ToInt32(await new NpgsqlCommand("SELECT COALESCE(MAX(graph_version),0)+1 FROM routing_land", conn) { CommandTimeout = 3600 }.ExecuteScalarAsync(ct));
 
         // 1. land polygons inside the region (streamed, never all in memory) + active Block corrections → routing_land
         Report("land", $"Streaming land polygons inside the region into graph version {version}…");
@@ -176,14 +176,14 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 await using var cmd = new NpgsqlCommand("""
                     SELECT ST_CollectionExtract(ST_Intersection(geom, ST_MakeEnvelope(@x1,@y1,@x2,@y2,4326)), 3) FROM routing_land
                     WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1,@y1,@x2,@y2,4326)
-                    """, conn);
+                    """, conn) { CommandTimeout = 3600 };
                 cmd.Parameters.AddWithValue("v", version);
                 cmd.Parameters.AddWithValue("x1", e.MinX); cmd.Parameters.AddWithValue("y1", e.MinY); cmd.Parameters.AddWithValue("x2", e.MaxX); cmd.Parameters.AddWithValue("y2", e.MaxY);
                 var land = new List<Geometry>();
                 await using (var r = await cmd.ExecuteReaderAsync(c))
                     while (await r.ReadAsync(c)) if (!r.IsDBNull(0)) { var g = r.GetFieldValue<Geometry>(0); if (!g.IsEmpty) land.Add(g); }
                 // charted depth areas of the tile (routing_depth, filled by the admin depth import)
-                await using var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1,@y1,@x2,@y2,4326)", conn);
+                await using var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1,@y1,@x2,@y2,4326)", conn) { CommandTimeout = 3600 };
                 dcmd.Parameters.AddWithValue("x1", e.MinX); dcmd.Parameters.AddWithValue("y1", e.MinY); dcmd.Parameters.AddWithValue("x2", e.MaxX); dcmd.Parameters.AddWithValue("y2", e.MaxY);
                 var depths = new List<(Geometry, double)>();
                 await using (var dr = await dcmd.ExecuteReaderAsync(c))
@@ -253,7 +253,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         if (channelEdgeFrom.Count > 0)
         {
             var depthRows = new List<(Geometry, double)>();
-            await using (var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn))
+            await using (var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn) { CommandTimeout = 3600 })
             {
                 dcmd.Parameters.AddWithValue("x1", regionEnv.MinX); dcmd.Parameters.AddWithValue("y1", regionEnv.MinY); dcmd.Parameters.AddWithValue("x2", regionEnv.MaxX); dcmd.Parameters.AddWithValue("y2", regionEnv.MaxY);
                 await using var dr = await dcmd.ExecuteReaderAsync(ct);
@@ -324,10 +324,10 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 DELETE FROM routing_harbour_access WHERE graph_version < {version};
                 DELETE FROM "RouteCaches" WHERE "GraphVersion" < {version};
                 """;
-            await new NpgsqlCommand(sql, conn, tx).ExecuteNonQueryAsync(ct);
+            await new NpgsqlCommand(sql, conn, tx) { CommandTimeout = 3600 }.ExecuteNonQueryAsync(ct);
             await tx.CommitAsync(ct);
         }
-        await new NpgsqlCommand("ANALYZE routing_edge; ANALYZE routing_node; ANALYZE routing_land;", conn).ExecuteNonQueryAsync(ct);
+        await new NpgsqlCommand("ANALYZE routing_edge; ANALYZE routing_node; ANALYZE routing_land;", conn) { CommandTimeout = 3600 }.ExecuteNonQueryAsync(ct);
         Report("done", $"Graph version {version} active: {nodes} nodes, {edges} edges, {access.Count} harbours ({sw.Elapsed:hh\\:mm\\:ss})");
     }
 
@@ -376,7 +376,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var bridges = Obstacles.WithSpans(bridgesRaw);
         var anchors = harbourPoints.Concat(passageEnds).Concat(Obstacles.SpanPoints(bridgesRaw)).Select(p => VisibilityGraph.Anchor(p, obstacles, polygons)).ToList();
         var shallowTol = tol * 2;
-        await using var shallowCmd = new NpgsqlCommand("SELECT ST_SimplifyPreserveTopology(geom, @tol) FROM routing_depth WHERE max_depth_m <= @d AND ST_Area(geom) >= @minArea AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn); // planar deg²: geography area fails on the invalid Seascape rings
+        await using var shallowCmd = new NpgsqlCommand("SELECT ST_SimplifyPreserveTopology(geom, @tol) FROM routing_depth WHERE max_depth_m <= @d AND ST_Area(geom) >= @minArea AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn) { CommandTimeout = 3600 }; // planar deg²: geography area fails on the invalid Seascape rings
         var midCos = Math.Cos((region.MinY + region.MaxY) / 2 * Math.PI / 180);
         shallowCmd.Parameters.AddWithValue("tol", shallowTol * 2.5); shallowCmd.Parameters.AddWithValue("minArea", o.ShallowNodeMinKm2 * 1e6 / (WaterGraphTiler.MPerDegLat * WaterGraphTiler.MPerDegLat * midCos)); shallowCmd.Parameters.AddWithValue("d", o.ShallowNodeDepthM);
         shallowCmd.Parameters.AddWithValue("x1", region.MinX); shallowCmd.Parameters.AddWithValue("y1", region.MinY); shallowCmd.Parameters.AddWithValue("x2", region.MaxX); shallowCmd.Parameters.AddWithValue("y2", region.MaxY);
@@ -402,7 +402,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         Report("areas", $"{edges.Count} visibility edges ({sw.Elapsed:hh\\:mm\\:ss})");
         // safety net against the raw (unbuffered) land: no visibility leg may cross it, whatever the obstacle union did
         var land = new List<Polygon>();
-        await using (var lcmd = new NpgsqlCommand("SELECT geom FROM routing_land WHERE graph_version = @v", conn))
+        await using (var lcmd = new NpgsqlCommand("SELECT geom FROM routing_land WHERE graph_version = @v", conn) { CommandTimeout = 3600 })
         {
             lcmd.Parameters.AddWithValue("v", version);
             await using var lr = await lcmd.ExecuteReaderAsync(ct);
@@ -421,7 +421,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             edges = edges.Where(e => !bad.Contains(e)).ToList();
         }
         var depths = new List<(Geometry, double)>();
-        await using (var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn))
+        await using (var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn) { CommandTimeout = 3600 })
         {
             dcmd.Parameters.AddWithValue("x1", region.MinX); dcmd.Parameters.AddWithValue("y1", region.MinY); dcmd.Parameters.AddWithValue("x2", region.MaxX); dcmd.Parameters.AddWithValue("y2", region.MaxY);
             await using var dr = await dcmd.ExecuteReaderAsync(ct);
@@ -456,7 +456,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 await using var cmd = new NpgsqlCommand("""
                     SELECT ST_SimplifyPreserveTopology(ST_UnaryUnion(ST_Collect(ST_Buffer(geom::geography, @buf)::geometry)), @tol)
                     FROM routing_land WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
-                    """, conn);
+                    """, conn) { CommandTimeout = 3600 };
                 cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("buf", o.CoastBufferM); cmd.Parameters.AddWithValue("tol", tol);
                 cmd.Parameters.AddWithValue("x1", x); cmd.Parameters.AddWithValue("y1", y); cmd.Parameters.AddWithValue("x2", Math.Min(x + 2, o.Region.MaxLng)); cmd.Parameters.AddWithValue("y2", Math.Min(y + 2, o.Region.MaxLat));
                 var g = await cmd.ExecuteScalarAsync(ct) as Geometry;
@@ -478,7 +478,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             while (p != x) { var gp = parent[p]; parent[x] = gp; x = p; p = gp; }
             return x;
         }
-        await using var cmd = new NpgsqlCommand("SELECT source, target FROM routing_edge WHERE graph_version = @v", conn);
+        await using var cmd = new NpgsqlCommand("SELECT source, target FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 3600 };
         cmd.Parameters.AddWithValue("v", version);
         await using (var r = await cmd.ExecuteReaderAsync(ct))
             while (await r.ReadAsync(ct)) { var a = Find(r.GetInt64(0)); var b = Find(r.GetInt64(1)); if (a != b) parent[a] = b; }
@@ -496,7 +496,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             if (lenM < 300) return n;
             var t = 150 / lenM;
             var start = new Coordinate(p.X + (n.X - p.X) * t, p.Y + (n.Y - p.Y) * t);
-            await using var cmd = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM routing_land WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326) AND ST_Intersects(geom, ST_SetSRID(ST_MakeLine(ST_MakePoint(@ax, @ay), ST_MakePoint(@bx, @by)), 4326)))", conn);
+            await using var cmd = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM routing_land WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326) AND ST_Intersects(geom, ST_SetSRID(ST_MakeLine(ST_MakePoint(@ax, @ay), ST_MakePoint(@bx, @by)), 4326)))", conn) { CommandTimeout = 3600 };
             cmd.Parameters.AddWithValue("v", version);
             cmd.Parameters.AddWithValue("x1", Math.Min(start.X, n.X)); cmd.Parameters.AddWithValue("y1", Math.Min(start.Y, n.Y)); cmd.Parameters.AddWithValue("x2", Math.Max(start.X, n.X)); cmd.Parameters.AddWithValue("y2", Math.Max(start.Y, n.Y));
             cmd.Parameters.AddWithValue("ax", start.X); cmd.Parameters.AddWithValue("ay", start.Y); cmd.Parameters.AddWithValue("bx", n.X); cmd.Parameters.AddWithValue("by", n.Y);
@@ -512,7 +512,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             SELECT id, ST_X(geom), ST_Y(geom) FROM routing_node
             WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
             ORDER BY geom <-> ST_SetSRID(ST_MakePoint(@x, @y), 4326) LIMIT {limit}
-            """, conn);
+            """, conn) { CommandTimeout = 3600 };
         cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y);
         cmd.Parameters.AddWithValue("x1", x - dLng); cmd.Parameters.AddWithValue("y1", y - dLat); cmd.Parameters.AddWithValue("x2", x + dLng); cmd.Parameters.AddWithValue("y2", y + dLat);
         var result = new List<GraphNode>();
@@ -528,7 +528,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             SELECT id, ST_X(geom), ST_Y(geom) FROM routing_node
             WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
             ORDER BY geom <-> ST_SetSRID(ST_MakePoint(@x, @y), 4326) LIMIT 1
-            """, conn);
+            """, conn) { CommandTimeout = 3600 };
         cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y);
         cmd.Parameters.AddWithValue("x1", x - dLng); cmd.Parameters.AddWithValue("y1", y - dLat); cmd.Parameters.AddWithValue("x2", x + dLng); cmd.Parameters.AddWithValue("y2", y + dLat);
         await using var r = await cmd.ExecuteReaderAsync(ct);
