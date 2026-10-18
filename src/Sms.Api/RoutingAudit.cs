@@ -71,7 +71,8 @@ public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, 
                 {
                     var seg = Geo.Factory.CreateLineString([g.GetCoordinateN(i - 1), g.GetCoordinateN(i)]);
                     var inApproach = seg.Distance(Geo.Factory.CreatePoint(a)) < accessDeg || seg.Distance(Geo.Factory.CreatePoint(b)) < accessDeg;
-                    if (!inApproach && land.Query(seg.EnvelopeInternal).Any(l => l.Crosses(seg) || l.Contains(seg))) { failed = true; Count("land"); findings.Add(new("land", h.Name, to.Name, seg.Centroid.Y, seg.Centroid.X, "leg crosses land")); break; }
+                    // a leg on a passage (a river or canal is land in the coastline polygons) is fine; any other leg over land is not
+                    if (!inApproach && land.Query(seg.EnvelopeInternal).Any(l => l.Crosses(seg) || l.Contains(seg)) && !passageIndex.Query(seg.EnvelopeInternal).Any(p => p.Covers(seg))) { failed = true; Count("land"); findings.Add(new("land", h.Name, to.Name, seg.Centroid.Y, seg.Centroid.X, "leg crosses land")); break; }
                     if (blockIndex.Query(seg.EnvelopeInternal).Any(bk => bk.Intersects(seg))) { failed = true; Count("no-go"); findings.Add(new("no-go", h.Name, to.Name, seg.Centroid.Y, seg.Centroid.X, "leg crosses a blocked area")); break; }
                     if (closedSpans.Query(seg.EnvelopeInternal).Any(bk => bk.Intersects(seg))) { failed = true; Count("bridge"); findings.Add(new("bridge", h.Name, to.Name, seg.Centroid.Y, seg.Centroid.X, "leg crosses a bridge outside its charted span")); break; }
                     if (draft > 0 && !inApproach && shallow.Query(seg.EnvelopeInternal).Any(s => s.Intersects(seg)) && !passageIndex.Query(seg.EnvelopeInternal).Any(p => p.Covers(seg)))
