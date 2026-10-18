@@ -12,12 +12,12 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api, errorMessage } from '../../core/api';
 import { ContentPage } from '../../core/models';
 import { tenantPreview } from '../../core/site';
-import { RoutingCorrections } from './routing-corrections';
+import { RouterLink } from '@angular/router';
 
 interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; waterways: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
 
 @Component({
-  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, TranslatePipe, RoutingCorrections],
+  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, TranslatePipe, RouterLink],
   template: `
     <div class="page page-narrow">
       <h1>{{ 'admin.title' | translate }}</h1>
@@ -70,7 +70,9 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
           <div class="row"><mat-checkbox [(ngModel)]="pbf.seamarks">{{ 'admin.seamarks' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.harbours">{{ 'admin.importOsm' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.waterways">{{ 'admin.waterways' | translate }}</mat-checkbox><mat-checkbox [(ngModel)]="pbf.pois">{{ 'admin.pois' | translate }}</mat-checkbox>
             <button mat-flat-button (click)="startPbf()" [disabled]="pbfStatus()?.running || !pbf.url">{{ (pbfStatus()?.running ? 'admin.routingBuilding' : 'admin.import') | translate }}</button></div>
           @if (pbfStatus(); as ps) { <ul class="progress">@for (p of ps.progress.slice(-6); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul> }
-          <app-routing-corrections />
+          <h4>{{ 'admin.corrections' | translate }}</h4>
+          <p class="muted">{{ 'admin.correctionsHint' | translate }}</p>
+          <a mat-stroked-button routerLink="/admin/corrections">{{ 'admin.editCorrections' | translate }}</a>
           <ul class="progress">@for (p of r.progress; track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }} (+{{ elapsed(r.progress[0].at, p.at) }})</span> [{{ p.phase }}] {{ p.message }}</li> }</ul>
         }
       </mat-card-content></mat-card>

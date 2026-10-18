@@ -43,6 +43,7 @@ export const routes: Routes = [
   { path: 'settings', canActivate: [authGuard], loadComponent: () => import('./features/profile/profile-pages').then(m => m.SettingsPage), title: 'Einstellungen' },
   { path: 'invitations/:kind/:token', loadComponent: () => import('./features/trips/invitation-page').then(m => m.InvitationPage) },
   { path: 'admin', canActivate: [authGuard], loadComponent: () => import('./features/admin/admin-page').then(m => m.AdminPage), title: 'Administration' },
+  { path: 'admin/corrections', canActivate: [authGuard], loadComponent: () => import('./features/admin/routing-corrections').then(m => m.RoutingCorrections), title: 'Routing-Korrekturen' },
   { path: 'p/:slug', loadComponent: () => import('./features/pages/content-page').then(m => m.ContentPageView) },
   { path: '**', redirectTo: '' },
 ];
