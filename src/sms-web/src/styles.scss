@@ -3,6 +3,7 @@
 @use 'photoswipe/dist/photoswipe.css';
 
 html { @include mat.theme((color: (primary: mat.$azure-palette, tertiary: mat.$cyan-palette), typography: Roboto, density: 0)); }
+html { @include mat.form-field-density(-3); }
 html, body { height: 100%; margin: 0; font-family: Roboto, sans-serif; background: #fafafa; }
 
 .mat-icon, mat-icon {
@@ -45,3 +46,19 @@ html, body { height: 100%; margin: 0; font-family: Roboto, sans-serif; backgroun
 .weather-overlay-panel[hidden] { display: none; }
 .weather-overlay-panel label { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
 .weather-overlay-panel .muted { font-size: 11px; color: #777; }
+
+/* forms: spacing, density helpers */
+.form-row { display: flex; flex-wrap: wrap; gap: 16px; }
+.row, .toolbar, .form-row { column-gap: 16px; }
+mat-form-field { margin-bottom: 12px; }
+.form-grid mat-form-field, .row mat-form-field, .toolbar mat-form-field, .form-row mat-form-field { margin-bottom: 0; }
+mat-form-field:last-child { margin-bottom: 0; }
+mat-form-field.full, mat-form-field.full-width, .full-width { width: 100%; }
+.mat-mdc-form-field-subscript-wrapper { min-height: 20px; }
+.mat-mdc-form-field-hint-wrapper, .mat-mdc-form-field-error-wrapper { padding: 0 12px; }
+.mat-mdc-form-field .mdc-floating-label { overflow: visible; text-overflow: clip; }
+
+/* dialogs */
+.mat-mdc-dialog-container .mat-mdc-dialog-surface { max-width: 560px; }
+.mat-mdc-dialog-content { padding: 16px !important; }
+.mat-mdc-dialog-actions { padding: 8px 16px 16px !important; gap: 8px; }
