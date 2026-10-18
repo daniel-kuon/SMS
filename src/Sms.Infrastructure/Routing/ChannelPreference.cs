@@ -21,25 +21,35 @@ public static class ChannelPreference
         if ((fairways.Count == 0 && areas.Count == 0) || factor <= 1 || distanceM <= 0) return gridEdges.ToList();
         var zone = Zone(fairways, areas, distanceM);
         if (zone.Count == 0) return gridEdges.ToList();
-        var index = new STRtree<(IPreparedGeometry prepared, Geometry geom)>();
-        foreach (var z in zone) index.Insert(z.EnvelopeInternal, (PreparedGeometryFactory.Prepare(z), z));
+        var index = new STRtree<IPreparedGeometry>();
+        foreach (var z in zone) index.Insert(z.EnvelopeInternal, PreparedGeometryFactory.Prepare(z));
         index.Build();
         var result = new List<GraphEdge>(gridEdges.Count);
         foreach (var e in gridEdges)
         {
-            var inside = 0.0;
-            foreach (var (prepared, geom) in index.Query(e.Geom.EnvelopeInternal))
-            {
-                if (!prepared.Intersects(e.Geom)) continue;
-                var part = geom.Intersection(e.Geom);
-                if (!part.IsEmpty) inside += LengthM(part);
-            }
-            if (inside <= 0) { result.Add(e); continue; }
-            var total = LengthM(e.Geom);
-            var share = Math.Min(1, inside / Math.Max(total, 1));
-            result.Add(e with { Cost = e.Cost * (1 + share * (factor - 1)) });
+            var hits = index.Query(e.Geom.EnvelopeInternal);
+            var share = hits.Count == 0 ? 0 : ShareInside(e.Geom, hits);
+            result.Add(share <= 0 ? e : e with { Cost = e.Cost * (1 + share * (factor - 1)) });
         }
         return result;
+    }
+
+    /// <summary>Share of the line inside any of the polygons, sampled every ~200 m (an exact overlay per edge is far slower for a million legs).</summary>
+    public static double ShareInside(LineString line, IList<IPreparedGeometry> polygons, double stepM = 200)
+    {
+        var inside = 0; var total = 0;
+        for (var i = 1; i < line.NumPoints; i++)
+        {
+            var a = line.GetCoordinateN(i - 1); var b = line.GetCoordinateN(i);
+            var n = Math.Max(1, (int)Math.Ceiling(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / stepM));
+            for (var k = 0; k < n; k++)
+            {
+                var p = line.Factory.CreatePoint(new Coordinate(a.X + (b.X - a.X) * (k + 0.5) / n, a.Y + (b.Y - a.Y) * (k + 0.5) / n));
+                total++;
+                foreach (var poly in polygons) if (poly.Contains(p)) { inside++; break; }
+            }
+        }
+        return total == 0 ? 0 : (double)inside / total;
     }
 
     /// <summary>Buffer band around the fairway lines, with the charted fairway areas (marked channels) cut out: inside those the water is the channel.</summary>
@@ -76,12 +86,4 @@ public static class ChannelPreference
         public void Filter(CoordinateSequence seq, int i) => seq.SetX(i, seq.GetX(i) * sx);
     }
 
-    private static double LengthM(Geometry g)
-    {
-        var m = 0.0;
-        foreach (var line in Lines(g))
-            for (var i = 1; i < line.NumPoints; i++) m += RoutingGraphBuilder.Haversine(line.GetCoordinateN(i - 1).Y, line.GetCoordinateN(i - 1).X, line.GetCoordinateN(i).Y, line.GetCoordinateN(i).X);
-        return m;
-    }
-    private static IEnumerable<LineString> Lines(Geometry g) => g switch { LineString l => [l], GeometryCollection c => c.Geometries.SelectMany(Lines), _ => [] };
 }
