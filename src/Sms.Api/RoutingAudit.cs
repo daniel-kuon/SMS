@@ -45,6 +45,10 @@ public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, 
         var fairwayIndex = new STRtree<LineString>(); foreach (var f in fairwayLines) fairwayIndex.Insert(f.EnvelopeInternal, f); fairwayIndex.Build();
         var shallow = draft > 0 ? Index(await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_depth WHERE min_depth_m < {0}", draft + o.DepthSafetyMarginM).Select(r => r.Geom).ToListAsync(ct)) : new STRtree<IPreparedGeometry>();
         var accessDeg = o.HarbourAccessM / WaterGraphTiler.MPerDegLat;
+        // bridges with charted spans: the parts outside the spans are impassable for every ship
+        var bridgePieces = Obstacles.WithSpans((await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+            .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList());
+        var closedSpans = Index(bridgePieces.Where(p => p.geom is not Point && p.clearanceM is <= 0).Select(p => p.geom).ToList());
 
         var findings = new List<AuditFinding>(); var counts = new Dictionary<string, int>(); var routes = 0; var failedRoutes = 0; var unroutable = 0;
         void Count(string k) => counts[k] = counts.GetValueOrDefault(k) + 1;
@@ -69,6 +73,7 @@ public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, 
                     var inApproach = seg.Distance(Geo.Factory.CreatePoint(a)) < accessDeg || seg.Distance(Geo.Factory.CreatePoint(b)) < accessDeg;
                     if (!inApproach && land.Query(seg.EnvelopeInternal).Any(l => l.Crosses(seg) || l.Contains(seg))) { failed = true; Count("land"); findings.Add(new("land", h.Name, to.Name, seg.Centroid.Y, seg.Centroid.X, "leg crosses land")); break; }
                     if (blockIndex.Query(seg.EnvelopeInternal).Any(bk => bk.Intersects(seg))) { failed = true; Count("no-go"); findings.Add(new("no-go", h.Name, to.Name, seg.Centroid.Y, seg.Centroid.X, "leg crosses a blocked area")); break; }
+                    if (closedSpans.Query(seg.EnvelopeInternal).Any(bk => bk.Intersects(seg))) { failed = true; Count("bridge"); findings.Add(new("bridge", h.Name, to.Name, seg.Centroid.Y, seg.Centroid.X, "leg crosses a bridge outside its charted span")); break; }
                     if (draft > 0 && !inApproach && shallow.Query(seg.EnvelopeInternal).Any(s => s.Intersects(seg)) && !passageIndex.Query(seg.EnvelopeInternal).Any(p => p.Covers(seg)))
                     {
                         // shallow: only report when the segment really runs inside the shallow area (not merely touches its edge)
