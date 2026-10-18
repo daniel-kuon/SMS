@@ -375,7 +375,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             while (await lr.ReadAsync(ct)) { var g = lr.GetFieldValue<Geometry>(0); land.AddRange(g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []); }
         }
         var landIndex = VisibilityGraph.Index(land);
-        var crossing = edges.Where(e => landIndex.Query(e.Geom.EnvelopeInternal).Any(l => l.Crosses(e.Geom) || l.Contains(e.Geom))).ToList();
+        var crossing = edges.AsParallel().Where(e => landIndex.Query(e.Geom.EnvelopeInternal).Any(l => l.Crosses(e.Geom) || l.Contains(e.Geom))).ToList();
+        Report("areas", $"land check done ({sw.Elapsed:hh\\:mm\\:ss})");
         if (crossing.Count > 0)
         {
             var sample = crossing[0].Geom.Centroid;
@@ -392,8 +393,12 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             while (await dr.ReadAsync(ct)) depths.Add((dr.GetFieldValue<Geometry>(0), dr.GetDouble(1)));
         }
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
-        edges = DepthLimits.Apply(Avoid.Apply(ChannelPreference.Apply(edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), avoids, o.AvoidPenaltyFactor), depths);
+        edges = ChannelPreference.Apply(edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor);
+        Report("areas", $"channel preference applied ({sw.Elapsed:hh\\:mm\\:ss})");
+        edges = DepthLimits.Apply(Avoid.Apply(edges, avoids, o.AvoidPenaltyFactor), depths);
+        Report("areas", $"depth limits applied ({sw.Elapsed:hh\\:mm\\:ss})");
         edges = Obstacles.Apply(edges, bridges, o.LockPenaltyM, o.BridgeOpeningPenaltyM, o.BridgeMatchAreaM); // a bridge over a sound is a point, the leg may pass a few hundred metres from it
+        Report("areas", $"bridges and locks applied, writing {nodes.Count} nodes and {edges.Count} edges ({sw.Elapsed:hh\\:mm\\:ss})");
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
             foreach (var n in nodes) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, ct); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, ct); }

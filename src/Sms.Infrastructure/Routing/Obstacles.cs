@@ -1,4 +1,5 @@
 using NetTopologySuite.Geometries;
+using NetTopologySuite.Index.Strtree;
 using Sms.Domain;
 
 namespace Sms.Infrastructure.Routing;
@@ -82,13 +83,17 @@ public static class Obstacles
     public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles, double lockPenaltyM, double openingPenaltyM, double matchM)
     {
         if (obstacles.Count == 0) return edges.ToList();
+        var tolDeg = matchM / WaterGraphTiler.MPerDegLat; // rough: the same tolerance in degrees for both axes (longitude is wider in metres)
+        var index = new STRtree<(Geometry geom, CorrectionKind kind, double? clearanceM)>();
+        foreach (var o in obstacles) index.Insert(o.geom.EnvelopeInternal, o);
+        index.Build();
         var result = new List<GraphEdge>(edges.Count);
         foreach (var e in edges)
         {
             var cost = e.Cost; double? clearance = e.ClearanceM;
             var lat = e.Geom.Centroid.Y;
-            var tolDeg = matchM / WaterGraphTiler.MPerDegLat; // rough: the same tolerance in degrees for both axes (longitude is wider in metres)
-            foreach (var (geom, kind, clearanceM) in obstacles)
+            var near = new Envelope(e.Geom.EnvelopeInternal); near.ExpandBy(tolDeg);
+            foreach (var (geom, kind, clearanceM) in index.Query(near))
             {
                 if (e.Geom.EnvelopeInternal.Distance(geom.EnvelopeInternal) > tolDeg) continue;
                 if (geom is Point point)
