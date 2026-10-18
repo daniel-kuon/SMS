@@ -121,15 +121,27 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         for (var pad = 0.3; pad <= 2.5 && path is null; pad *= 2)
         {
             var env = Expand(a, b, Math.Max(straightM * pad, 20_000));
+            // the path is the chain of edge geometries (a contracted passage edge is a whole canal stretch), each oriented from
+            // the node the search left it at; the last row (edge -1) only names the end node
             var rows = await db.Database.SqlQueryRaw<PathRow>("""
-                SELECT r.seq AS "Seq", ST_X(n.geom) AS "X", ST_Y(n.geom) AS "Y"
+                SELECT r.seq AS "Seq", r.node AS "Node", r.edge AS "Edge", e.source AS "Source", e.geom AS "Geom", ST_X(n.geom) AS "X", ST_Y(n.geom) AS "Y"
                 FROM pgr_aStar(
                     'SELECT id, source, target, ' || {8} || ', x1, y1, x2, y2 FROM routing_edge WHERE graph_version = ' || {0} || ' AND geom && ST_MakeEnvelope(' || {1} || ',' || {2} || ',' || {3} || ',' || {4} || ', 4326)' || {7},
                     {5}::bigint, {6}::bigint, directed := false, heuristic := 2) r
                 JOIN routing_node n ON n.id = r.node AND n.graph_version = {0}
+                LEFT JOIN routing_edge e ON e.id = r.edge AND e.graph_version = {0}
                 ORDER BY r.seq
                 """, version, env.MinX, env.MinY, env.MaxX, env.MaxY, start, end, clearance, costExpr).ToListAsync(ct);
-            if (rows.Count > 0) path = rows.Select(r => new Coordinate(r.X, r.Y)).ToList();
+            if (rows.Count > 0)
+            {
+                path = [];
+                foreach (var r in rows)
+                {
+                    if (r.Geom is null) { if (path.Count == 0 || !path[^1].Equals2D(new Coordinate(r.X, r.Y))) path.Add(new Coordinate(r.X, r.Y)); continue; }
+                    var cs = r.Geom.Coordinates; if (r.Source != r.Node) Array.Reverse(cs);
+                    foreach (var c in cs) if (path.Count == 0 || !path[^1].Equals2D(c)) path.Add(c);
+                }
+            }
         }
         if (path is null) { logger.LogInformation("No sea route between nodes {Start} and {End}", start, end); return null; }
         path.Insert(0, a.Coordinate); path.Add(b.Coordinate);
@@ -258,7 +270,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     private sealed class MetaRow { public string Key { get; set; } = ""; public string Value { get; set; } = ""; }
-    private sealed class PathRow { public long Seq { get; set; } public double X { get; set; } public double Y { get; set; } }
+    private sealed class PathRow { public long Seq { get; set; } public long Node { get; set; } public long Edge { get; set; } public long? Source { get; set; } public Geometry? Geom { get; set; } public double X { get; set; } public double Y { get; set; } }
     private sealed class NearbyRow { public Guid HarbourId { get; set; } public double Metres { get; set; } }
     private sealed class SnapRow { public long Id { get; set; } public double Metres { get; set; } }
     private sealed class GeomRow { public Geometry Geom { get; set; } = null!; }

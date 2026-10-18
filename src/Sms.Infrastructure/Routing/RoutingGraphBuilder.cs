@@ -218,6 +218,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var shared = new Dictionary<(long, long), long>();
         var linked = new HashSet<long>(); // one grid link per passage node
         var passageEndIds = new List<(long id, Coordinate p)>();
+        var linkNodes = new HashSet<long>(); // passage vertices that carry a link into the water graph: junctions the contraction keeps
         long NodeAt(Coordinate p)
         {
             var key = ((long)Math.Round(p.X * 1e6), (long)Math.Round(p.Y * 1e6));
@@ -250,7 +251,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 if (linkM > 0 && linked.Add(id))
                 {
                     var near = await NearestWaterLinkAsync(conn, version, linkLand, p, linkM, _ => true, ct);
-                    if (near is { } n) extraEdges.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
+                    if (near is { } n) { extraEdges.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)]))); linkNodes.Add(id); }
                 }
                 prev = id;
             }
@@ -281,6 +282,15 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var obstacles = Obstacles.WithSpans((await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
             .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList());
         extraEdges = Obstacles.Apply(extraEdges, obstacles, o.LockPenaltyM, o.BridgeOpeningPenaltyM, Obstacles.MatchM);
+        // a canal, river or channel is one leg from junction to junction: vertices with exactly two passage edges and no link are
+        // merged away, the leg keeps the full geometry and the strictest depth and clearance (the search walked every vertex before:
+        // 722 k passage edges, hundreds for the Eider alone)
+        var keep = new HashSet<long>(linkNodes); foreach (var (id, _) in passageEndIds) keep.Add(id);
+        var before = extraEdges.Count;
+        extraEdges = PassageContraction.Contract(extraEdges, keep, nodeId => nodeId <= gridNodeCount);
+        var extraNodeIds = extraEdges.SelectMany(e => new[] { e.Source, e.Target }).ToHashSet();
+        extraNodes = extraNodes.Where(n => extraNodeIds.Contains(n.Id)).ToList();
+        Report("passages", $"{before} passage edges contracted to {extraEdges.Count}, {extraNodes.Count} nodes kept ({sw.Elapsed:hh\\:mm\\:ss})");
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
             foreach (var n in extraNodes) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, ct); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, ct); }
