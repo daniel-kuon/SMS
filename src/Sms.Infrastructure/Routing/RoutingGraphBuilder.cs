@@ -291,27 +291,33 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             // the nearest node is not always a connected one: a channel skeleton in an enclosed basin, an anchor without a visible
             // neighbour. Components over everything written so far; stray passage ends get a link into the main component, and a
             // harbour is attached to the nearest node that belongs to it (or to a component that just got linked)
-            var find = await ComponentsAsync(conn, version, ct);
-            var giant = find.Values.GroupBy(c => c).OrderByDescending(g => g.Count()).First().Key;
-            var attached = new HashSet<long> { giant };
+            // live union-find: a stray end links to the nearest node of any other component (land-free), and the two merge; chains
+            // of such merges pull archipelago fragments together even where no main-component node is within reach
+            var parent = await ComponentsAsync(conn, version, ct);
+            long Find(long x) { if (!parent.TryGetValue(x, out var px)) { parent[x] = x; return x; } while (px != x) { var gp = parent[px]; parent[x] = gp; x = px; px = gp; } return x; }
+            void Union(long x, long y) { var rx = Find(x); var ry = Find(y); if (rx != ry) parent[rx] = ry; }
+            var sizes = parent.Keys.ToList().GroupBy(Find).ToDictionary(g => g.Key, g => g.Count());
+            var giant = sizes.OrderByDescending(kv => kv.Value).First().Key;
             var relinks = new List<GraphEdge>(); var strays = 0;
             foreach (var (id, p) in passageEndIds)
             {
-                if (!find.TryGetValue(id, out var c) || c == giant || attached.Contains(c)) continue;
+                if (Find(id) == Find(giant)) continue;
                 strays++;
-                // only water-graph nodes (ids below the passage range): the 40 nearest nodes of a channel end are its own skeleton otherwise
-                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, o.HarbourAccessM, m => find.TryGetValue(m.Id, out var mc) && mc == giant, ct, gridNodeCount);
+                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, o.HarbourAccessM, m => Find(m.Id) != Find(id), ct);
                 if (n is null) continue;
                 relinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
-                attached.Add(c);
+                Union(id, n.Id);
             }
             await WriteEdgesAsync(conn, version, relinks, ct);
+            var giantRoot = Find(giant);
             var reached = access.Select(a => a.harbourId).ToHashSet();
             foreach (var h in harbours.Where(h => !reached.Contains(h.Id)))
             {
                 // the access link may not cross land: a harbour on a river or lake the graph does not know stays unreachable rather than
-                // being routed across a field (the audit found 35 such routes)
-                var n = await NearestWaterLinkAsync(conn, version, linkLand, h.Location.Coordinate, o.HarbourAccessM, m => find.TryGetValue(m.Id, out var mc) && attached.Contains(mc), ct);
+                // being routed across a field (the audit found 35 such routes); a node of the main component is preferred, any other
+                // connected node is taken when none is within reach
+                var n = await NearestWaterLinkAsync(conn, version, linkLand, h.Location.Coordinate, o.HarbourAccessM, m => Find(m.Id) == giantRoot, ct)
+                    ?? await NearestWaterLinkAsync(conn, version, linkLand, h.Location.Coordinate, o.HarbourAccessM, _ => true, ct);
                 if (n is not null) access.Add((h.Id, n.Id, Haversine(h.Location.Y, h.Location.X, n.Y, n.X)));
             }
             Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {strays} stray passage ends, {relinks.Count} relinked; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
