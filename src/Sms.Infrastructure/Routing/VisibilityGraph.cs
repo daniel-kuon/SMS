@@ -31,6 +31,18 @@ public static class VisibilityGraph
     }
 
     /// <summary>Convex corners of the obstacle rings (the points a shortest path can bend at); holes contribute the corners of the land that pokes into them.</summary>
+    /// <summary>True when the point lies on an edge of the z<paramref name="zoom"/> tile grid (within ~10 m): the depth areas come per
+    /// tile, so their polygons have artificial corners along every tile edge.</summary>
+    public static bool OnTileEdge(Coordinate c, int zoom = 12)
+    {
+        var n = 1 << zoom;
+        var tx = (c.X + 180) / 360 * n;
+        var latR = c.Y * Math.PI / 180;
+        var ty = (1 - Math.Log(Math.Tan(latR) + 1 / Math.Cos(latR)) / Math.PI) / 2 * n;
+        static bool Near(double v) { var f = v - Math.Floor(v); return f < 1e-3 || f > 1 - 1e-3; }
+        return Near(tx) || Near(ty);
+    }
+
     public static List<Coordinate> Corners(IEnumerable<Polygon> obstacles, Envelope region)
     {
         var result = new List<Coordinate>();
@@ -132,12 +144,19 @@ public static class VisibilityGraph
             var env = new Envelope(n.X - maxDeg / cos, n.X + maxDeg / cos, n.Y - maxDeg, n.Y + maxDeg);
             var candidates = index.Query(env).Where(m => m.Id != n.Id)
                 .Select(m => (m, d: RoutingGraphBuilder.Haversine(n.Y, n.X, m.Y, m.X))).Where(x => x.d <= o.MaxVisibilityM).OrderBy(x => x.d);
-            var found = 0;
+            // the nearest visible nodes, but spread over 8 direction sectors: a node on a dense chain (bank corners along a
+            // contour, a jagged coast) would otherwise fill every slot with chain neighbours and no leg would ever cross the chain
+            var found = 0; var examined = 0;
+            var perSector = Math.Max(2, o.VisibleNeighbours / 8);
+            var sectors = new int[8];
             foreach (var (m, _) in candidates)
             {
-                if (found >= o.VisibleNeighbours) break;
+                if (found >= o.VisibleNeighbours || examined >= 8 * o.VisibleNeighbours) break;
+                var sector = (int)Math.Floor((Math.Atan2(m.Y - n.Y, (m.X - n.X) * cos) + Math.PI) / (2 * Math.PI) * 8) & 7;
+                if (sectors[sector] >= perSector) continue;
+                examined++;
                 if (!Visible(n, m, perThread.Value!)) continue;
-                found++;
+                found++; sectors[sector]++;
                 if (n.Id < m.Id) pairs.Add((n.Id, m.Id, n, m)); else pairs.Add((m.Id, n.Id, m, n));
             }
         });

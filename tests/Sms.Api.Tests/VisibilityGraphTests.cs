@@ -67,4 +67,26 @@ public class VisibilityGraphTests
         var anchor = VisibilityGraph.Anchor(new Coordinate(10.025, 54.055), obstacles, [filled]);
         Assert.Equal(10.0, anchor.X, 4); Assert.Equal(54.055, anchor.Y, 4); Assert.True(anchor.X < 10.0); // nearest outer coast (a metre into the water), not the basin wall
     }
+
+    [Fact]
+    public void A_dense_chain_of_nodes_does_not_wall_off_the_nodes_across_it()
+    {
+        // 40 nodes 100 m apart along a line, one node 3 km north and one 3 km south of it, no land at all
+        var nodes = new List<GraphNode>();
+        for (var i = 0; i < 40; i++) nodes.Add(new GraphNode(i + 1, 10.0 + i * 0.0016, 54.0, false));
+        nodes.Add(new GraphNode(101, 10.03, 54.027, false));
+        nodes.Add(new GraphNode(102, 10.03, 53.973, false));
+        var edges = VisibilityGraph.Edges(nodes, [], new VisibilityGraph.Options(MaxVisibilityM: 60_000, VisibleNeighbours: 8));
+        Assert.Contains(edges, e => e.Source == 101 || e.Target == 101);
+        Assert.Contains(edges, e => e.Source == 102 || e.Target == 102);
+        // the two far nodes see each other across the chain only via the chain nodes; the chain itself stays connected
+        Assert.True(edges.Count(e => e.Source <= 40 && e.Target <= 40) >= 39);
+    }
+
+    [Fact]
+    public void Tile_edge_corners_are_recognised()
+    {
+        Assert.True(VisibilityGraph.OnTileEdge(new Coordinate(10.546875, 54.5)));  // 10.546875 = tile 2168 / 4096 * 360 - 180
+        Assert.False(VisibilityGraph.OnTileEdge(new Coordinate(10.50, 54.50)));
+    }
 }

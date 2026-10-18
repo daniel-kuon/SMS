@@ -352,7 +352,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var banks = new List<Polygon>();
         await using (var r = await shallowCmd.ExecuteReaderAsync(ct))
             while (await r.ReadAsync(ct)) if (!r.IsDBNull(0) && r.GetFieldValue<Geometry>(0) is Polygon bp && !bp.IsEmpty) banks.Add(bp);
-        var bankCorners = VisibilityGraph.Corners(banks, region);
+        var bankCorners = VisibilityGraph.Corners(banks, region).Where(c => !VisibilityGraph.OnTileEdge(c)).ToList(); // the depth areas are cut per z12 tile: corners on tile edges are artefacts
         var seen = new HashSet<(long, long)>();
         var nodes = new List<GraphNode>();
         foreach (var c in corners.Concat(lattice).Concat(anchors).Concat(bankCorners))
