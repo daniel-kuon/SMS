@@ -264,8 +264,15 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             var channelEdges = new List<GraphEdge>(); var ranges = new List<(int from, int to)>();
             for (var i = 0; i < channelEdgeFrom.Count; i += 2) { ranges.Add((channelEdgeFrom[i], channelEdgeFrom[i + 1])); channelEdges.AddRange(extraEdges.Skip(channelEdgeFrom[i]).Take(channelEdgeFrom[i + 1] - channelEdgeFrom[i])); }
             var limited = DepthLimits.Apply(channelEdges, depthRows);
+            // a channel through water charted shallower than the default yacht costs ×AvoidPenaltyFactor but stays open (the depth
+            // areas are coarse in the Swedish archipelago and would close every sound); a channel across a drying flat is closed
+            var shallowM = o.DefaultDraftM + o.DepthSafetyMarginM;
             var k = 0;
-            foreach (var (from, to) in ranges) for (var i = from; i < to; i++) extraEdges[i] = limited[k++];
+            foreach (var (from, to) in ranges) for (var i = from; i < to; i++)
+            {
+                var e = limited[k++];
+                extraEdges[i] = e.MinDepthM is { } d && d > 0 && d < shallowM ? e with { Cost = e.Cost * o.AvoidPenaltyFactor, MinDepthM = null } : e;
+            }
         }
         var obstacles = Obstacles.WithSpans((await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
             .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList());
@@ -489,29 +496,41 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
 
     /// <summary>The nearest acceptable node whose link from <paramref name="p"/> does not cross land. The first 150 m at the start are
     /// ignored (a harbour point sits on its pier, a channel end on the shore).</summary>
-    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, STRtree<IPreparedGeometry> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct)
+    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, STRtree<(IPreparedGeometry prepared, Geometry geom)> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct)
     {
         foreach (var n in await NearestNodesAsync(conn, version, p.X, p.Y, maxM, 40, ct))
         {
             if (!accept(n)) continue;
             var lenM = Haversine(p.Y, p.X, n.Y, n.X);
             if (lenM < 300) return n;
-            var t = 150 / lenM;
-            var seg = Geo.Factory.CreateLineString([new Coordinate(p.X + (n.X - p.X) * t, p.Y + (n.Y - p.Y) * t), new Coordinate(n.X, n.Y)]);
-            if (!landIndex.Query(seg.EnvelopeInternal).Any(l => l.Intersects(seg))) return n;
+            var seg = Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)]);
+            // a harbour point sits on its pier and a channel end on the shore: crossing a mole or pier is fine, crossing a field is not
+            var crossedM = 0.0;
+            foreach (var (prepared, geom) in landIndex.Query(seg.EnvelopeInternal))
+            {
+                if (!prepared.Intersects(seg)) continue;
+                try { crossedM += geom.Intersection(seg).Length * WaterGraphTiler.MPerDegLat; } catch (TopologyException) { crossedM += 1e6; }
+                if (crossedM > 150) break;
+            }
+            if (crossedM <= 150) return n;
         }
         return null;
     }
 
     /// <summary>The raw land of this graph version (coast tiles with lakes cut out, no-go blocks) as a prepared index for the link checks.</summary>
-    private static async Task<STRtree<IPreparedGeometry>> LandIndexAsync(NpgsqlConnection conn, int version, CancellationToken ct)
+    private static async Task<STRtree<(IPreparedGeometry prepared, Geometry geom)>> LandIndexAsync(NpgsqlConnection conn, int version, CancellationToken ct)
     {
-        var land = new List<Polygon>();
+        var index = new STRtree<(IPreparedGeometry, Geometry)>();
         await using var cmd = new NpgsqlCommand("SELECT geom FROM routing_land WHERE graph_version = @v", conn) { CommandTimeout = 3600 };
         cmd.Parameters.AddWithValue("v", version);
         await using var r = await cmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct)) { var g = r.GetFieldValue<Geometry>(0); land.AddRange(g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []); }
-        return VisibilityGraph.Index(land);
+        while (await r.ReadAsync(ct))
+        {
+            var g = r.GetFieldValue<Geometry>(0);
+            foreach (var poly in g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []) index.Insert(poly.EnvelopeInternal, (PreparedGeometryFactory.Prepare(poly), poly));
+        }
+        index.Build();
+        return index;
     }
 
     private static async Task<List<GraphNode>> NearestNodesAsync(NpgsqlConnection conn, int version, double x, double y, double maxM, int limit, CancellationToken ct)
