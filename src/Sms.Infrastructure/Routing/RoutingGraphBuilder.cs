@@ -41,6 +41,8 @@ public sealed class RoutingOptions
     public double ChannelPenaltyFactor { get; set; } = 3;
     /// <summary>Edges inside an Avoid correction (warning area, firing range) cost ×this, by the length inside.</summary>
     public double AvoidPenaltyFactor { get; set; } = 3;
+    /// <summary>A derived channel through water charted shallower than the default yacht (not drying) costs ×this: the depth areas are coarse in narrow sounds.</summary>
+    public double ShallowChannelFactor { get; set; } = 1.5;
     public double MaxRouteNm { get; set; } = 500;
     /// <summary>Draft assumed when a route is asked for without a ship (a typical cruising yacht): charted shallows below it are avoided by default.</summary>
     public double DefaultDraftM { get; set; } = 1.5;
@@ -271,7 +273,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             foreach (var (from, to) in ranges) for (var i = from; i < to; i++)
             {
                 var e = limited[k++];
-                extraEdges[i] = e.MinDepthM is { } d && d > 0 && d < shallowM ? e with { Cost = e.Cost * o.AvoidPenaltyFactor, MinDepthM = null } : e;
+                extraEdges[i] = e.MinDepthM is { } d && d > 0 && d < shallowM ? e with { Cost = e.Cost * o.ShallowChannelFactor, MinDepthM = null } : e;
             }
         }
         var obstacles = Obstacles.WithSpans((await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
@@ -508,13 +510,16 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             // Sampled every 25 m with the prepared point-in-polygon test (an exact overlay against a mainland tile took minutes per node)
             var hits = landIndex.Query(seg.EnvelopeInternal).Where(l => l.prepared.Intersects(seg)).Select(l => l.prepared).ToList();
             if (hits.Count == 0) return n;
-            var steps = (int)Math.Ceiling(lenM / 25); var onLand = 0;
-            for (var k = 1; k < steps && onLand <= 6; k++)
+            // Two shapes of land crossing are fine: up to 150 m anywhere (a mole), or a leading stretch of up to 600 m (the harbour's
+            // own basin, which the coastline polygons often count as land, plus its mole). Land after water on the way is a field.
+            var steps = (int)Math.Ceiling(lenM / 25); var onLand = 0; var leading = 0; var water = false;
+            for (var k = 1; k < steps; k++)
             {
                 var q = Geo.Factory.CreatePoint(new Coordinate(p.X + (n.X - p.X) * k / steps, p.Y + (n.Y - p.Y) * k / steps));
-                if (hits.Any(l => l.Contains(q))) onLand++;
+                if (hits.Any(l => l.Contains(q))) { onLand++; if (!water) leading++; } else water = true;
+                if (onLand > 6 && onLand > leading) break; // scattered land beyond 150 m: no need to look further
             }
-            if (onLand <= 6) return n;
+            if (onLand <= 6 || (onLand == leading && leading * 25 <= 600)) return n;
         }
         return null;
     }
