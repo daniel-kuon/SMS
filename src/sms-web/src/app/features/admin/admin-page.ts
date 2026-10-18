@@ -7,6 +7,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, errorMessage } from '../../core/api';
 import { ContentPage } from '../../core/models';
@@ -16,7 +17,7 @@ import { RoutingCorrections } from './routing-corrections';
 interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; waterways: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
 
 @Component({
-  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, TranslatePipe, RoutingCorrections],
+  imports: [DatePipe, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, TranslatePipe, RoutingCorrections],
   template: `
     <div class="page page-narrow">
       <h1>{{ 'admin.title' | translate }}</h1>
@@ -54,9 +55,9 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
       <mat-card appearance="outlined"><mat-card-content>
         <h3>{{ 'admin.routing' | translate }}</h3>
         @if (routing(); as r) {
-          <p>{{ 'admin.routingStatus' | translate }}: <b>{{ r.method }}</b> · Version {{ r.graphVersion }} · {{ r.nodes }} Knoten / {{ r.edges }} Kanten @if (r.builtAt) { · {{ r.builtAt }} } @if (r.region) { · Region {{ r.region }} }</p>
+          <p>{{ 'admin.routingStatus' | translate }}: <b>{{ r.method }}</b> · Version {{ r.graphVersion }} · {{ r.nodes }} {{ 'admin.nodes' | translate }} / {{ r.edges }} {{ 'admin.edges' | translate }} @if (r.builtAt) { · {{ 'admin.builtAt' | translate }} {{ r.builtAt | date:'dd.MM.yyyy HH:mm' }} } @if (r.region) { · Region {{ r.region }} }</p>
           <p class="muted">{{ 'admin.routingHint' | translate }}</p>
-          <button mat-flat-button (click)="rebuild()" [disabled]="r.building">{{ (r.building ? 'admin.routingBuilding' : 'admin.routingRebuild') | translate }}</button>
+          <div class="row"><button mat-flat-button (click)="rebuild()" [disabled]="r.building">{{ (r.building ? 'admin.routingBuilding' : 'admin.routingRebuild') | translate }}</button>@if (r.building) { <mat-spinner diameter="20" /> }</div>
           <h4>{{ 'admin.waterways' | translate }} <span class="muted">({{ r.waterways }})</span></h4>
           <p class="muted">{{ 'admin.waterwaysHint' | translate }}</p>
           <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="waterwayBbox" /></mat-form-field>
@@ -70,7 +71,7 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
             <button mat-flat-button (click)="startPbf()" [disabled]="pbfStatus()?.running || !pbf.url">{{ (pbfStatus()?.running ? 'admin.routingBuilding' : 'admin.import') | translate }}</button></div>
           @if (pbfStatus(); as ps) { <ul class="progress">@for (p of ps.progress.slice(-6); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul> }
           <app-routing-corrections />
-          <ul class="progress">@for (p of r.progress.slice(-8); track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }}</span> [{{ p.phase }}] {{ p.message }}</li> }</ul>
+          <ul class="progress">@for (p of r.progress; track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }} (+{{ elapsed(r.progress[0].at, p.at) }})</span> [{{ p.phase }}] {{ p.message }}</li> }</ul>
         }
       </mat-card-content></mat-card>
       <mat-card appearance="outlined"><mat-card-content>
@@ -113,6 +114,7 @@ export class AdminPage {
   reports = signal<{ id: string; targetType: string; targetId: string; reporter: string; reason: string; status: string }[]>([]);
   loadReports(): void { this.api.get<typeof this.reports extends () => infer T ? T : never>('/api/admin/reports').subscribe(r => this.reports.set(r)); }
   resolve(r: { id: string }, hide: boolean): void { this.api.post(`/api/admin/reports/${r.id}/resolve`, { hide, resolution: hide ? 'hidden' : 'dismissed' }).subscribe(() => this.loadReports()); }
+  elapsed(from: string, to: string): string { const s = Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
   loadRouting(): void { this.api.get<RoutingStatus>('/api/routing/status').subscribe(r => this.routing.set(r)); }
   rebuild(): void { this.api.post('/api/admin/routing/rebuild', {}).subscribe({ next: () => setTimeout(() => this.loadRouting(), 500), error: e => this.result.set(errorMessage(e)) }); }
   waterwayBbox = '54.2,9.1,54.5,10.2';
