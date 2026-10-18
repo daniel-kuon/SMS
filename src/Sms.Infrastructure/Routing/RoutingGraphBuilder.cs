@@ -299,7 +299,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             {
                 if (!find.TryGetValue(id, out var c) || c == giant || attached.Contains(c)) continue;
                 strays++;
-                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, o.HarbourAccessM, m => find.TryGetValue(m.Id, out var mc) && mc == giant, ct);
+                // only water-graph nodes (ids below the passage range): the 40 nearest nodes of a channel end are its own skeleton otherwise
+                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, o.HarbourAccessM, m => find.TryGetValue(m.Id, out var mc) && mc == giant, ct, gridNodeCount);
                 if (n is null) continue;
                 relinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
                 attached.Add(c);
@@ -498,9 +499,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
 
     /// <summary>The nearest acceptable node whose link from <paramref name="p"/> does not cross land. The first 150 m at the start are
     /// ignored (a harbour point sits on its pier, a channel end on the shore).</summary>
-    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, STRtree<(IPreparedGeometry prepared, Geometry geom)> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct)
+    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, STRtree<(IPreparedGeometry prepared, Geometry geom)> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct, long maxId = long.MaxValue)
     {
-        foreach (var n in await NearestNodesAsync(conn, version, p.X, p.Y, maxM, 40, ct))
+        foreach (var n in await NearestNodesAsync(conn, version, p.X, p.Y, maxM, 40, ct, maxId))
         {
             if (!accept(n)) continue;
             var lenM = Haversine(p.Y, p.X, n.Y, n.X);
@@ -540,15 +541,16 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         return index;
     }
 
-    private static async Task<List<GraphNode>> NearestNodesAsync(NpgsqlConnection conn, int version, double x, double y, double maxM, int limit, CancellationToken ct)
+    /// <param name="maxId">Only nodes up to this id: the water-graph nodes come first, so a stray channel end can look for a water node past the hundreds of vertices of its own skeleton.</param>
+    private static async Task<List<GraphNode>> NearestNodesAsync(NpgsqlConnection conn, int version, double x, double y, double maxM, int limit, CancellationToken ct, long maxId = long.MaxValue)
     {
         var dLat = maxM / WaterGraphTiler.MPerDegLat; var dLng = dLat / Math.Max(0.1, Math.Cos(y * Math.PI / 180));
         await using var cmd = new NpgsqlCommand($"""
             SELECT id, ST_X(geom), ST_Y(geom) FROM routing_node
-            WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
+            WHERE graph_version = @v AND id <= @maxId AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
             ORDER BY geom <-> ST_SetSRID(ST_MakePoint(@x, @y), 4326) LIMIT {limit}
             """, conn) { CommandTimeout = 3600 };
-        cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y);
+        cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y); cmd.Parameters.AddWithValue("maxId", maxId);
         cmd.Parameters.AddWithValue("x1", x - dLng); cmd.Parameters.AddWithValue("y1", y - dLat); cmd.Parameters.AddWithValue("x2", x + dLng); cmd.Parameters.AddWithValue("y2", y + dLat);
         var result = new List<GraphNode>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
