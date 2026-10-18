@@ -262,7 +262,8 @@ export function addSeamarkOverlay(map: MlMap, tilesUrl: string): void {
     paint: {
       // quays, piers and breakwaters solid grey; ferry routes blue; cables and pipelines magenta; leading lines and tracks black – all but the shore dashed
       'line-color': ['case', ['==', ['get', 'type'], 'shoreline_construction'], '#757575', ['==', ['get', 'type'], 'ferry_route'], '#1565c0', ['in', ['get', 'type'], ['literal', ['cable_submarine', 'cable_overhead', 'pipeline_submarine', 'pipeline_overhead']]], '#a30075', ['in', ['get', 'type'], ['literal', ['fairway', 'restricted_area', 'separation_line', 'separation_boundary', 'separation_zone']]], '#7b1fa2', '#212121'],
-      'line-width': ['case', ['==', ['get', 'type'], 'shoreline_construction'], ['interpolate', ['linear'], ['zoom'], 12, 1, 17, 4], ['interpolate', ['linear'], ['zoom'], 10, 0.8, 16, 2]],
+      // one zoom curve only (MapLibre rejects a layer with two zoom-based subexpressions, which silently dropped the whole lines layer)
+      'line-width': ['interpolate', ['linear'], ['zoom'], 10, ['case', ['==', ['get', 'type'], 'shoreline_construction'], 0.6, 0.8], 17, ['case', ['==', ['get', 'type'], 'shoreline_construction'], 4, 2.3]],
       'line-dasharray': ['case', ['==', ['get', 'type'], 'shoreline_construction'], ['literal', [1, 0]], ['literal', [4, 3]]], 'line-opacity': 0.9,
     },
   });
