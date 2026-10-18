@@ -100,12 +100,17 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // one has to get in anyway; from there on only deep legs or the buoyed channel (passage edges carry no limit) continue
         // … and so is the harbour approach (HarbourAccessM around both ends): the charted fathom steps call a dredged fjord or marina
         // basin shallow, and one has to get in and out anyway (Nyborg Fjord: 1.8 m charted, 7 m dredged channel)
+        // the shallow approach legs that remain cost ×3: the buoyed channel (no depth limit, cost ×1) wins where one exists, the
+        // bare crossing of a charted flat is taken only when nothing else leads in
+        var costExpr = "cost, reverse_cost";
         if (draftM is { } dm)
         {
             var inv = System.Globalization.CultureInfo.InvariantCulture;
             var accessDeg = (builder.Options.HarbourAccessM / WaterGraphTiler.MPerDegLat).ToString(inv);
-            clearance += $" AND (min_depth_m IS NULL OR min_depth_m >= {(dm + builder.Options.DepthSafetyMarginM).ToString(inv)} OR source IN ({start}, {end}) OR target IN ({start}, {end})"
+            var limit = (dm + builder.Options.DepthSafetyMarginM).ToString(inv);
+            clearance += $" AND (min_depth_m IS NULL OR min_depth_m >= {limit} OR source IN ({start}, {end}) OR target IN ({start}, {end})"
                 + $" OR ST_DWithin(geom, ST_SetSRID(ST_MakePoint({a.X.ToString(inv)}, {a.Y.ToString(inv)}), 4326), {accessDeg}) OR ST_DWithin(geom, ST_SetSRID(ST_MakePoint({b.X.ToString(inv)}, {b.Y.ToString(inv)}), 4326), {accessDeg}))";
+            costExpr = $"CASE WHEN min_depth_m < {limit} THEN cost * 3 ELSE cost END AS cost, CASE WHEN min_depth_m < {limit} THEN reverse_cost * 3 ELSE reverse_cost END AS reverse_cost";
         }
         using var span = Activity.StartActivity("routing.route");
         span?.SetTag("routing.graph_version", version);
@@ -119,11 +124,11 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             var rows = await db.Database.SqlQueryRaw<PathRow>("""
                 SELECT r.seq AS "Seq", ST_X(n.geom) AS "X", ST_Y(n.geom) AS "Y"
                 FROM pgr_aStar(
-                    'SELECT id, source, target, cost, reverse_cost, x1, y1, x2, y2 FROM routing_edge WHERE graph_version = ' || {0} || ' AND geom && ST_MakeEnvelope(' || {1} || ',' || {2} || ',' || {3} || ',' || {4} || ', 4326)' || {7},
+                    'SELECT id, source, target, ' || {8} || ', x1, y1, x2, y2 FROM routing_edge WHERE graph_version = ' || {0} || ' AND geom && ST_MakeEnvelope(' || {1} || ',' || {2} || ',' || {3} || ',' || {4} || ', 4326)' || {7},
                     {5}::bigint, {6}::bigint, directed := false, heuristic := 2) r
                 JOIN routing_node n ON n.id = r.node AND n.graph_version = {0}
                 ORDER BY r.seq
-                """, version, env.MinX, env.MinY, env.MaxX, env.MaxY, start, end, clearance).ToListAsync(ct);
+                """, version, env.MinX, env.MinY, env.MaxX, env.MaxY, start, end, clearance, costExpr).ToListAsync(ct);
             if (rows.Count > 0) path = rows.Select(r => new Coordinate(r.X, r.Y)).ToList();
         }
         if (path is null) { logger.LogInformation("No sea route between nodes {Start} and {End}", start, end); return null; }
