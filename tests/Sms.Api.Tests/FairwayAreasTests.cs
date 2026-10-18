@@ -27,6 +27,24 @@ public class FairwayAreasTests
     }
 
     [Fact]
+    public void Military_and_no_entry_restricted_areas_are_no_go_areas_other_restrictions_are_not()
+    {
+        using var doc = JsonDocument.Parse("""
+            { "elements": [
+              { "type": "way", "id": 1, "tags": { "seamark:type": "restricted_area", "seamark:restricted_area:restriction": "entry_prohibited", "seamark:name": "Todendorf" }, "geometry": [ { "lat": 54.4, "lon": 10.6 }, { "lat": 54.4, "lon": 10.7 }, { "lat": 54.5, "lon": 10.7 }, { "lat": 54.4, "lon": 10.6 } ] },
+              { "type": "way", "id": 2, "tags": { "seamark:type": "restricted_area", "seamark:restricted_area:restriction": "no_anchoring" }, "geometry": [ { "lat": 54.0, "lon": 10.0 }, { "lat": 54.0, "lon": 10.1 }, { "lat": 54.1, "lon": 10.1 }, { "lat": 54.0, "lon": 10.0 } ] },
+              { "type": "way", "id": 3, "tags": { "seamark:type": "military_area", "seamark:military_area:category": "firing_danger_area" }, "geometry": [ { "lat": 54.2, "lon": 10.0 }, { "lat": 54.2, "lon": 10.1 }, { "lat": 54.3, "lon": 10.1 }, { "lat": 54.2, "lon": 10.0 } ] }
+            ] }
+            """);
+        var noGo = Waterways.ParseNoGoAreas(doc, F);
+        Assert.Equal(2, noGo.Count);
+        Assert.Equal("Sperrgebiet Todendorf (entry_prohibited)", noGo[0].label);
+        Assert.Equal("Sperrgebiet (military_area)", noGo[1].label);
+        Assert.False(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "no_anchoring;no_fishing" }));
+        Assert.True(Waterways.IsNoGoArea(new Dictionary<string, string> { ["seamark:type"] = "restricted_area", ["seamark:restricted_area:restriction"] = "no_anchoring;no_entry" }));
+    }
+
+    [Fact]
     public void Parses_closed_ways_and_multipolygon_outer_rings_as_fairway_areas()
     {
         using var doc = JsonDocument.Parse("""

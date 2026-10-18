@@ -96,16 +96,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // bridges lower than the ship's air draft close their passage edges (clearance_m is null elsewhere); charted depth areas
         // shallower than draft + margin close grid edges (min_depth_m is null on marked passages: a buoyed channel is followed anyway)
         var clearance = airDraftM is { } ad ? $" AND (clearance_m IS NULL OR clearance_m >= {ad.ToString(System.Globalization.CultureInfo.InvariantCulture)})" : "";
-        // the last/first HarbourAccessM into a harbour are exempt from the depth limit: the harbour basin and its approach are
-        // charted shallow at this resolution, and one has to get in anyway
+        // the edges at the two end nodes are exempt from the depth limit: a harbour basin is charted shallow at this resolution and
+        // one has to get in anyway; from there on only deep legs or the buoyed channel (passage edges carry no limit) continue
         if (draftM is { } dm)
-        {
-            var inv = System.Globalization.CultureInfo.InvariantCulture;
-            var accessDeg = (builder.Options.HarbourAccessM / WaterGraphTiler.MPerDegLat).ToString(inv);
-            clearance += $" AND (min_depth_m IS NULL OR min_depth_m >= {(dm + builder.Options.DepthSafetyMarginM).ToString(inv)}"
-                + $" OR ST_DWithin(geom, ST_SetSRID(ST_MakePoint({a.X.ToString(inv)}, {a.Y.ToString(inv)}), 4326), {accessDeg})"
-                + $" OR ST_DWithin(geom, ST_SetSRID(ST_MakePoint({b.X.ToString(inv)}, {b.Y.ToString(inv)}), 4326), {accessDeg}))";
-        }
+            clearance += $" AND (min_depth_m IS NULL OR min_depth_m >= {(dm + builder.Options.DepthSafetyMarginM).ToString(System.Globalization.CultureInfo.InvariantCulture)} OR source IN ({start}, {end}) OR target IN ({start}, {end}))";
         using var span = Activity.StartActivity("routing.route");
         span?.SetTag("routing.graph_version", version);
         var straightM = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X);

@@ -127,7 +127,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (!env.IsNull)
             {
                 var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-                var removed = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ExecuteDeleteAsync(ct);
+                var removed = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ExecuteDeleteAsync(ct);
                 Add("derivedReplaced", removed);
             }
         }
@@ -151,7 +151,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (req.Waterways)
             {
                 var r = await RoutingEndpoints.ImportWaterwaysAsync(Filter(doc, t => IsWaterway(t) || IsObstacle(t) || IsFairwayArea(t)), db, userId, ct, replaceExisting: false);
-                Add("waterways", r.Created); Add("bridges", r.Bridges); Add("locks", r.Locks); Add("fairwayAreas", r.FairwayAreas);
+                Add("waterways", r.Created); Add("bridges", r.Bridges); Add("locks", r.Locks); Add("fairwayAreas", r.FairwayAreas); Add("noGoAreas", r.NoGoAreas);
             }
             db.ChangeTracker.Clear();
             Report("import", $"{Math.Min(i + batch, elements.Count)}/{elements.Count} elements imported ({sw.Elapsed:hh\\:mm\\:ss})");
@@ -209,7 +209,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
 
     public static bool IsHarbour(IReadOnlyDictionary<string, string> t) => t.GetValueOrDefault("leisure") == "marina" || t.GetValueOrDefault("seamark:type") == "harbour" || t.GetValueOrDefault("harbour") == "yes";
     public static bool IsWaterway(IReadOnlyDictionary<string, string> t) => Waterways.IsNavigable(t);
-    public static bool IsFairwayArea(IReadOnlyDictionary<string, string> t) => t.GetValueOrDefault("seamark:type") == "fairway" && !t.ContainsKey("waterway");
+    public static bool IsFairwayArea(IReadOnlyDictionary<string, string> t) => (t.GetValueOrDefault("seamark:type") == "fairway" && !t.ContainsKey("waterway")) || Waterways.IsNoGoArea(t);
     public static bool IsObstacle(IReadOnlyDictionary<string, string> t) =>
         t.GetValueOrDefault("seamark:type") is "bridge" or "gate" || (t.ContainsKey("bridge") && (t.ContainsKey("seamark:bridge:clearance_height") || t.ContainsKey("bridge:movable"))) || t.GetValueOrDefault("waterway") == "lock_gate" || t.GetValueOrDefault("lock") == "yes";
 

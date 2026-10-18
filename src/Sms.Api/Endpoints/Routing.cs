@@ -8,7 +8,7 @@ using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
 
-public sealed record WaterwayImportResult(int Created, int Removed, int Bridges, int Locks, IReadOnlyList<object> Lines, int FairwayAreas = 0);
+public sealed record WaterwayImportResult(int Created, int Removed, int Bridges, int Locks, IReadOnlyList<object> Lines, int FairwayAreas = 0, int NoGoAreas = 0);
 public record CorrectionUpsert(CorrectionKind Kind, Geometry Geometry, string? Note, bool Active = true, double? ClearanceM = null);
 
 /// <summary>Spec 10 §10.4. Falls back to straight lines (method "straight-line") while no graph is built.</summary>
@@ -127,6 +127,12 @@ public static class RoutingEndpoints
             await current.IsAdminAsync(ct) ? (await db.RoutingCorrections.Where(x => x.Id == id).ExecuteDeleteAsync(ct) > 0 ? Results.NoContent() : Results.NotFound()) : Results.Forbid());
         // Spec 10 §10.5 step 1: OSM waterway centrelines for a bounding box become derived passages (reviewable in the corrections list).
         // depth areas for the region (or a bbox south,west,north,east) from the depth provider; the next rebuild uses them
+        // automatic quality check of the active graph (sample harbours × nearest neighbours); findings carry a position to look at
+        admin.MapPost("/audit", async (int? sample, double? maxNm, int? neighbours, double? draft, CurrentUser current, RoutingAudit audit, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            return Results.Ok(await audit.RunAsync(Math.Clamp(sample ?? 150, 1, 2000), Math.Clamp(maxNm ?? 40, 1, 200), Math.Clamp(neighbours ?? 3, 1, 10), draft, ct));
+        });
         admin.MapPost("/import-depths", async (string? bbox, CurrentUser current, SmsDbContext db, IDepthProvider depths, RoutingGraphBuilder builder, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
@@ -218,25 +224,34 @@ public static class RoutingEndpoints
         var ways = Waterways.Parse(doc, Geo.Factory);
         var obstacles = Waterways.ParseObstacles(doc);
         var areas = Waterways.ParseFairwayAreas(doc, Geo.Factory);
-        if (ways.Count == 0 && obstacles.Count == 0 && areas.Count == 0) return new WaterwayImportResult(0, 0, 0, 0, []);
+        var noGo = Waterways.ParseNoGoAreas(doc, Geo.Factory);
+        if (ways.Count == 0 && obstacles.Count == 0 && areas.Count == 0 && noGo.Count == 0) return new WaterwayImportResult(0, 0, 0, 0, []);
         if (ways.Count == 0)
         {
             foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, userId));
             foreach (var a in areas) db.RoutingCorrections.Add(ToCorrection(a, userId));
+            foreach (var a in noGo) db.RoutingCorrections.Add(ToBlock(a, userId));
             await db.SaveChangesAsync(ct);
-            return new WaterwayImportResult(0, 0, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), [], areas.Count);
+            return new WaterwayImportResult(0, 0, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), [], areas.Count, noGo.Count);
         }
         var extent = Geo.Factory.ToGeometry(new Envelope(ways.Select(w => w.Line.EnvelopeInternal).Aggregate(new Envelope(), (e, x) => { e.ExpandToInclude(x); return e; })));
         extent.SRID = 4326;
-        var old = replaceExisting ? await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct) : [];
+        var old = replaceExisting ? await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct) : [];
         db.RoutingCorrections.RemoveRange(old);
         foreach (var w in ways)
             db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = userId });
         foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, userId));
         foreach (var a in areas) db.RoutingCorrections.Add(ToCorrection(a, userId));
+        foreach (var a in noGo) db.RoutingCorrections.Add(ToBlock(a, userId));
         await db.SaveChangesAsync(ct);
-        return new WaterwayImportResult(ways.Count, old.Count, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), ways.Select(w => (object)new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }).ToList(), areas.Count);
+        return new WaterwayImportResult(ways.Count, old.Count, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), ways.Select(w => (object)new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }).ToList(), areas.Count, noGo.Count);
     }
+
+    /// <summary>A no-go area becomes a Block: the graph build treats it as land (routing_land), the audit reports routes through it.</summary>
+    private static RoutingCorrection ToBlock((Polygon area, string label) a, Guid? userId) => new()
+    {
+        Kind = CorrectionKind.Block, Source = CorrectionSource.Derived, Geometry = Srid(a.area), Active = true, CreatedById = userId, Note = a.label,
+    };
 
     private static RoutingCorrection ToCorrection((Polygon area, string? name) a, Guid? userId) => new()
     {

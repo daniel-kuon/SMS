@@ -16,7 +16,7 @@ public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? Clear
 /// </summary>
 public static class Waterways
 {
-    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0}););out center tags;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0}););out geom;""";
+    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0}););out center tags;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
 
     /// <summary>Navigable for yachts: an explicit boat/motorboat/ship permission, a CEMT class, or a fairway.</summary>
     public static bool IsNavigable(IReadOnlyDictionary<string, string> tags)
@@ -42,6 +42,39 @@ public static class Waterways
             lines.Add((f.CreateLineString(coords), tags.GetValueOrDefault("name")));
         }
         return Merge(lines, f);
+    }
+
+    private static readonly HashSet<string> NoEntry = ["no_entry", "entry_prohibited", "entry_restricted", "no_entry_except", "restricted_entry", "no_boating"];
+    /// <summary>Areas a yacht must stay out of (Sperrgebiete): military areas and restricted areas whose restriction forbids entry.</summary>
+    public static bool IsNoGoArea(IReadOnlyDictionary<string, string> tags)
+    {
+        var type = tags.GetValueOrDefault("seamark:type");
+        if (type == "military_area") return true;
+        if (type != "restricted_area") return false;
+        var r = tags.GetValueOrDefault("seamark:restricted_area:restriction") ?? tags.GetValueOrDefault("seamark:restriction") ?? "";
+        return r.Split(';').Any(x => NoEntry.Contains(x.Trim()));
+    }
+
+    /// <summary>No-go areas as polygons with a label ("Sperrgebiet Todendorf (entry_prohibited)").</summary>
+    public static List<(Polygon area, string label)> ParseNoGoAreas(JsonDocument doc, GeometryFactory f)
+    {
+        var result = new List<(Polygon, string)>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (!el.TryGetProperty("tags", out var t)) continue;
+            var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+            if (!IsNoGoArea(tags)) continue;
+            var name = tags.GetValueOrDefault("seamark:name") ?? tags.GetValueOrDefault("name");
+            var restriction = tags.GetValueOrDefault("seamark:restricted_area:restriction") ?? tags.GetValueOrDefault("seamark:restriction") ?? tags.GetValueOrDefault("seamark:type");
+            var label = $"Sperrgebiet{(name is null ? "" : " " + name)} ({restriction})";
+            var type = el.GetProperty("type").GetString();
+            if (type == "way" && el.TryGetProperty("geometry", out var geom)) { if (Ring(geom, f) is { } ring) result.Add((ring, label)); }
+            else if (type == "relation" && el.TryGetProperty("members", out var members))
+                foreach (var m in members.EnumerateArray())
+                    if (m.GetProperty("type").GetString() == "way" && m.TryGetProperty("role", out var role) && role.GetString() != "inner" && m.TryGetProperty("geometry", out var mg) && Ring(mg, f) is { } ring)
+                        result.Add((ring, label));
+        }
+        return result;
     }
 
     /// <summary>Fairway areas (seamark:type=fairway): closed ways and the outer rings of multipolygon relations, as polygons.</summary>
