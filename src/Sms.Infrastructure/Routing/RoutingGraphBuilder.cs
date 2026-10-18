@@ -286,6 +286,18 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         // merged away, the leg keeps the full geometry and the strictest depth and clearance (the search walked every vertex before:
         // 722 k passage edges, hundreds for the Eider alone)
         var keep = new HashSet<long>(linkNodes); foreach (var (id, _) in passageEndIds) keep.Add(id);
+        // the passage vertex nearest to a harbour stays a junction, so the harbour can hook into the canal or river it lies on
+        // (Schülperneuensiel on the Eider lost its access when the river became one leg from Tönning to the Gieselau canal)
+        var vertexIndex = new STRtree<GraphNode>();
+        foreach (var n in extraNodes) vertexIndex.Insert(new Envelope(n.X, n.X, n.Y, n.Y), n);
+        vertexIndex.Build();
+        foreach (var h in harbours)
+        {
+            var hc = h.Location.Coordinate; var cos = Math.Cos(hc.Y * Math.PI / 180);
+            var env = new Envelope(hc.X - accessDeg / cos, hc.X + accessDeg / cos, hc.Y - accessDeg, hc.Y + accessDeg);
+            var nearest = vertexIndex.Query(env).Select(n => (n, d: Haversine(hc.Y, hc.X, n.Y, n.X))).Where(x => x.d <= o.HarbourAccessM).OrderBy(x => x.d).FirstOrDefault();
+            if (nearest.n is not null) keep.Add(nearest.n.Id);
+        }
         var before = extraEdges.Count;
         extraEdges = PassageContraction.Contract(extraEdges, keep, nodeId => nodeId <= gridNodeCount);
         var extraNodeIds = extraEdges.SelectMany(e => new[] { e.Source, e.Target }).ToHashSet();
