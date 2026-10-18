@@ -11,7 +11,7 @@ using Sms.Domain;
 
 namespace Sms.Infrastructure.Routing;
 
-public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, LineString Geometry, int GraphVersion, string Method);
+public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, LineString Geometry, int GraphVersion, string Method, IReadOnlyDictionary<string, long>? Timings = null);
 public sealed record NearbyResult(Guid HarbourId, decimal DistanceNm, decimal StraightLineNm);
 public sealed record GraphStatus(int ActiveVersion, string? BuiltAt, string? Region, long Nodes, long Edges);
 
@@ -117,6 +117,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var straightM = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X);
         var maxM = builder.Options.MaxRouteNm * Nm;
         if (straightM > maxM) return null;
+        var timings = new Dictionary<string, long>(); var clock = Stopwatch.StartNew();
         List<Coordinate>? path = null;
         for (var pad = 0.3; pad <= 2.5 && path is null; pad *= 2)
         {
@@ -143,14 +144,16 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 }
             }
         }
+        timings["astar"] = clock.ElapsedMilliseconds; clock.Restart();
         if (path is null) { logger.LogInformation("No sea route between nodes {Start} and {End}", start, end); return null; }
         path.Insert(0, a.Coordinate); path.Add(b.Coordinate);
-        var smoothed = await SmoothAsync(path, version, ct, airDraftM, draftM);
+        var smoothed = await SmoothAsync(path, version, ct, airDraftM, draftM, timings);
+        timings["smooth"] = clock.ElapsedMilliseconds;
         var metres = 0.0;
         for (var i = 1; i < smoothed.Count; i++) metres += RoutingGraphBuilder.Haversine(smoothed[i - 1].Y, smoothed[i - 1].X, smoothed[i].Y, smoothed[i].X);
         var line = Geo.Factory.CreateLineString(smoothed.ToArray());
         span?.SetTag("routing.distance_nm", metres / Nm);
-        return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph");
+        return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph", timings);
     }
 
     /// <summary>
@@ -158,18 +161,22 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// are up to 20 km long, so the path is densified first (every ≤ 500 m) – otherwise the pulled string could only bend at
     /// grid nodes and kept a dog-leg when the direct line to the next node grazed the coast.
     /// </summary>
-    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null)
+    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null)
     {
+        var clock = Stopwatch.StartNew();
+        void Lap(string k) { if (timings is not null) timings[k] = clock.ElapsedMilliseconds; clock.Restart(); }
         path = Densify(path, 500);
         var env = new Envelope(); foreach (var c in path) env.ExpandToInclude(c); env.ExpandBy(0.05);
         var land = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", version, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
         var index = new STRtree<IPreparedGeometry>();
         foreach (var g in land) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
+        Lap("smooth-land");
         // what A* avoided must stay avoided when the string is pulled: too-low bridges (a circle around the point, a band along a
         // line), the impassable parts of bridges with charted spans, and too-shallow areas count as land
         {
             var radiusDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
-            var bridges = Obstacles.WithSpans((await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+            var envBox = Geo.Factory.ToGeometry(env); envBox.SRID = 4326;
+            var bridges = Obstacles.WithSpans((await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge) && c.Geometry.Intersects(envBox)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
                 .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList());
             foreach (var (g, _, clearance) in bridges)
             {
@@ -178,11 +185,13 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 if (b.EnvelopeInternal.Intersects(env)) index.Insert(b.EnvelopeInternal, PreparedGeometryFactory.Prepare(b));
             }
         }
+        Lap("smooth-bridges");
         if (draftM is { } dm)
         {
             var shallow = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_depth WHERE min_depth_m < {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", dm + builder.Options.DepthSafetyMarginM, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
             foreach (var g in shallow) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
         }
+        Lap("smooth-depth");
         // the channel zone (water next to a buoy chain, minus the chain's own corridor) counts as an obstacle too: where the chart
         // has no depth data (Wadden Sea gaps) nothing else stops the string from cutting straight across the flats the chain avoids
         var o = builder.Options;
@@ -201,6 +210,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 }
             }
         }
+        Lap("smooth-zone");
         index.Build();
         var result = new List<Coordinate> { path[0] };
         var i = 0;
@@ -217,6 +227,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             result.Add(path[j]);
             i = j;
         }
+        Lap("smooth-pull");
         return result;
     }
 

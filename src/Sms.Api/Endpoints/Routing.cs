@@ -61,7 +61,7 @@ public static class RoutingEndpoints
             return Results.Ok(new { method, disclaimer = Disclaimer, attribution = Attribution, ports });
         });
 
-        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, double? draft, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
+        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, double? draft, bool? debug, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
         {
             RouteResult? r = null;
             Point? a = null, b = null;
@@ -86,7 +86,7 @@ public static class RoutingEndpoints
                 var line = Geo.Factory.CreateLineString([a.Coordinate, b.Coordinate]);
                 return Results.Ok(new { distanceNm = nm, straightLineNm = nm, geometry = line, graphVersion = 0, method = "straight-line", disclaimer = Disclaimer, attribution = Attribution });
             }
-            return Results.Ok(new { distanceNm = r.DistanceNm, straightLineNm = r.StraightLineNm, geometry = r.Geometry, graphVersion = r.GraphVersion, method = r.Method, disclaimer = Disclaimer, attribution = Attribution });
+            return Results.Ok(new { distanceNm = r.DistanceNm, straightLineNm = r.StraightLineNm, geometry = r.Geometry, graphVersion = r.GraphVersion, method = r.Method, disclaimer = Disclaimer, attribution = Attribution, timings = debug == true ? r.Timings : null });
         });
 
         g.MapGet("/status", async (SeaRouter router, RoutingGraphBuilder builder, SmsDbContext db, CancellationToken ct) =>
