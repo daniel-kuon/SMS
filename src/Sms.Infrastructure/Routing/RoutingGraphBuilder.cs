@@ -291,6 +291,18 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             // the nearest node is not always a connected one: a channel skeleton in an enclosed basin, an anchor without a visible
             // neighbour. Components over everything written so far; stray passage ends get a link into the main component, and a
             // harbour is attached to the nearest node that belongs to it (or to a component that just got linked)
+            // skeleton gaps: two channel pieces that end a few metres apart (merger junctions, chunk borders, the mouth of a sound)
+            // are joined when the gap is short and land-free – both may already belong to the main component and still force a
+            // detour of miles around an island (Dalarö: 6.5 nm around instead of 1 km through the sound)
+            var gapLinks = new List<GraphEdge>(); var gapSeen = new HashSet<(long, long)>();
+            foreach (var (id, p) in passageEndIds)
+            {
+                var n = await NearestWaterLinkAsync(conn, version, linkLand, p, 200, m => m.Id != id && !gapSeen.Contains((Math.Min(m.Id, id), Math.Max(m.Id, id))), ct);
+                if (n is null) continue;
+                gapSeen.Add((Math.Min(n.Id, id), Math.Max(n.Id, id)));
+                gapLinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
+            }
+            await WriteEdgesAsync(conn, version, gapLinks, ct);
             // live union-find: a stray end links to the nearest node of any other component (land-free), and the two merge; chains
             // of such merges pull archipelago fragments together even where no main-component node is within reach
             var parent = await ComponentsAsync(conn, version, ct);
@@ -320,7 +332,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                     ?? await NearestWaterLinkAsync(conn, version, linkLand, h.Location.Coordinate, o.HarbourAccessM, _ => true, ct);
                 if (n is not null) access.Add((h.Id, n.Id, Haversine(h.Location.Y, h.Location.X, n.Y, n.X)));
             }
-            Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {strays} stray passage ends, {relinks.Count} relinked; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
+            Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {gapLinks.Count} gap links, {strays} stray passage ends, {relinks.Count} relinked; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
         }
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_harbour_access (graph_version, harbour_id, node_id, distance_m) FROM STDIN (FORMAT BINARY)", ct))
         {
