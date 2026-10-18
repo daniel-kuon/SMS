@@ -19,7 +19,8 @@ public enum TaskScope { Trip, Ship }
 public enum ProfileVisibility { Public, Registered }
 /// <summary>OpeningBridge: a movable bridge – no clearance limit, but a waiting-time penalty like a lock (spec 10 canals).</summary>
 /// <summary>Fairway: a marked channel area (polygon, OSM seamark:type=fairway) – open water next to it is penalised, water inside it is not.</summary>
-public enum CorrectionKind { Block, Passage, Bridge, Lock, OpeningBridge, Fairway }
+/// <summary>Avoid: a warning/restricted-entry area (firing range outside firing hours) – crossed only when the detour is long.</summary>
+public enum CorrectionKind { Block, Passage, Bridge, Lock, OpeningBridge, Fairway, Avoid }
 public enum CorrectionSource { Manual, Derived }
 
 /// <summary>16 compass points (spec 08).</summary>

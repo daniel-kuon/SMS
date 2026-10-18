@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
 using NetTopologySuite.Geometries;
 using Sms.Domain;
 using Sms.Infrastructure;
@@ -154,7 +155,8 @@ public static class RoutingEndpoints
             if (bbox.Split(',').Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
             using var doc = await Overpass.QueryAsync(http, cfg, string.Format(Waterways.OverpassQuery, bbox), ct);
             if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen oder eine Overpass-JSON-Datei hochladen.");
-            return Results.Ok(await ImportWaterwaysAsync(doc, db, current.Id, ct));
+            var b = bbox.Split(',').Select(x => double.Parse(x, CultureInfo.InvariantCulture)).ToArray();
+            return Results.Ok(await ImportWaterwaysAsync(doc, db, current.Id, ct, bbox: new Envelope(b[1], b[3], b[0], b[2])));
         });
         admin.MapPost("/import-waterways-file", async (HttpRequest http, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
         {
@@ -218,25 +220,23 @@ public static class RoutingEndpoints
         });
     }
 
-    /// <summary>Replaces derived passages that lie inside the imported data's extent, keeps manual ones and derived ones elsewhere.</summary>
-    public static async Task<WaterwayImportResult> ImportWaterwaysAsync(JsonDocument doc, SmsDbContext db, Guid? userId, CancellationToken ct, bool replaceExisting = true)
+    /// <summary>Replaces the derived corrections that touch the imported extent (the queried bbox, else the envelope of the parsed ways),
+    /// keeps manual ones and derived ones elsewhere. The bbox matters for chunked imports: a river fetched by one chunk stretches the
+    /// envelope of its ways over the neighbouring chunks, whose corrections would otherwise be deleted again.</summary>
+    public static async Task<WaterwayImportResult> ImportWaterwaysAsync(JsonDocument doc, SmsDbContext db, Guid? userId, CancellationToken ct, bool replaceExisting = true, Envelope? bbox = null)
     {
         var ways = Waterways.Parse(doc, Geo.Factory);
         var obstacles = Waterways.ParseObstacles(doc);
         var areas = Waterways.ParseFairwayAreas(doc, Geo.Factory);
         var noGo = Waterways.ParseNoGoAreas(doc, Geo.Factory);
         if (ways.Count == 0 && obstacles.Count == 0 && areas.Count == 0 && noGo.Count == 0) return new WaterwayImportResult(0, 0, 0, 0, []);
-        if (ways.Count == 0)
+        var env = bbox ?? (ways.Count == 0 ? null : ways.Select(w => w.Line.EnvelopeInternal).Aggregate(new Envelope(), (e, x) => { e.ExpandToInclude(x); return e; }));
+        var old = new List<RoutingCorrection>();
+        if (replaceExisting && env is not null)
         {
-            foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, userId));
-            foreach (var a in areas) db.RoutingCorrections.Add(ToCorrection(a, userId));
-            foreach (var a in noGo) db.RoutingCorrections.Add(ToBlock(a, userId));
-            await db.SaveChangesAsync(ct);
-            return new WaterwayImportResult(0, 0, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), [], areas.Count, noGo.Count);
+            var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
+            old = await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
         }
-        var extent = Geo.Factory.ToGeometry(new Envelope(ways.Select(w => w.Line.EnvelopeInternal).Aggregate(new Envelope(), (e, x) => { e.ExpandToInclude(x); return e; })));
-        extent.SRID = 4326;
-        var old = replaceExisting ? await db.RoutingCorrections.Where(c => (c.Kind == CorrectionKind.Passage || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Within(extent)).ToListAsync(ct) : [];
         db.RoutingCorrections.RemoveRange(old);
         foreach (var w in ways)
             db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = userId });
@@ -247,10 +247,11 @@ public static class RoutingEndpoints
         return new WaterwayImportResult(ways.Count, old.Count, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), ways.Select(w => (object)new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }).ToList(), areas.Count, noGo.Count);
     }
 
-    /// <summary>A no-go area becomes a Block: the graph build treats it as land (routing_land), the audit reports routes through it.</summary>
-    private static RoutingCorrection ToBlock((Polygon area, string label) a, Guid? userId) => new()
+    /// <summary>A no-go area becomes a Block (the graph build treats it as land, the audit reports routes through it); a warning area
+    /// becomes an Avoid (edges inside cost ×AvoidPenaltyFactor).</summary>
+    private static RoutingCorrection ToBlock((Polygon area, string label, bool hard) a, Guid? userId) => new()
     {
-        Kind = CorrectionKind.Block, Source = CorrectionSource.Derived, Geometry = Srid(a.area), Active = true, CreatedById = userId, Note = a.label,
+        Kind = a.hard ? CorrectionKind.Block : CorrectionKind.Avoid, Source = CorrectionSource.Derived, Geometry = Srid(a.area), Active = true, CreatedById = userId, Note = a.label,
     };
 
     private static RoutingCorrection ToCorrection((Polygon area, string? name) a, Guid? userId) => new()

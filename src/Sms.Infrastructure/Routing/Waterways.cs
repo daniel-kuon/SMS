@@ -44,7 +44,9 @@ public static class Waterways
         return Merge(lines, f);
     }
 
-    private static readonly HashSet<string> NoEntry = ["no_entry", "entry_prohibited", "entry_restricted", "no_entry_except", "restricted_entry", "no_boating"];
+    /// <summary>Hard: never enter (Sperrgebiet). Soft: entry restricted at times (Warngebiet, firing range) – avoided, not blocked.</summary>
+    private static readonly HashSet<string> NoEntry = ["no_entry", "entry_prohibited", "no_entry_except", "no_boating"];
+    private static readonly HashSet<string> RestrictedEntry = ["entry_restricted", "restricted_entry", "to_be_avoided"];
     /// <summary>Areas a yacht must stay out of (Sperrgebiete): military areas and restricted areas whose restriction forbids entry.</summary>
     public static bool IsNoGoArea(IReadOnlyDictionary<string, string> tags)
     {
@@ -52,13 +54,21 @@ public static class Waterways
         if (type == "military_area") return true;
         if (type != "restricted_area") return false;
         var r = tags.GetValueOrDefault("seamark:restricted_area:restriction") ?? tags.GetValueOrDefault("seamark:restriction") ?? "";
+        return r.Split(';').Any(x => NoEntry.Contains(x.Trim()) || RestrictedEntry.Contains(x.Trim()));
+    }
+
+    /// <summary>True when the area must never be entered (Block); false for a restricted/warning area (Avoid).</summary>
+    public static bool IsHardNoGo(IReadOnlyDictionary<string, string> tags)
+    {
+        if (tags.GetValueOrDefault("seamark:type") == "military_area") return true;
+        var r = tags.GetValueOrDefault("seamark:restricted_area:restriction") ?? tags.GetValueOrDefault("seamark:restriction") ?? "";
         return r.Split(';').Any(x => NoEntry.Contains(x.Trim()));
     }
 
     /// <summary>No-go areas as polygons with a label ("Sperrgebiet Todendorf (entry_prohibited)").</summary>
-    public static List<(Polygon area, string label)> ParseNoGoAreas(JsonDocument doc, GeometryFactory f)
+    public static List<(Polygon area, string label, bool hard)> ParseNoGoAreas(JsonDocument doc, GeometryFactory f)
     {
-        var result = new List<(Polygon, string)>();
+        var result = new List<(Polygon, string, bool)>();
         foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
         {
             if (!el.TryGetProperty("tags", out var t)) continue;
@@ -66,13 +76,14 @@ public static class Waterways
             if (!IsNoGoArea(tags)) continue;
             var name = tags.GetValueOrDefault("seamark:name") ?? tags.GetValueOrDefault("name");
             var restriction = tags.GetValueOrDefault("seamark:restricted_area:restriction") ?? tags.GetValueOrDefault("seamark:restriction") ?? tags.GetValueOrDefault("seamark:type");
-            var label = $"Sperrgebiet{(name is null ? "" : " " + name)} ({restriction})";
+            var hard = IsHardNoGo(tags);
+            var label = $"{(hard ? "Sperrgebiet" : "Warngebiet")}{(name is null ? "" : " " + name)} ({restriction})";
             var type = el.GetProperty("type").GetString();
-            if (type == "way" && el.TryGetProperty("geometry", out var geom)) { if (Ring(geom, f) is { } ring) result.Add((ring, label)); }
+            if (type == "way" && el.TryGetProperty("geometry", out var geom)) { if (Ring(geom, f) is { } ring) result.Add((ring, label, hard)); }
             else if (type == "relation" && el.TryGetProperty("members", out var members))
                 foreach (var m in members.EnumerateArray())
                     if (m.GetProperty("type").GetString() == "way" && m.TryGetProperty("role", out var role) && role.GetString() != "inner" && m.TryGetProperty("geometry", out var mg) && Ring(mg, f) is { } ring)
-                        result.Add((ring, label));
+                        result.Add((ring, label, hard));
         }
         return result;
     }
