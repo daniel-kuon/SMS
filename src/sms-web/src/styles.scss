@@ -39,7 +39,8 @@ html, body { height: 100%; margin: 0; font-family: Roboto, sans-serif; backgroun
 .photo-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: pointer; }
 .disclaimer { font-size: 11px; color: #777; }
 .maplibregl-popup-content { font: inherit; padding: 8px 10px; }
-.photo-marker { border-radius: 50%; border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,.4); object-fit: cover; }
+.photo-marker { border-radius: 50%; border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,.4); object-fit: cover; cursor: pointer; }
+.photo-marker.sel { border-color: #e65100; outline: 2px solid #e65100; z-index: 1; }
 
 // sea-mark popups (core/map.ts)
 .seamark-popup { font-size: 13px; line-height: 1.4; } .seamark-popup .pos { margin: 6px 0; } .seamark-popup .links { display: flex; gap: 8px; align-items: center; } .seamark-popup button { font-size: 12px; }

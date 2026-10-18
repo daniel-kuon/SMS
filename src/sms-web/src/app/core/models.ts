@@ -29,7 +29,7 @@ export interface Trip extends TripSummary {
   description: string | null; timeZone: string; plannedStartHarbourId: string | null; plannedEndHarbourId: string | null; currency: string; costsLockedAt: string | null;
   crew: Crew[]; me: Crew | null; canEdit: boolean; canWriteLogbook: boolean; isCrew: boolean; costsVisible: boolean; trackVisibility: Visibility; publicPositionDelayMinutes: number;
 }
-export interface Leg { id: string; order: number; fromHarbourId: string; fromName: string; toHarbourId: string; toName: string; plannedDate: string | null; distanceNm: number | null; etaHours: number | null; }
+export interface Leg { id: string; order: number; alternative: number; fromHarbourId: string; fromName: string; toHarbourId: string; toName: string; plannedDate: string | null; distanceNm: number | null; etaHours: number | null; }
 
 export interface EntryCrew { crewMemberId: string | null; userId: string | null; name: string; }
 export interface LogbookEntry {
@@ -37,6 +37,7 @@ export interface LogbookEntry {
   departedAt: string; arrivedAt: string; duration: string; engineHoursStart: number | null; engineHoursEnd: number | null; logStart: number | null; logEnd: number | null;
   windSpeed: string | null; windDirection: string | null; weather: string | null; seaState: string | null; sailedDistanceNm: number | null; sailsNotes: string | null; notes: string | null;
   visibility: Visibility; authorId: string; crew: EntryCrew[]; crewList: string; canEdit: boolean;
+  routeGeometry?: { type: 'LineString'; coordinates: number[][] } | null;
 }
 export interface LogbookDefaults { startHarbourId: string | null; startHarbourName: string | null; engineHoursStart: number | null; logStart: number | null; crew: EntryCrew[]; }
 

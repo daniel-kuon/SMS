@@ -1,4 +1,4 @@
-import { Component, inject, input, model, output, signal } from '@angular/core';
+import { Component, inject, input, model, output, signal, SimpleChanges } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatDialog, MatDialogModule, MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
@@ -81,7 +81,7 @@ export class HarbourSelect {
     this.query$.pipe(debounceTime(200), distinctUntilChanged(), switchMap(q => this.api.get<HarbourMarker[]>('/api/harbours', { q, limit: 15 }))).subscribe(h => this.hits.set(h));
   }
   ngOnInit(): void { if (this.harbourName()) this.text.set(this.harbourName()!); }
-  ngOnChanges(): void { if (this.harbourName() && !this.text()) this.text.set(this.harbourName()!); }
+  ngOnChanges(c: SimpleChanges): void { if (c['harbourName'] && this.harbourName()) this.text.set(this.harbourName()!); } // also when set from outside (map pick)
   display = (h: HarbourMarker | string | null) => (typeof h === 'string' ? h : h?.name ?? '');
   onType(v: string | HarbourMarker): void {
     if (typeof v !== 'string') return;

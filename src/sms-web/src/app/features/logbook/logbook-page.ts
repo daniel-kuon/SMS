@@ -1,4 +1,4 @@
-import { Component, effect, inject, input, signal } from '@angular/core';
+import { Component, effect, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
@@ -46,14 +46,17 @@ const WIND = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW'
       <ng-container matColumnDef="crew"><th mat-header-cell *matHeaderCellDef>{{ 'logbook.crew' | translate }}</th><td mat-cell *matCellDef="let e">{{ e.crewList }}</td></ng-container>
       <ng-container matColumnDef="visibility"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let e"><span class="chip" [class]="'chip ' + e.visibility.toLowerCase()">{{ 'visibility.' + e.visibility | translate }}</span></td></ng-container>
       <ng-container matColumnDef="actions"><th mat-header-cell *matHeaderCellDef></th><td mat-cell *matCellDef="let e">@if (e.canEdit || canWrite()) { <button mat-icon-button (click)="edit(e)"><mat-icon>edit</mat-icon></button><button mat-icon-button (click)="remove(e)"><mat-icon>delete</mat-icon></button> }</td></ng-container>
-      <tr mat-header-row *matHeaderRowDef="cols"></tr><tr mat-row *matRowDef="let e; columns: cols"></tr>
+      <tr mat-header-row *matHeaderRowDef="cols"></tr><tr mat-row *matRowDef="let e; columns: cols" [attr.data-sel]="'entry:' + e.id" [class.sel]="selectedId() === e.id" (click)="rowSelect.emit(e.id)"></tr>
     </table></div>
     <mat-paginator [length]="total()" [pageSize]="pageSize" [pageSizeOptions]="[10, 25, 50, 100]" (page)="page($event)" />`,
-  styles: `.scroll { overflow-x: auto; } .full-width { width: 100%; } .toolbar { padding: 8px 0; }`,
+  styles: `.scroll { overflow-x: auto; } .full-width { width: 100%; } .toolbar { padding: 8px 0; } tr.sel { background: #fff3e0; }`,
 })
 export class LogbookTable {
   private api = inject(Api); private dialog = inject(MatDialog);
   shipId = input.required<string>(); tripId = input<string | null>(null); canWrite = input(false);
+  /** Trip page: opens the entry editor next to the map instead of the plain dialog; selection is synced with the map. */
+  editor = input<((e?: LogbookEntry) => Promise<boolean>) | null>(null);
+  selectedId = input<string | null>(null); rowSelect = output<string>();
   entries = signal<LogbookEntry[]>([]); total = signal(0);
   cols = ['departedAt', 'start', 'end', 'arrivedAt', 'duration', 'distance', 'wind', 'engine', 'crew', 'visibility', 'actions'];
   year: number | null = null; years = Array.from({ length: 15 }, (_, i) => new Date().getFullYear() - i);
@@ -66,7 +69,10 @@ export class LogbookTable {
   }
   page(e: PageEvent): void { this.pageIndex = e.pageIndex; this.pageSize = e.pageSize; this.load(); }
   sort(s: Sort): void { this.sortField = s.direction ? s.active : ''; this.load(); }
-  edit(e?: LogbookEntry): void { this.dialog.open(EntryDialog, { data: { shipId: this.shipId(), tripId: this.tripId(), entry: e }, width: '800px' }).afterClosed().subscribe(ok => ok && this.load()); }
+  edit(e?: LogbookEntry): void {
+    const editor = this.editor();
+    if (editor) { void editor(e).then(ok => ok && this.load()); return; }
+    this.dialog.open(EntryDialog, { data: { shipId: this.shipId(), tripId: this.tripId(), entry: e }, width: '800px' }).afterClosed().subscribe(ok => ok && this.load()); }
   async remove(e: LogbookEntry): Promise<void> { if (await confirm(this.dialog, 'Eintrag löschen?')) this.api.delete(`/api/logbook/${e.id}`).subscribe(() => this.load()); }
 }
 
@@ -90,8 +96,17 @@ export class LogbookPage {
     <h2 mat-dialog-title>{{ data.entry ? ('common.edit' | translate) : ('logbook.newEntry' | translate) }}</h2>
     <mat-dialog-content class="form-grid" (input)="saveDraft()" (change)="saveDraft()">
       <p class="muted full draft-hint">{{ 'logbook.draftHint' | translate }}@if (restored()) { · {{ 'logbook.draftRestored' | translate }} <button mat-button (click)="discardDraft()">{{ 'logbook.discardDraft' | translate }}</button> }</p>
-      <app-harbour-select [label]="'logbook.startHarbour' | translate" [(harbourId)]="m.startHarbourId" [harbourName]="startName()" [required]="true" />
-      <app-harbour-select [label]="'logbook.endHarbour' | translate" [(harbourId)]="m.endHarbourId" [harbourName]="endName()" [required]="true" />
+      <app-harbour-select [label]="'logbook.startHarbour' | translate" [(harbourId)]="m.startHarbourId" [harbourName]="startName()" [required]="true" (selected)="startName.set($event.name); loadRoute()" />
+      <app-harbour-select [label]="'logbook.endHarbour' | translate" [(harbourId)]="m.endHarbourId" [harbourName]="endName()" [required]="true" (selected)="endName.set($event.name); loadRoute()" />
+      @if (data.map) {
+        <div class="full row">
+          <button mat-stroked-button type="button" (click)="pickEnd()"><mat-icon>ads_click</mat-icon> {{ 'logbook.pickEnd' | translate }}</button>
+          <button mat-stroked-button type="button" (click)="loadRoute()" [disabled]="!m.startHarbourId || !m.endHarbourId"><mat-icon>route</mat-icon> {{ 'logbook.loadRoute' | translate }}</button>
+          <button mat-button type="button" (click)="resetRoute()"><mat-icon>undo</mat-icon> {{ 'logbook.resetRoute' | translate }}</button>
+          <span class="muted">{{ routeHint() }}</span>
+        </div>
+        <p class="muted full route-help">{{ 'logbook.routeHelp' | translate }}</p>
+      }
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.departed' | translate }}</mat-label><input matInput type="datetime-local" [(ngModel)]="m.departedAt" required /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.arrived' | translate }}</mat-label><input matInput type="datetime-local" [(ngModel)]="m.arrivedAt" required /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'logbook.engineStart' | translate }}</mat-label><input matInput type="number" step="0.1" [(ngModel)]="m.engineHoursStart" /></mat-form-field>
@@ -116,7 +131,7 @@ export class LogbookPage {
     <mat-dialog-actions align="end"><button mat-button mat-dialog-close>{{ 'common.cancel' | translate }}</button><button mat-flat-button (click)="save()">{{ 'common.save' | translate }}</button></mat-dialog-actions>`,
 })
 export class EntryDialog {
-  data = inject<{ shipId: string; tripId: string | null; entry?: LogbookEntry; suggestion?: { departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number } }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api); private auth = inject(AuthService); private translate = inject(TranslateService);
+  data = inject<{ shipId: string; tripId: string | null; entry?: LogbookEntry; map?: EntryMapBridge; defaultStart?: { id: string; name: string } | null; suggestion?: { departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number } }>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api); private auth = inject(AuthService); private translate = inject(TranslateService);
   wind = WIND; error = signal(''); startName = signal<string | null>(this.data.entry?.startHarbour ?? null); endName = signal<string | null>(this.data.entry?.endHarbour ?? null);
   crew: (EntryCrew & { selected: boolean })[] = []; guest = '';
   private offline = inject(OfflineQueue); restored = signal(false);
@@ -129,10 +144,11 @@ export class EntryDialog {
 
   constructor() {
     const draft = drafts.load<EntryDraft>(this.draftScope);
-    if (draft) { this.m = draft.m; this.crew = draft.crew; this.startName.set(draft.startName); this.endName.set(draft.endName); this.restored.set(true); return; }
-    if (this.e) { this.crew = this.e.crew.map(c => ({ ...c, selected: true })); return; }
+    if (draft) { this.m = draft.m; this.crew = draft.crew; this.startName.set(draft.startName); this.endName.set(draft.endName); this.restored.set(true); this.initRoute(); return; }
+    if (this.e) { this.crew = this.e.crew.map(c => ({ ...c, selected: true })); this.initRoute(); return; }
     this.api.get<LogbookDefaults>(`/api/ships/${this.data.shipId}/logbook/new-defaults`, { trip: this.data.tripId }).subscribe(d => {
-      this.m.startHarbourId = d.startHarbourId; this.startName.set(d.startHarbourName); this.m.engineHoursStart = d.engineHoursStart; this.m.logStart = d.logStart;
+      const start = d.startHarbourId ? { id: d.startHarbourId, name: d.startHarbourName ?? '' } : this.data.defaultStart ?? null; // previous entry's end, else the plan's current stop
+      this.m.startHarbourId = start?.id ?? null; this.startName.set(start?.name ?? null); this.m.engineHoursStart = d.engineHoursStart; this.m.logStart = d.logStart;
       this.crew = d.crew.map(c => ({ ...c, selected: true }));
       const s = this.data.suggestion;
       if (s) { // prefilled from a detected harbour stop (spec 12 §12.2)
@@ -140,7 +156,36 @@ export class EntryDialog {
         if (s.startHarbourId) { this.m.startHarbourId = s.startHarbourId; this.startName.set(s.startHarbourName); }
         if (s.endHarbourId) { this.m.endHarbourId = s.endHarbourId; this.endName.set(s.endHarbourName); }
       }
+      this.initRoute();
     });
+  }
+
+  // --- route on the trip map (docs/14): routed line between the harbours, adjusted on the map, stored as routeGeometry
+  routeHint = signal(''); private routeReset = false;
+  private initRoute(): void {
+    const stored = this.e?.routeGeometry?.coordinates;
+    if (stored?.length) this.data.map?.showRoute(stored); else this.loadRoute();
+  }
+  loadRoute(): void {
+    const map = this.data.map; const from = this.m.startHarbourId, to = this.m.endHarbourId;
+    if (!map || !from || !to) return;
+    this.routeReset = false; this.routeHint.set('…');
+    this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] } }>('/api/routing/route', { fromHarbour: from, toHarbour: to }).subscribe({
+      next: r => { map.showRoute(r.geometry.coordinates); this.routeHint.set(`${r.distanceNm} sm`); this.m.sailedDistanceNm ??= r.distanceNm; },
+      error: err => this.routeHint.set(errorMessage(err)),
+    });
+  }
+  async pickEnd(): Promise<void> {
+    const h = await this.data.map?.pickHarbour(this.m.startHarbourId);
+    if (!h) return;
+    this.m.endHarbourId = h.id; this.endName.set(h.name); this.saveDraft(); this.loadRoute();
+  }
+  resetRoute(): void { this.routeReset = true; this.data.map?.showRoute(null); this.routeHint.set(''); }
+  private routeGeometry(): { type: 'LineString'; coordinates: number[][] } | null {
+    if (!this.data.map) return null; // null keeps the stored route
+    if (this.routeReset) return { type: 'LineString', coordinates: [] }; // empty clears it
+    const c = this.data.map.route();
+    return c && c.length >= 2 ? { type: 'LineString', coordinates: c } : null;
   }
   weatherHint = signal('');
   /** Wind, weather and sea state condensed from the weather recorded along the live track of this leg. */
@@ -160,7 +205,7 @@ export class EntryDialog {
   discardDraft(): void { drafts.clear(this.draftScope); this.ref.close(false); }
   save(): void {
     if (!this.m.startHarbourId || !this.m.endHarbourId || !this.m.departedAt || !this.m.arrivedAt) { this.error.set('Start- und Zielhafen, Ablegen und Ankunft angeben.'); return; }
-    const body = { ...this.m, tripId: this.data.tripId, departedAt: new Date(this.m.departedAt).toISOString(), arrivedAt: new Date(this.m.arrivedAt).toISOString(),
+    const body = { ...this.m, tripId: this.data.tripId, routeGeometry: this.routeGeometry(), departedAt: new Date(this.m.departedAt).toISOString(), arrivedAt: new Date(this.m.arrivedAt).toISOString(),
       crew: this.crew.filter(c => c.selected).map(c => ({ crewMemberId: c.crewMemberId, userId: c.userId, guestName: c.crewMemberId || c.userId ? null : c.name })) };
     const method = this.e ? 'PUT' : 'POST'; const url = this.e ? `/api/logbook/${this.e.id}` : `/api/ships/${this.data.shipId}/logbook`;
     const done = () => { drafts.clear(this.draftScope); this.ref.close(true); };
@@ -174,6 +219,13 @@ export class EntryDialog {
       },
     });
   }
+}
+
+/** The trip page's map, handed to the entry dialog: harbour pick and the editable route line. */
+export interface EntryMapBridge {
+  pickHarbour(from: string | null): Promise<{ id: string; name: string } | null>;
+  showRoute(coords: number[][] | null): void;
+  route(): number[][] | null;
 }
 
 type EntryDraft = { m: EntryDialog['m']; crew: EntryDialog['crew']; startName: string | null; endName: string | null };
