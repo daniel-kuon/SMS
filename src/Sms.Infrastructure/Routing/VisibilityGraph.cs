@@ -16,7 +16,8 @@ namespace Sms.Infrastructure.Routing;
 /// </summary>
 public static class VisibilityGraph
 {
-    public sealed record Options(double LatticeM = 20_000, double LatticeClearM = 3_000, double MaxVisibilityM = 40_000, int VisibleNeighbours = 24);
+    /// <param name="NarrowLegM">Legs up to this length that fail the coast-buffer visibility but pass against the fine obstacles are added at ×NarrowLegFactor (short constrictions: a sound entrance, a harbour mouth).</param>
+    public sealed record Options(double LatticeM = 20_000, double LatticeClearM = 3_000, double MaxVisibilityM = 40_000, int VisibleNeighbours = 24, double NarrowLegM = 1_000, double NarrowLegFactor = 1.5);
 
     /// <summary>Nodes sit this far outside the obstacle boundary, so a leg along a straight stretch of coast touches nothing and a leg into land is a plain intersection.</summary>
     public const double OffsetM = 1.0;
@@ -130,9 +131,15 @@ public static class VisibilityGraph
     /// <summary>Visibility edges: each node to its nearest visible neighbours within MaxVisibilityM (both directions deduplicated).</summary>
     /// <summary>Visibility edges. Prepared geometries are not safe to share between threads (their lazily built indexes answered
     /// wrong under contention), so every worker thread prepares its own copy of the obstacle polygons.</summary>
-    public static List<GraphEdge> Edges(IReadOnlyList<GraphNode> nodes, IReadOnlyList<Polygon> polygons, Options o)
+    public static List<GraphEdge> Edges(IReadOnlyList<GraphNode> nodes, IReadOnlyList<Polygon> polygons, Options o) => Edges(nodes, polygons, null, o);
+
+    /// <param name="finePolygons">Land with a small buffer: a short leg that the coast buffer closes (a constriction narrower than twice the buffer)
+    /// is still added when it clears these, at ×NarrowLegFactor. Null = off.</param>
+    public static List<GraphEdge> Edges(IReadOnlyList<GraphNode> nodes, IReadOnlyList<Polygon> polygons, IReadOnlyList<Polygon>? finePolygons, Options o)
     {
         using var perThread = new ThreadLocal<STRtree<IPreparedGeometry>>(() => Index(polygons));
+        using var perThreadFine = new ThreadLocal<STRtree<IPreparedGeometry>?>(() => finePolygons is null ? null : Index(finePolygons));
+        var narrow = new ConcurrentDictionary<(long, long), bool>();
         var index = new STRtree<GraphNode>();
         foreach (var n in nodes) index.Insert(new Envelope(n.X, n.X, n.Y, n.Y), n);
         index.Build();
@@ -155,14 +162,23 @@ public static class VisibilityGraph
                 var sector = (int)Math.Floor((Math.Atan2(m.Y - n.Y, (m.X - n.X) * cos) + Math.PI) / (2 * Math.PI) * 8) & 7;
                 if (sectors[sector] >= perSector) continue;
                 examined++;
-                if (!Visible(n, m, perThread.Value!)) continue;
+                if (!Visible(n, m, perThread.Value!))
+                {
+                    // a short leg through a constriction the coast buffer closes: allowed against the fine land, priced
+                    var fine = perThreadFine.Value;
+                    if (fine is null || RoutingGraphBuilder.Haversine(n.Y, n.X, m.Y, m.X) > o.NarrowLegM || !Visible(n, m, fine)) continue;
+                    narrow[(Math.Min(n.Id, m.Id), Math.Max(n.Id, m.Id))] = true;
+                }
                 found++; sectors[sector]++;
                 if (n.Id < m.Id) pairs.Add((n.Id, m.Id, n, m)); else pairs.Add((m.Id, n.Id, m, n));
             }
         });
         var result = new List<GraphEdge>();
         foreach (var (a, b, na, nb) in pairs.Distinct(new PairKey()))
-            result.Add(new GraphEdge(a, b, RoutingGraphBuilder.Haversine(na.Y, na.X, nb.Y, nb.X), Geo.Factory.CreateLineString([new Coordinate(na.X, na.Y), new Coordinate(nb.X, nb.Y)])));
+        {
+            var e = new GraphEdge(a, b, RoutingGraphBuilder.Haversine(na.Y, na.X, nb.Y, nb.X), Geo.Factory.CreateLineString([new Coordinate(na.X, na.Y), new Coordinate(nb.X, nb.Y)]));
+            result.Add(narrow.ContainsKey((a, b)) ? e with { Cost = e.Cost * o.NarrowLegFactor } : e);
+        }
         return result;
     }
 

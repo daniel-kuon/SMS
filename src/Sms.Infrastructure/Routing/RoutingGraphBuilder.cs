@@ -43,6 +43,10 @@ public sealed class RoutingOptions
     public double AvoidPenaltyFactor { get; set; } = 3;
     /// <summary>A derived channel through water charted shallower than the default yacht (not drying) costs ×this: the depth areas are coarse in narrow sounds.</summary>
     public double ShallowChannelFactor { get; set; } = 1.5;
+    /// <summary>A leg up to this length that the coast buffer closes is still added when it clears the land buffered by NarrowBufferM, at ×NarrowLegFactor (sound entrances, harbour mouths narrower than 2 × CoastBufferM). 0 = off.</summary>
+    public double NarrowLegM { get; set; } = 1000;
+    public double NarrowBufferM { get; set; } = 40;
+    public double NarrowLegFactor { get; set; } = 1.5;
     public double MaxRouteNm { get; set; } = 500;
     /// <summary>Draft assumed when a route is asked for without a ship (a typical cruising yacht): charted shallows below it are avoided by default.</summary>
     public double DefaultDraftM { get; set; } = 1.5;
@@ -437,12 +441,14 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     {
         // 1. obstacles: land buffered by the coast distance, unioned and simplified, in 2° chunks (polygons on a chunk border appear twice – harmless for tests, corners are deduplicated)
         var polygons = await ObstaclePolygonsAsync(conn, version, region, o, ct);
+        // the same land with a small buffer: short legs through a constriction the coast buffer closes are tested against it
+        var finePolygons = o.NarrowLegM > 0 ? await ObstaclePolygonsAsync(conn, version, region, o, ct, o.NarrowBufferM) : null;
         var tol = o.SimplifyM / WaterGraphTiler.MPerDegLat;
         var obstacles = VisibilityGraph.Index(polygons);
         Report("areas", $"{polygons.Count} obstacle polygons ({sw.Elapsed:hh\\:mm\\:ss})");
 
         // 2. nodes
-        var vo = new VisibilityGraph.Options(o.LatticeM, o.LatticeClearM, o.MaxVisibilityM, o.VisibleNeighbours);
+        var vo = new VisibilityGraph.Options(o.LatticeM, o.LatticeClearM, o.MaxVisibilityM, o.VisibleNeighbours, o.NarrowLegM, o.NarrowLegFactor);
         var corners = VisibilityGraph.Corners(polygons, region);
         var lattice = VisibilityGraph.Lattice(region, obstacles, vo);
         var passageEnds = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>()
@@ -476,7 +482,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         Report("areas", $"{corners.Count} coast corners, {lattice.Count} lattice points, {anchors.Count} anchors, {bankCorners.Count} bank corners → {nodes.Count} nodes ({sw.Elapsed:hh\\:mm\\:ss})");
 
         // 3. visibility edges, then the same decorations as grid edges
-        var edges = VisibilityGraph.Edges(nodes, polygons, vo);
+        var edges = VisibilityGraph.Edges(nodes, polygons, finePolygons, vo);
         Report("areas", $"{edges.Count} visibility edges ({sw.Elapsed:hh\\:mm\\:ss})");
         // safety net against the raw (unbuffered) land: no visibility leg may cross it, whatever the obstacle union did
         var land = new List<Polygon>();
@@ -523,7 +529,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
 
     /// <summary>The obstacle polygons of the area build (land buffered by the coast distance, unioned and simplified per 2° chunk,
     /// small enclosed pockets filled) for the chunks that touch <paramref name="region"/>. Public for the admin diagnostics.</summary>
-    public static async Task<List<Polygon>> ObstaclePolygonsAsync(NpgsqlConnection conn, int version, Envelope region, RoutingOptions o, CancellationToken ct)
+    public static async Task<List<Polygon>> ObstaclePolygonsAsync(NpgsqlConnection conn, int version, Envelope region, RoutingOptions o, CancellationToken ct, double? bufferM = null)
     {
         var polygons = new List<Polygon>();
         var tol = o.SimplifyM / WaterGraphTiler.MPerDegLat;
@@ -535,7 +541,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                     SELECT ST_SimplifyPreserveTopology(ST_UnaryUnion(ST_Collect(ST_Buffer(geom::geography, @buf)::geometry)), @tol)
                     FROM routing_land WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
                     """, conn) { CommandTimeout = 3600 };
-                cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("buf", o.CoastBufferM); cmd.Parameters.AddWithValue("tol", tol);
+                cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("buf", bufferM ?? o.CoastBufferM); cmd.Parameters.AddWithValue("tol", tol);
                 cmd.Parameters.AddWithValue("x1", x); cmd.Parameters.AddWithValue("y1", y); cmd.Parameters.AddWithValue("x2", Math.Min(x + 2, o.Region.MaxLng)); cmd.Parameters.AddWithValue("y2", Math.Min(y + 2, o.Region.MaxLat));
                 var g = await cmd.ExecuteScalarAsync(ct) as Geometry;
                 if (g is null || g.IsEmpty) continue;

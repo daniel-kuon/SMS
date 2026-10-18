@@ -102,4 +102,21 @@ public class VisibilityGraphTests
         Assert.Contains(nbrs, n => n.Y > n5.Y + 0.1);
         Assert.Contains(nbrs, n => n.Y < n5.Y - 0.1);
     }
+
+    [Fact]
+    public void A_short_leg_through_a_constriction_is_added_against_the_fine_land_and_priced()
+    {
+        // two islands 200 m apart (lat 54: 0.0030° lng); the coarse polygons (150 m buffer) overlap and close the gap, the fine ones (40 m) leave it open
+        Polygon Grow(Polygon p, double m) => (Polygon)p.Buffer(m / 111_320);
+        var west = Box(10.000, 54.00, 10.010, 54.02); var east = Box(10.013, 54.00, 10.023, 54.02);
+        var coarse = new[] { Grow(west, 150), Grow(east, 150) }; var fine = new[] { Grow(west, 40), Grow(east, 40) };
+        var south = new GraphNode(1, 10.0115, 53.995, false); var north = new GraphNode(2, 10.0115, 54.025, false); // 3.3 km apart, through the gap
+        var far = new GraphNode(3, 10.0115, 54.05, false);
+        var closed = VisibilityGraph.Edges([south, north], coarse, new VisibilityGraph.Options(MaxVisibilityM: 60_000, VisibleNeighbours: 8));
+        Assert.Empty(closed);
+        var opened = VisibilityGraph.Edges([south, north, far], coarse, fine, new VisibilityGraph.Options(MaxVisibilityM: 60_000, VisibleNeighbours: 8, NarrowLegM: 4_000, NarrowLegFactor: 1.5));
+        var leg = Assert.Single(opened, e => (e.Source == 1 && e.Target == 2) || (e.Source == 2 && e.Target == 1));
+        Assert.Equal(RoutingGraphBuilder.Haversine(53.995, 10.0115, 54.025, 10.0115) * 1.5, leg.Cost, 3);
+        Assert.DoesNotContain(opened, e => (e.Source == 1 && e.Target == 3) || (e.Source == 3 && e.Target == 1)); // 6 km: longer than NarrowLegM
+    }
 }
