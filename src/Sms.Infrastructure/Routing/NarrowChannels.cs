@@ -48,8 +48,11 @@ public static class NarrowChannels
         var waterPrepared = PreparedGeometryFactory.Prepare(water);
         var openBoundary = open.IsEmpty ? null : open.Boundary;
         var segments = new List<LineString>();
+        var reachDeg = Deg(o.OpenMarginM + 80);
         foreach (var piece in Polygons(core).Where(p => p.Area >= minArea))
         {
+            // an enclosed water body (a lake below the hole-filling size, a cut-off lagoon) is not a channel: nothing leads into it
+            if (openBoundary is null || piece.Distance(open) > reachDeg) continue;
             var inner = piece.Buffer(-Deg(o.MinClearanceM));
             if (inner.IsEmpty) continue;
             var innerPrepared = PreparedGeometryFactory.Prepare(inner);
