@@ -38,7 +38,7 @@ public sealed class RoutingOptions
     public double ChannelPreferenceM { get; set; } = 1500;
     /// <summary>Interior passage vertices link to a water node this close, so fairways and canals can be joined along their length (ends use HarbourAccessM).</summary>
     public double PassageLinkM { get; set; } = 600;
-    public double ChannelPenaltyFactor { get; set; } = 1.5;
+    public double ChannelPenaltyFactor { get; set; } = 3;
     /// <summary>Edges inside an Avoid correction (warning area, firing range) cost ×this, by the length inside.</summary>
     public double AvoidPenaltyFactor { get; set; } = 3;
     public double MaxRouteNm { get; set; } = 500;
