@@ -39,6 +39,24 @@ public sealed class RoutingOptions
     public double PassageLinkM { get; set; } = 600;
     public double ChannelPenaltyFactor { get; set; } = 1.5;
     public double MaxRouteNm { get; set; } = 500;
+    /// <summary>"areas": visibility graph over open water (corners of the buffered coast, open-sea lattice, anchors); "grid": the adaptive quadtree.</summary>
+    public string Mode { get; set; } = "areas";
+    /// <summary>Safety distance kept from the coast: land is buffered by this before the corners are taken.</summary>
+    public double CoastBufferM { get; set; } = 150;
+    /// <summary>Simplification of the buffered coast (metres): fewer corners, fewer visibility tests.</summary>
+    public double SimplifyM { get; set; } = 100;
+    public double LatticeM { get; set; } = 20_000;
+    public double LatticeClearM { get; set; } = 3_000;
+    public double MaxVisibilityM { get; set; } = 40_000;
+    public int VisibleNeighbours { get; set; } = 24;
+    /// <summary>Charted areas at most this deep get their corners as nodes, so a deep-draft route can bend around a bank.</summary>
+    public double ShallowNodeDepthM { get; set; } = 5.5;
+    /// <summary>Banks smaller than this get no corner nodes (a route simply crosses or skirts them via the coast corners).</summary>
+    public double ShallowNodeMinKm2 { get; set; } = 0.5;
+    /// <summary>Water pockets enclosed by the buffered coast up to this size are treated as land for the visibility graph.</summary>
+    public double FillHoleKm2 { get; set; } = 3;
+    /// <summary>Visibility legs within this distance of a bridge/lock point get its clearance and cost (passages use 60 m).</summary>
+    public double BridgeMatchAreaM { get; set; } = 1500;
 
     public sealed class RegionBox { public double MinLng { get; set; } = 7.6; public double MinLat { get; set; } = 53.3; public double MaxLng { get; set; } = 12.6; public double MaxLat { get; set; } = 55.4; }
 }
@@ -128,8 +146,15 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var fairwayAreas = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Fairway).Select(c => c.Geometry).ToListAsync(ct)).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
         var depthsByTile = new System.Collections.Concurrent.ConcurrentDictionary<string, List<(Geometry, double)>>();
         static string result_tile_key(Envelope e) => $"{e.MinX:0.####},{e.MinY:0.####}";
+        long gridNodeCount, gridEdgeCount, nextId;
         var tiler = new WaterGraphTiler(Geo.Factory, regionEnv, o.StartCellM, o.MinCellM, o.CoastPenaltyFactor, o.TileCells);
         var tileNo = 0;
+        if (o.Mode == "areas")
+        {
+            (gridNodeCount, gridEdgeCount, nextId) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, harbours.Select(h => h.Location.Coordinate).ToList(), sw, ct);
+        }
+        else
+        {
         Report("grid", $"{tiler.Tiles.Count} tiles of {o.TileCells}×{o.TileCells} start cells");
         await tiler.RunAsync(
             async (tile, c) =>
@@ -168,10 +193,11 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                     Report("tile", $"Tile {tileNo}/{tiler.Tiles.Count}: {result.Nodes.Count} cells, {result.Edges.Count} edges – total {tiler.NodeCount} nodes, {tiler.EdgeCount} edges ({sw.Elapsed:hh\\:mm\\:ss})");
             }, ct);
         Report("harbours", $"{access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
+        (gridNodeCount, gridEdgeCount, nextId) = (tiler.NodeCount, tiler.EdgeCount, tiler.NextId);
+        }
 
         // 4. passages (manual lines and imported waterways, spec 10 §10.5) as edge chains; ends hook into the nearest
         //    water node, vertices at the same coordinate are one node so canal networks connect at junctions
-        var nextId = tiler.NextId;
         var extraNodes = new List<GraphNode>(); var extraEdges = new List<GraphEdge>();
         var shared = new Dictionary<(long, long), long>();
         var linked = new HashSet<long>(); // one grid link per passage node
@@ -210,8 +236,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.CompleteAsync(ct);
         }
         await WriteEdgesAsync(conn, version, extraEdges, ct);
-        // inland harbours: no water cell nearby (rivers/canals count as land) but maybe a passage node
-        if (extraNodes.Count > 0)
+        // inland harbours: no water cell nearby (rivers/canals count as land) but maybe a passage node; in area mode every harbour is linked here (to its anchor)
+        if (extraNodes.Count > 0 || o.Mode == "areas")
         {
             var reached = access.Select(a => a.harbourId).ToHashSet();
             foreach (var h in harbours.Where(h => !reached.Contains(h.Id)))
@@ -226,12 +252,12 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         }
 
         // 5. switch atomically and drop older versions
-        var nodes = tiler.NodeCount + extraNodes.Count; var edges = tiler.EdgeCount + extraEdges.Count;
+        var nodes = gridNodeCount + extraNodes.Count; var edges = gridEdgeCount + extraEdges.Count;
         await using (var tx = await conn.BeginTransactionAsync(ct))
         {
             var sql = $"""
                 INSERT INTO routing_meta (key, value) VALUES ('active_version', '{version}'), ('built_at', '{DateTimeOffset.UtcNow:O}'),
-                  ('region', '{string.Join(',', new[] { o.Region.MinLng, o.Region.MinLat, o.Region.MaxLng, o.Region.MaxLat }.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)))}'), ('nodes', '{nodes}'), ('edges', '{edges}'), ('grid_nodes', '{tiler.NodeCount}')
+                  ('region', '{string.Join(',', new[] { o.Region.MinLng, o.Region.MinLat, o.Region.MaxLng, o.Region.MaxLat }.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)))}'), ('nodes', '{nodes}'), ('edges', '{edges}'), ('grid_nodes', '{gridNodeCount}'), ('mode', '{o.Mode}')
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
                 DELETE FROM routing_edge WHERE graph_version < {version};
                 DELETE FROM routing_node WHERE graph_version < {version};
@@ -265,6 +291,102 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     }
 
     /// <summary>Nearest node within maxM: bounding box in degrees (uses the GiST index; a geography cast would not), exact distance checked afterwards.</summary>
+    /// <summary>
+    /// Area mode (VisibilityGraph): buffered, simplified land from routing_land → corner nodes + open-sea lattice + anchors for
+    /// harbours and passage ends + corners of shallow banks → visibility edges, decorated like grid edges (channel preference, depth).
+    /// </summary>
+    private async Task<(long nodes, long edges, long nextId)> BuildAreasAsync(NpgsqlConnection conn, SmsDbContext db, int version, Envelope region, RoutingOptions o,
+        IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Coordinate> harbourPoints, Stopwatch sw, CancellationToken ct)
+    {
+        // 1. obstacles: land buffered by the coast distance, unioned and simplified, in 2° chunks (polygons on a chunk border appear twice – harmless for tests, corners are deduplicated)
+        var polygons = new List<Polygon>();
+        var tol = o.SimplifyM / WaterGraphTiler.MPerDegLat;
+        for (var x = region.MinX; x < region.MaxX; x += 2)
+            for (var y = region.MinY; y < region.MaxY; y += 2)
+            {
+                await using var cmd = new NpgsqlCommand("""
+                    SELECT ST_SimplifyPreserveTopology(ST_UnaryUnion(ST_Collect(ST_Buffer(geom::geography, @buf)::geometry)), @tol)
+                    FROM routing_land WHERE graph_version = @v AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)
+                    """, conn);
+                cmd.Parameters.AddWithValue("v", version); cmd.Parameters.AddWithValue("buf", o.CoastBufferM); cmd.Parameters.AddWithValue("tol", tol);
+                cmd.Parameters.AddWithValue("x1", x); cmd.Parameters.AddWithValue("y1", y); cmd.Parameters.AddWithValue("x2", Math.Min(x + 2, region.MaxX)); cmd.Parameters.AddWithValue("y2", Math.Min(y + 2, region.MaxY));
+                var g = await cmd.ExecuteScalarAsync(ct) as Geometry;
+                if (g is null || g.IsEmpty) continue;
+                // pockets of water enclosed by the buffered coast (marina basins behind a narrow entrance) are filled: a node inside
+                // would be unreachable; such harbours get their anchor on the outer coast and reach it across the mole, as before
+                polygons.AddRange((g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).Select(poly => VisibilityGraph.FillSmallHoles(poly, o.FillHoleKm2)));
+            }
+        var obstacles = VisibilityGraph.Index(polygons);
+        Report("areas", $"{polygons.Count} obstacle polygons ({sw.Elapsed:hh\\:mm\\:ss})");
+
+        // 2. nodes
+        var vo = new VisibilityGraph.Options(o.LatticeM, o.LatticeClearM, o.MaxVisibilityM, o.VisibleNeighbours);
+        var corners = VisibilityGraph.Corners(polygons, region);
+        var lattice = VisibilityGraph.Lattice(region, obstacles, vo);
+        var passageEnds = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>()
+            .SelectMany(l => new[] { l.StartPoint.Coordinate, l.EndPoint.Coordinate }).ToList();
+        var anchors = harbourPoints.Concat(passageEnds).Select(p => VisibilityGraph.Anchor(p, obstacles, polygons)).ToList();
+        var shallowTol = tol * 2;
+        await using var shallowCmd = new NpgsqlCommand("SELECT ST_SimplifyPreserveTopology(geom, @tol) FROM routing_depth WHERE max_depth_m <= @d AND ST_Area(geom) >= @minArea AND geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn); // planar deg²: geography area fails on the invalid Seascape rings
+        var midCos = Math.Cos((region.MinY + region.MaxY) / 2 * Math.PI / 180);
+        shallowCmd.Parameters.AddWithValue("tol", shallowTol * 2.5); shallowCmd.Parameters.AddWithValue("minArea", o.ShallowNodeMinKm2 * 1e6 / (WaterGraphTiler.MPerDegLat * WaterGraphTiler.MPerDegLat * midCos)); shallowCmd.Parameters.AddWithValue("d", o.ShallowNodeDepthM);
+        shallowCmd.Parameters.AddWithValue("x1", region.MinX); shallowCmd.Parameters.AddWithValue("y1", region.MinY); shallowCmd.Parameters.AddWithValue("x2", region.MaxX); shallowCmd.Parameters.AddWithValue("y2", region.MaxY);
+        var banks = new List<Polygon>();
+        await using (var r = await shallowCmd.ExecuteReaderAsync(ct))
+            while (await r.ReadAsync(ct)) if (!r.IsDBNull(0) && r.GetFieldValue<Geometry>(0) is Polygon bp && !bp.IsEmpty) banks.Add(bp);
+        var bankCorners = VisibilityGraph.Corners(banks, region);
+        var seen = new HashSet<(long, long)>();
+        var nodes = new List<GraphNode>();
+        foreach (var c in corners.Concat(lattice).Concat(anchors).Concat(bankCorners))
+        {
+            if (!seen.Add(((long)Math.Round(c.X * 1e6), (long)Math.Round(c.Y * 1e6)))) continue;
+            if (obstacles.Query(new Envelope(c)).Any(ob => ob.ContainsProperly(Geo.Factory.CreatePoint(c)))) continue; // bank corners on land
+            nodes.Add(new GraphNode(nodes.Count + 1, c.X, c.Y, false));
+        }
+        Report("areas", $"{corners.Count} coast corners, {lattice.Count} lattice points, {anchors.Count} anchors, {bankCorners.Count} bank corners → {nodes.Count} nodes ({sw.Elapsed:hh\\:mm\\:ss})");
+
+        // 3. visibility edges, then the same decorations as grid edges
+        var edges = VisibilityGraph.Edges(nodes, polygons, vo);
+        Report("areas", $"{edges.Count} visibility edges ({sw.Elapsed:hh\\:mm\\:ss})");
+        // safety net against the raw (unbuffered) land: no visibility leg may cross it, whatever the obstacle union did
+        var land = new List<Polygon>();
+        await using (var lcmd = new NpgsqlCommand("SELECT geom FROM routing_land WHERE graph_version = @v", conn))
+        {
+            lcmd.Parameters.AddWithValue("v", version);
+            await using var lr = await lcmd.ExecuteReaderAsync(ct);
+            while (await lr.ReadAsync(ct)) { var g = lr.GetFieldValue<Geometry>(0); land.AddRange(g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []); }
+        }
+        var landIndex = VisibilityGraph.Index(land);
+        var crossing = edges.Where(e => landIndex.Query(e.Geom.EnvelopeInternal).Any(l => l.Crosses(e.Geom) || l.Contains(e.Geom))).ToList();
+        if (crossing.Count > 0)
+        {
+            var sample = crossing[0].Geom.Centroid;
+            var covered = obstacles.Query(new Envelope(sample.Coordinate)).Any(ob => ob.Contains(sample));
+            Report("areas", $"{crossing.Count} visibility edges crossed land and were dropped (sample {sample.X:0.####},{sample.Y:0.####} inside obstacle union: {covered})");
+            var bad = crossing.ToHashSet();
+            edges = edges.Where(e => !bad.Contains(e)).ToList();
+        }
+        var depths = new List<(Geometry, double)>();
+        await using (var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn))
+        {
+            dcmd.Parameters.AddWithValue("x1", region.MinX); dcmd.Parameters.AddWithValue("y1", region.MinY); dcmd.Parameters.AddWithValue("x2", region.MaxX); dcmd.Parameters.AddWithValue("y2", region.MaxY);
+            await using var dr = await dcmd.ExecuteReaderAsync(ct);
+            while (await dr.ReadAsync(ct)) depths.Add((dr.GetFieldValue<Geometry>(0), dr.GetDouble(1)));
+        }
+        edges = DepthLimits.Apply(ChannelPreference.Apply(edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), depths);
+        // a visibility leg through a sound passes under its bridge: clearance, lock and opening costs apply here as on passages
+        var bridges = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
+            .Select(c => (c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+        edges = Obstacles.Apply(edges, bridges, o.LockPenaltyM, o.BridgeOpeningPenaltyM, o.BridgeMatchAreaM); // a bridge over a sound is a point, the leg may pass a few hundred metres from it
+        await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
+        {
+            foreach (var n in nodes) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, ct); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, ct); }
+            await w.CompleteAsync(ct);
+        }
+        await WriteEdgesAsync(conn, version, edges, ct);
+        return (nodes.Count, edges.Count, nodes.Count + 1);
+    }
+
     private static async Task<GraphNode?> NearestNodeAsync(NpgsqlConnection conn, int version, double x, double y, double maxM, CancellationToken ct)
     {
         var dLat = maxM / WaterGraphTiler.MPerDegLat; var dLng = dLat / Math.Max(0.1, Math.Cos(y * Math.PI / 180));

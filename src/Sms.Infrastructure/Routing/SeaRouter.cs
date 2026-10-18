@@ -116,7 +116,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         }
         if (path is null) { logger.LogInformation("No sea route between nodes {Start} and {End}", start, end); return null; }
         path.Insert(0, a.Coordinate); path.Add(b.Coordinate);
-        var smoothed = await SmoothAsync(path, version, ct);
+        var smoothed = await SmoothAsync(path, version, ct, airDraftM, draftM);
         var metres = 0.0;
         for (var i = 1; i < smoothed.Count; i++) metres += RoutingGraphBuilder.Haversine(smoothed[i - 1].Y, smoothed[i - 1].X, smoothed[i].Y, smoothed[i].X);
         var line = Geo.Factory.CreateLineString(smoothed.ToArray());
@@ -129,13 +129,25 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// are up to 20 km long, so the path is densified first (every ≤ 500 m) – otherwise the pulled string could only bend at
     /// grid nodes and kept a dog-leg when the direct line to the next node grazed the coast.
     /// </summary>
-    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, int version, CancellationToken ct)
+    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null)
     {
         path = Densify(path, 500);
         var env = new Envelope(); foreach (var c in path) env.ExpandToInclude(c); env.ExpandBy(0.05);
         var land = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", version, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
         var index = new STRtree<IPreparedGeometry>();
         foreach (var g in land) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
+        // what A* avoided must stay avoided when the string is pulled: too-low bridges (a circle around the point) and too-shallow areas count as land
+        if (airDraftM is { } ad)
+        {
+            var radiusDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
+            var low = await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge) && c.ClearanceM != null && c.ClearanceM < ad).Select(c => c.Geometry).ToListAsync(ct);
+            foreach (var g in low) { var b = g.Centroid.Buffer(radiusDeg); if (b.EnvelopeInternal.Intersects(env)) index.Insert(b.EnvelopeInternal, PreparedGeometryFactory.Prepare(b)); }
+        }
+        if (draftM is { } dm)
+        {
+            var shallow = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_depth WHERE min_depth_m < {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", dm + builder.Options.DepthSafetyMarginM, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
+            foreach (var g in shallow) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
+        }
         index.Build();
         var result = new List<Coordinate> { path[0] };
         var i = 0;
@@ -182,7 +194,14 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var onLand = await db.Database.SqlQueryRaw<int>("SELECT 1 AS \"Value\" FROM routing_land WHERE graph_version = {0} AND geom && ST_SetSRID(ST_MakePoint({1}, {2}), 4326) AND ST_Intersects(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326))", version, p.X, p.Y).AnyAsync(ct);
         var maxM = onLand ? 2000 : Math.Max(2000, builder.Options.StartCellM);
         var degLat = maxM / WaterGraphTiler.MPerDegLat; var degLng = degLat / Math.Max(0.2, Math.Cos(p.Y * Math.PI / 180));
-        var row = await db.Database.SqlQueryRaw<SnapRow>("""
+        // first choice: a node the point can see (the first leg is drawn straight), then the plain nearest
+        var row = onLand ? null : await db.Database.SqlQueryRaw<SnapRow>("""
+            SELECT n.id AS "Id", ST_DistanceSphere(n.geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
+            FROM routing_node n WHERE n.graph_version = {0} AND n.geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
+              AND NOT EXISTS (SELECT 1 FROM routing_land l WHERE l.graph_version = {0} AND l.geom && ST_MakeLine(ST_SetSRID(ST_MakePoint({1}, {2}), 4326), n.geom) AND ST_Intersects(l.geom, ST_MakeLine(ST_SetSRID(ST_MakePoint({1}, {2}), 4326), n.geom)))
+            ORDER BY n.geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
+            """, version, p.X, p.Y, degLng, degLat).FirstOrDefaultAsync(ct);
+        row ??= await db.Database.SqlQueryRaw<SnapRow>("""
             SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
             FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
             ORDER BY CASE WHEN id <= (SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes') THEN 0 ELSE 1 END, geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1

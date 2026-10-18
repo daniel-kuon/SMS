@@ -1,0 +1,181 @@
+using System.Collections.Concurrent;
+using NetTopologySuite.Algorithm;
+using NetTopologySuite.Geometries;
+using NetTopologySuite.Geometries.Prepared;
+using NetTopologySuite.Index.Strtree;
+using NetTopologySuite.Operation.Distance;
+
+namespace Sms.Infrastructure.Routing;
+
+/// <summary>
+/// Area routing (spec 10, "open bodies of water"): instead of a grid over the water, the graph consists of the convex
+/// corners of the (buffered, simplified) land, a sparse lattice for the open sea, anchors for harbours and passage ends,
+/// and the corners of shallow banks. Two nodes are joined when the straight line between them does not cross land, so a
+/// route on open water is a handful of straight legs; canals, fairways and buoyed channels stay precomputed passage
+/// lines (RoutingGraphBuilder step 4) that connect the areas.
+/// </summary>
+public static class VisibilityGraph
+{
+    public sealed record Options(double LatticeM = 20_000, double LatticeClearM = 3_000, double MaxVisibilityM = 40_000, int VisibleNeighbours = 24);
+
+    /// <summary>Nodes sit this far outside the obstacle boundary, so a leg along a straight stretch of coast touches nothing and a leg into land is a plain intersection.</summary>
+    public const double OffsetM = 1.0;
+    private static double OffsetDeg => OffsetM / WaterGraphTiler.MPerDegLat;
+
+    /// <summary>p moved by OffsetM in the direction of (dx, dy) (in degrees, longitude scaled by the latitude).</summary>
+    public static Coordinate Offset(Coordinate p, double dx, double dy)
+    {
+        var cos = Math.Cos(p.Y * Math.PI / 180);
+        var len = Math.Sqrt(dx * cos * dx * cos + dy * dy);
+        return len == 0 ? p : new Coordinate(p.X + dx * cos / len * OffsetDeg / cos, p.Y + dy / len * OffsetDeg);
+    }
+
+    /// <summary>Convex corners of the obstacle rings (the points a shortest path can bend at); holes contribute the corners of the land that pokes into them.</summary>
+    public static List<Coordinate> Corners(IEnumerable<Polygon> obstacles, Envelope region)
+    {
+        var result = new List<Coordinate>();
+        foreach (var poly in obstacles)
+        {
+            AddCorners(poly.ExteriorRing, true, region, result);
+            for (var i = 0; i < poly.NumInteriorRings; i++) AddCorners(poly.GetInteriorRingN(i), false, region, result);
+        }
+        return result;
+    }
+
+    private static void AddCorners(LineString ring, bool exterior, Envelope region, List<Coordinate> into)
+    {
+        var cs = ring.Coordinates;
+        if (cs.Length < 4) return;
+        var ccw = Orientation.IsCCW(cs);
+        var n = cs.Length - 1; // closed ring: last == first
+        for (var i = 0; i < n; i++)
+        {
+            var prev = cs[(i - 1 + n) % n]; var cur = cs[i]; var next = cs[(i + 1) % n];
+            var idx = Orientation.Index(prev, cur, next);
+            if (idx == OrientationIndex.Collinear || !region.Contains(cur)) continue;
+            var convex = idx == (ccw ? OrientationIndex.CounterClockwise : OrientationIndex.Clockwise);
+            if (convex != exterior) continue;
+            // outward bisector: away from both neighbours (for a convex corner that points out of the obstacle; for a hole corner into the hole)
+            var (ax, ay) = Unit(cur.X - prev.X, cur.Y - prev.Y); var (bx, by) = Unit(cur.X - next.X, cur.Y - next.Y);
+            into.Add(Offset(cur, ax + bx, ay + by));
+        }
+    }
+
+    /// <summary>Holes (enclosed water pockets) smaller than maxKm2 are removed from the polygon.</summary>
+    public static Polygon FillSmallHoles(Polygon poly, double maxKm2)
+    {
+        if (poly.NumInteriorRings == 0) return poly;
+        var keep = new List<LinearRing>();
+        for (var i = 0; i < poly.NumInteriorRings; i++)
+        {
+            var ring = (LinearRing)poly.GetInteriorRingN(i);
+            var areaKm2 = Math.Abs(Area.OfRing(ring.CoordinateSequence)) * WaterGraphTiler.MPerDegLat * WaterGraphTiler.MPerDegLat * Math.Cos(ring.Centroid.Y * Math.PI / 180) / 1e6;
+            if (areaKm2 > maxKm2) keep.Add(ring);
+        }
+        return keep.Count == poly.NumInteriorRings ? poly : poly.Factory.CreatePolygon((LinearRing)poly.ExteriorRing, keep.ToArray());
+    }
+
+    private static (double x, double y) Unit(double dx, double dy) { var l = Math.Sqrt(dx * dx + dy * dy); return l == 0 ? (0, 0) : (dx / l, dy / l); }
+
+    /// <summary>Lattice points over the region that keep LatticeClearM from every obstacle (bend candidates for long open-sea legs).</summary>
+    public static List<Coordinate> Lattice(Envelope region, STRtree<IPreparedGeometry> obstacles, Options o)
+    {
+        var result = new List<Coordinate>();
+        var dLat = o.LatticeM / WaterGraphTiler.MPerDegLat;
+        var clearDeg = o.LatticeClearM / WaterGraphTiler.MPerDegLat;
+        for (var lat = region.MinY + dLat / 2; lat < region.MaxY; lat += dLat)
+        {
+            var dLng = dLat / Math.Cos(lat * Math.PI / 180);
+            for (var lng = region.MinX + dLng / 2; lng < region.MaxX; lng += dLng)
+            {
+                var p = new Point(lng, lat);
+                var env = new Envelope(lng - clearDeg / Math.Cos(lat * Math.PI / 180), lng + clearDeg / Math.Cos(lat * Math.PI / 180), lat - clearDeg, lat + clearDeg);
+                var probe = Geo.Factory.ToGeometry(env);
+                if (obstacles.Query(env).Any(ob => ob.Intersects(probe))) continue;
+                result.Add(p.Coordinate);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>A point in water for a harbour or passage end: the point itself when it lies outside every obstacle, else the nearest point on the obstacle boundary.</summary>
+    public static Coordinate Anchor(Coordinate p, STRtree<IPreparedGeometry> obstacles, IReadOnlyList<Polygon> polygons)
+    {
+        var pt = Geo.Factory.CreatePoint(p);
+        var inside = obstacles.Query(new Envelope(p)).Where(ob => ob.Contains(pt)).ToList();
+        if (inside.Count == 0) return p;
+        var best = p; var bestD = double.MaxValue;
+        foreach (var poly in polygons)
+        {
+            if (!poly.EnvelopeInternal.Contains(p)) continue;
+            var near = DistanceOp.NearestPoints(poly.Boundary, pt);
+            var d = near[0].Distance(p);
+            if (d < bestD) { bestD = d; best = near[0]; }
+        }
+        return Offset(best, best.X - p.X, best.Y - p.Y); // a step past the boundary into the water
+    }
+
+    /// <summary>Visibility edges: each node to its nearest visible neighbours within MaxVisibilityM (both directions deduplicated).</summary>
+    /// <summary>Visibility edges. Prepared geometries are not safe to share between threads (their lazily built indexes answered
+    /// wrong under contention), so every worker thread prepares its own copy of the obstacle polygons.</summary>
+    public static List<GraphEdge> Edges(IReadOnlyList<GraphNode> nodes, IReadOnlyList<Polygon> polygons, Options o)
+    {
+        using var perThread = new ThreadLocal<STRtree<IPreparedGeometry>>(() => Index(polygons));
+        var index = new STRtree<GraphNode>();
+        foreach (var n in nodes) index.Insert(new Envelope(n.X, n.X, n.Y, n.Y), n);
+        index.Build();
+        var maxDeg = o.MaxVisibilityM / WaterGraphTiler.MPerDegLat;
+        var pairs = new ConcurrentBag<(long a, long b, GraphNode na, GraphNode nb)>();
+        Parallel.ForEach(nodes, n =>
+        {
+            var cos = Math.Cos(n.Y * Math.PI / 180);
+            var env = new Envelope(n.X - maxDeg / cos, n.X + maxDeg / cos, n.Y - maxDeg, n.Y + maxDeg);
+            var candidates = index.Query(env).Where(m => m.Id != n.Id)
+                .Select(m => (m, d: RoutingGraphBuilder.Haversine(n.Y, n.X, m.Y, m.X))).Where(x => x.d <= o.MaxVisibilityM).OrderBy(x => x.d);
+            var found = 0;
+            foreach (var (m, _) in candidates)
+            {
+                if (found >= o.VisibleNeighbours) break;
+                if (!Visible(n, m, perThread.Value!)) continue;
+                found++;
+                if (n.Id < m.Id) pairs.Add((n.Id, m.Id, n, m)); else pairs.Add((m.Id, n.Id, m, n));
+            }
+        });
+        var result = new List<GraphEdge>();
+        foreach (var (a, b, na, nb) in pairs.Distinct(new PairKey()))
+            result.Add(new GraphEdge(a, b, RoutingGraphBuilder.Haversine(na.Y, na.X, nb.Y, nb.X), Geo.Factory.CreateLineString([new Coordinate(na.X, na.Y), new Coordinate(nb.X, nb.Y)])));
+        return result;
+    }
+
+    private sealed class PairKey : IEqualityComparer<(long a, long b, GraphNode na, GraphNode nb)>
+    {
+        public bool Equals((long a, long b, GraphNode na, GraphNode nb) x, (long a, long b, GraphNode na, GraphNode nb) y) => x.a == y.a && x.b == y.b;
+        public int GetHashCode((long a, long b, GraphNode na, GraphNode nb) x) => HashCode.Combine(x.a, x.b);
+    }
+
+    /// <summary>Nodes lie OffsetM outside every obstacle, so touching an obstacle at all means the leg runs into land.</summary>
+    public static bool Visible(GraphNode a, GraphNode b, STRtree<IPreparedGeometry> obstacles)
+    {
+        var seg = Geo.Factory.CreateLineString([new Coordinate(a.X, a.Y), new Coordinate(b.X, b.Y)]);
+        foreach (var ob in obstacles.Query(seg.EnvelopeInternal))
+            if (ob.Intersects(seg)) return false;
+        return true;
+    }
+
+    public static STRtree<IPreparedGeometry> Index(IEnumerable<Polygon> polygons)
+    {
+        var index = new STRtree<IPreparedGeometry>();
+        foreach (var p in polygons)
+        {
+            var prepared = PreparedGeometryFactory.Prepare(p);
+            // the prepared predicates build their point-in-area and segment indexes lazily; warm them up here, single-threaded,
+            // before Edges() hammers them from all cores (a racing lazy init answered wrong for a few edges)
+            var c = p.ExteriorRing.Coordinates;
+            prepared.Contains(p.Factory.CreatePoint(c[0]));
+            prepared.Intersects(p.Factory.CreateLineString([c[0], c[1]]));
+            index.Insert(p.EnvelopeInternal, prepared);
+        }
+        index.Build();
+        return index;
+    }
+}

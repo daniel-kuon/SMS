@@ -1238,8 +1238,8 @@ namespace Sms.Infrastructure.Migrations
                         .HasColumnType("character varying(4000)");
 
                     b.Property<string>("Sectors")
-                        .HasMaxLength(400)
-                        .HasColumnType("character varying(400)");
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
 
                     b.Property<string>("Shape")
                         .HasMaxLength(4000)

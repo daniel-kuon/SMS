@@ -11,7 +11,7 @@ public static class Obstacles
     public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Point point, bool isLock, double? clearanceM)> obstacles, double lockPenaltyM) =>
         Apply(edges, obstacles.Select(o => (o.point, o.isLock ? CorrectionKind.Lock : CorrectionKind.Bridge, o.clearanceM)).ToList(), lockPenaltyM, 0);
 
-    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Point point, CorrectionKind kind, double? clearanceM)> obstacles, double lockPenaltyM, double openingPenaltyM)
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Point point, CorrectionKind kind, double? clearanceM)> obstacles, double lockPenaltyM, double openingPenaltyM, double matchM = MatchM)
     {
         if (obstacles.Count == 0) return edges.ToList();
         var result = new List<GraphEdge>(edges.Count);
@@ -19,11 +19,11 @@ public static class Obstacles
         {
             var cost = e.Cost; double? clearance = e.ClearanceM;
             var lat = e.Geom.Centroid.Y;
-            var tolDeg = MatchM / WaterGraphTiler.MPerDegLat; // rough: the same tolerance in degrees for both axes (longitude is wider in metres)
+            var tolDeg = matchM / WaterGraphTiler.MPerDegLat; // rough: the same tolerance in degrees for both axes (longitude is wider in metres)
             foreach (var (point, kind, clearanceM) in obstacles)
             {
                 if (e.Geom.EnvelopeInternal.Distance(point.EnvelopeInternal) > tolDeg) continue;
-                if (e.Geom.Distance(point) * WaterGraphTiler.MPerDegLat * (Math.Abs(point.X - e.Geom.Centroid.X) > Math.Abs(point.Y - lat) ? Math.Cos(lat * Math.PI / 180) : 1) > MatchM) continue;
+                if (e.Geom.Distance(point) * WaterGraphTiler.MPerDegLat * (Math.Abs(point.X - e.Geom.Centroid.X) > Math.Abs(point.Y - lat) ? Math.Cos(lat * Math.PI / 180) : 1) > matchM) continue;
                 if (kind == CorrectionKind.Lock) cost += lockPenaltyM;
                 else if (kind == CorrectionKind.OpeningBridge) cost += openingPenaltyM;
                 if (kind != CorrectionKind.Lock && clearanceM is { } cm) clearance = clearance is { } cur ? Math.Min(cur, cm) : cm;

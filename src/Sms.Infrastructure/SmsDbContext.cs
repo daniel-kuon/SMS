@@ -186,7 +186,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
         m.Entity<Seamark>(e =>
         {
             e.Property(s => s.Location).HasColumnType("geometry(Point,3857)");
-            e.Property(s => s.Line).HasColumnType("geometry(LineString,3857)"); e.HasIndex(s => s.Line).HasMethod("gist"); e.Property(s => s.Sectors).HasMaxLength(400);
+            e.Property(s => s.Line).HasColumnType("geometry(LineString,3857)"); e.HasIndex(s => s.Line).HasMethod("gist"); e.Property(s => s.Sectors).HasMaxLength(4000);
             e.HasIndex(s => s.Location).HasMethod("gist");
             e.HasIndex(s => new { s.OsmType, s.OsmId }).IsUnique();
             e.HasIndex(s => s.Type);
