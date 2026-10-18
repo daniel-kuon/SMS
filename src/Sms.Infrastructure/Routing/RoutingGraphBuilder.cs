@@ -121,12 +121,27 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var version = Convert.ToInt32(await new NpgsqlCommand("SELECT COALESCE(MAX(graph_version),0)+1 FROM routing_land", conn) { CommandTimeout = 3600 }.ExecuteScalarAsync(ct));
 
         // 1. land polygons inside the region (streamed, never all in memory) + active Block corrections → routing_land
-        Report("land", $"Streaming land polygons inside the region into graph version {version}…");
         var blocks = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Block).Select(c => c.Geometry).ToListAsync(ct); // before the COPY: same connection
+        // the land step (shapefile, lakes cut out, blocks) is the same between builds unless its inputs changed: its rows are
+        // copied from the previous version when the key (shapefile, region, lake and block geometries) matches
+        var shpInfo = new FileInfo(shp);
+        var correctionsHash = await new NpgsqlCommand("SELECT COALESCE(md5(string_agg(md5(ST_AsBinary(\"Geometry\")), ',' ORDER BY \"Id\")), '') FROM \"RoutingCorrections\" WHERE \"Active\" AND \"Kind\" IN ('Water', 'Block')", conn) { CommandTimeout = 3600 }.ExecuteScalarAsync(ct) as string ?? "";
+        var landKey = $"{shpInfo.Length}-{shpInfo.LastWriteTimeUtc.Ticks}|{regionEnv}|{correctionsHash}";
+        var cachedVersion = await new NpgsqlCommand("SELECT (SELECT value FROM routing_meta WHERE key = 'land_version')::int WHERE (SELECT value FROM routing_meta WHERE key = 'land_key') = @k", conn) { Parameters = { new("k", landKey) } }.ExecuteScalarAsync(ct);
+        var landCount = 0;
+        if (cachedVersion is int lv)
+        {
+            Report("land", $"Land polygons unchanged since graph version {lv}: reusing them for version {version}…");
+            await using var copy = new NpgsqlCommand("INSERT INTO routing_land (graph_version, geom) SELECT @v, geom FROM routing_land WHERE graph_version = @lv", conn) { CommandTimeout = 3600 };
+            copy.Parameters.AddWithValue("v", version); copy.Parameters.AddWithValue("lv", lv);
+            landCount = await copy.ExecuteNonQueryAsync(ct);
+        }
+        else
+        {
+        Report("land", $"Streaming land polygons inside the region into graph version {version}…");
         // inland water bodies are land in the coastline polygons: cut them out of the land tiles they touch
         var waters = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Water).Select(c => c.Geometry).ToListAsync(ct);
         var waterIndex = new STRtree<Geometry>(); foreach (var g in waters) waterIndex.Insert(g.EnvelopeInternal, g); waterIndex.Build();
-        var landCount = 0;
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_land (graph_version, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
             async Task Write(Geometry g) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(g, NpgsqlDbType.Geometry, ct); landCount++; }
@@ -144,6 +159,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             }
             foreach (var g in blocks) await Write(g);
             await w.CompleteAsync(ct);
+        }
         }
         Report("land", $"{landCount} land polygons ({sw.Elapsed:mm\\:ss})");
 
@@ -376,6 +392,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         await using (var tx = await conn.BeginTransactionAsync(ct))
         {
             var sql = $"""
+                INSERT INTO routing_meta (key, value) VALUES ('land_key', '{landKey.Replace("'", "''")}'), ('land_version', '{version}') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
                 INSERT INTO routing_meta (key, value) VALUES ('active_version', '{version}'), ('built_at', '{DateTimeOffset.UtcNow:O}'),
                   ('region', '{string.Join(',', new[] { o.Region.MinLng, o.Region.MinLat, o.Region.MaxLng, o.Region.MaxLat }.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)))}'), ('nodes', '{nodes}'), ('edges', '{edges}'), ('grid_nodes', '{gridNodeCount}'), ('mode', '{o.Mode}')
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
