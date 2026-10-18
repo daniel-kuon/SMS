@@ -375,7 +375,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             while (await lr.ReadAsync(ct)) { var g = lr.GetFieldValue<Geometry>(0); land.AddRange(g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []); }
         }
         var landIndex = VisibilityGraph.Index(land);
-        var crossing = edges.AsParallel().Where(e => landIndex.Query(e.Geom.EnvelopeInternal).Any(l => l.Crosses(e.Geom) || l.Contains(e.Geom))).ToList();
+        // prepared Intersects is the accelerated predicate (Crosses is not); legs start 150 m off the raw land, so touching it is crossing it
+        var crossing = edges.AsParallel().Where(e => landIndex.Query(e.Geom.EnvelopeInternal).Any(l => l.Intersects(e.Geom))).ToList();
         Report("areas", $"land check done ({sw.Elapsed:hh\\:mm\\:ss})");
         if (crossing.Count > 0)
         {
