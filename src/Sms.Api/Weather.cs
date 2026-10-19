@@ -23,7 +23,7 @@ public sealed record OverlayGlAccess(string ClientId, string ClientSecret);
 public interface IWeatherProvider
 {
     string Name { get; }
-    /// <summary>Current conditions + hourly (48 h) + daily (7 d) forecast for a position, or null when the provider fails.</summary>
+    /// <summary>Current conditions + hourly (up to 7 d, waves where the marine model has them) + daily (7 d) forecast for a position, or null when the provider fails.</summary>
     Task<WeatherForecast?> ForecastAsync(double lat, double lng, CancellationToken ct);
 }
 
@@ -63,7 +63,7 @@ public sealed class OpenMeteoProvider(IHttpClientFactory http, IMemoryCache cach
         var la = lat.ToString("0.####", inv); var lo = lng.ToString("0.####", inv);
         using var f = JsonDocument.Parse(await client.GetStringAsync($"{baseUrl}/v1/forecast?latitude={la}&longitude={lo}&current=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation,weather_code,pressure_msl,cloud_cover&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation_probability,precipitation,weather_code,pressure_msl&daily=weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum,sunrise,sunset&wind_speed_unit=kn&timezone=auto&forecast_days=7", ct));
         JsonDocument? marine = null;
-        try { marine = JsonDocument.Parse(await client.GetStringAsync($"{marineUrl}/v1/marine?latitude={la}&longitude={lo}&current=wave_height,wave_direction,wave_period&hourly=wave_height,wave_direction,wave_period&timezone=auto&forecast_days=3", ct)); }
+        try { marine = JsonDocument.Parse(await client.GetStringAsync($"{marineUrl}/v1/marine?latitude={la}&longitude={lo}&current=wave_height,wave_direction,wave_period&hourly=wave_height,wave_direction,wave_period&timezone=auto&forecast_days=7", ct)); }
         catch (Exception ex) when (ex is not OperationCanceledException) { logger.LogDebug(ex, "no marine data for {Lat},{Lng}", lat, lng); } // inland positions have no wave model
         using var _ = marine;
         var root = f.RootElement;
@@ -84,7 +84,7 @@ public sealed class OpenMeteoProvider(IHttpClientFactory http, IMemoryCache cach
         }
         var now = DateTimeOffset.UtcNow.AddHours(-1);
         var hourly = new List<WeatherPoint>();
-        for (var i = 0; i < times.Count && hourly.Count < 48; i++)
+        for (var i = 0; i < times.Count && hourly.Count < 168; i++)
         {
             var t = T(times[i]); if (t < now) continue;
             var w = waveByTime.GetValueOrDefault(times[i]);

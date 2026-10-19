@@ -26,12 +26,13 @@ import { PostEditorDialog } from '../posts/post-detail';
 import { CostsTab } from '../costs/costs-tab';
 import { SocialBox } from '../social/social';
 import { FormsModule } from '@angular/forms';
+import { RouteWeather } from './route-weather';
 
 const TABS = ['overview', 'timeline', 'logbook', 'photos', 'costs', 'tasks', 'crew', 'planner'];
 type PickMode = { kind: 'next' } | { kind: 'alt'; step: number } | { kind: 'end'; from: string | null };
 
 @Component({
-  imports: [DecimalPipe, RouterLink, FormsModule, MatButtonModule, MatIconModule, MatTabsModule, MatListModule, MatCardModule, TranslatePipe, Gallery, UploadZone, TaskList, LogbookTable, CostsTab, HarbourSelect, SocialBox],
+  imports: [DecimalPipe, RouterLink, FormsModule, MatButtonModule, MatIconModule, MatTabsModule, MatListModule, MatCardModule, TranslatePipe, Gallery, UploadZone, TaskList, LogbookTable, CostsTab, HarbourSelect, SocialBox, RouteWeather],
   template: `
     @if (trip(); as t) {
     <div class="trip-layout">
@@ -151,6 +152,10 @@ type PickMode = { kind: 'next' } | { kind: 'alt'; step: number } | { kind: 'end'
                 }
               </div>
             }
+            @if (selLeg(); as l) {
+              @if (l.geometry?.coordinates?.length) { <app-route-weather [coordinates]="l.geometry!.coordinates" [date]="l.plannedDate" [map]="mapHandle()" /> }
+              @else { <p class="muted">{{ 'weather.route.noRoute' | translate }}</p> }
+            } @else if (plan().steps.length) { <p class="muted">{{ 'weather.route.selectLeg' | translate }}</p> }
             <p><b>{{ 'trip.totalNm' | translate }}: {{ totalNm() | number:'1.0-1' }}</b> <span class="muted">({{ 'trip.mainLine' | translate }})</span></p>
             <p class="disclaimer">{{ 'harbour.disclaimer' | translate }}</p>
           </div>
@@ -265,6 +270,7 @@ export class TripPage {
   private resizeObs?: ResizeObserver;
   private async initMap(el: HTMLDivElement): Promise<void> {
     const map = this.map = await createMap(el, { zoom: 8 });
+    this.mapHandle.set(map);
     this.layers = new TripMapLayers(map, (k, id) => this.onMapSelect(k, id));
     this.layers.pickLabel = h => this.routeLabel(h);
     this.editor = new RouteEditor(map);
@@ -320,6 +326,9 @@ export class TripPage {
 
   // --- selection: list → map eases to the item; map → list scrolls to it (switching to the tab that lists it)
   selected = signal<string | null>(null);
+  /** The selected planned leg (the object from /map, so the route-weather panel resets only on another leg or a reload). */
+  selLeg = computed(() => { const id = this.selectedOf('leg'); return id ? this.mapData()?.plannedLegs.find(l => l.id === id) ?? null : null; });
+  mapHandle = signal<MlMap | null>(null);
   selectedOf(kind: SelKind): string | null { const s = this.selected(); return s?.startsWith(kind + ':') ? s.slice(kind.length + 1) : null; }
   selectItem(kind: SelKind, id: string): void { this.selected.set(`${kind}:${id}`); this.layers?.select(kind, id); }
   private onMapSelect(kind: SelKind, id: string): void {

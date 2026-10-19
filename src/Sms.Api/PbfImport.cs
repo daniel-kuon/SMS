@@ -170,7 +170,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (!env.IsNull)
             {
                 var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-                var removed = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge")))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct);
+                var removed = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge")))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || c.Kind == CorrectionKind.Pier || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct);
                 Add("derivedReplaced", removed);
             }
         }
@@ -194,6 +194,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (req.Waterways)
             {
                 var r = await RoutingEndpoints.ImportWaterwaysAsync(Filter(doc, t => IsWaterway(t) || IsObstacle(t) || IsFairwayArea(t)), db, userId, ct, replaceExisting: false);
+                Add("piers", await RoutingEndpoints.AddPiersAsync(Filter(doc, Waterways.IsPier), db, userId, ct));
                 Add("waterways", r.Created); Add("bridges", r.Bridges); Add("locks", r.Locks); Add("fairwayAreas", r.FairwayAreas); Add("noGoAreas", r.NoGoAreas);
             }
             db.ChangeTracker.Clear();
@@ -210,7 +211,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         if (req.Waterways && IsFairwayArea(d)) return "waterway"; // an area, not a point mark
         if (req.Seamarks && d.ContainsKey("seamark:type")) return "seamark";
         if (req.Harbours && IsHarbour(d)) return "harbour";
-        if (req.Waterways && (IsWaterway(d) || IsObstacle(d))) return "waterway";
+        if (req.Waterways && (IsWaterway(d) || IsObstacle(d) || Waterways.IsPier(d))) return "waterway";
         if (req.Pois && IsPoi(d)) return "poi";
         return null;
     }

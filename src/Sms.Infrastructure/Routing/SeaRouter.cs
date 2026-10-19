@@ -200,6 +200,24 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return new SmoothStatics(bridges, zone);
     }
 
+    /// <summary>Pier corrections, indexed once per process; the pier import resets it.</summary>
+    private static volatile Lazy<Task<STRtree<Geometry>>>? _piers;
+    public static void InvalidatePiers() => _piers = null;
+    private Task<STRtree<Geometry>> PiersAsync()
+    {
+        var piers = _piers;
+        if (piers is null) _piers = piers = new Lazy<Task<STRtree<Geometry>>>(LoadPiersAsync); // a racing second load is harmless
+        return piers.Value;
+    }
+
+    private async Task<STRtree<Geometry>> LoadPiersAsync()
+    {
+        var tree = new STRtree<Geometry>();
+        foreach (var g in await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Pier).Select(c => c.Geometry).ToListAsync()) tree.Insert(g.EnvelopeInternal, g);
+        tree.Build();
+        return tree;
+    }
+
     private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null)
     {
         var clock = Stopwatch.StartNew();
@@ -256,6 +274,22 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             i = j;
         }
         Lap("smooth-pull");
+        // piers, jetties, breakwaters are not in the land: legs that cross one are rerouted round it locally, the blockers above still blocking
+        var piers = await PiersAsync();
+        if (piers.Count > 0)
+        {
+            try
+            {
+                result = PierAvoidance.Apply(result, piers, (p, q) =>
+                {
+                    var seg = Geo.Factory.CreateLineString([p, q]);
+                    foreach (var g in index.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
+                    return false;
+                });
+            }
+            catch (Exception ex) when (ex is NetTopologySuite.Geometries.TopologyException or ArgumentException) { logger.LogWarning(ex, "Pier avoidance skipped"); } // a bad OSM pier must never cost the route
+        }
+        Lap("smooth-piers");
         return result;
     }
 
@@ -291,12 +325,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             SELECT n.id AS "Id", ST_DistanceSphere(n.geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
             FROM routing_node n WHERE n.graph_version = {0} AND n.geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
               AND NOT EXISTS (SELECT 1 FROM routing_land l WHERE l.graph_version = {0} AND l.geom && ST_MakeLine(ST_SetSRID(ST_MakePoint({1}, {2}), 4326), n.geom) AND ST_Intersects(l.geom, ST_MakeLine(ST_SetSRID(ST_MakePoint({1}, {2}), 4326), n.geom)))
-            ORDER BY n.geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
+            ORDER BY EXISTS (SELECT 1 FROM routing_isolated i WHERE i.graph_version = {0} AND i.id = n.id), n.geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
             """, version, p.X, p.Y, degLng, degLat).FirstOrDefaultAsync(ct);
         row ??= await db.Database.SqlQueryRaw<SnapRow>("""
             SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
             FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
-            ORDER BY CASE WHEN id <= (SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes') THEN 0 ELSE 1 END, geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
+            ORDER BY EXISTS (SELECT 1 FROM routing_isolated i WHERE i.graph_version = {0} AND i.id = routing_node.id), CASE WHEN id <= (SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes') THEN 0 ELSE 1 END, geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
             """, version, p.X, p.Y, degLng, degLat).FirstOrDefaultAsync(ct);
         return row is not null && row.Metres <= maxM ? row.Id : null;
     }

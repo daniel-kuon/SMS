@@ -100,11 +100,37 @@ public static class Waterways
         return result;
     }
 
-    /// <summary>Inland water bodies: lakes, reservoirs, lagoons and fjords (the Schlei is natural=water + water=fjord, not coastline: without it the whole Schlei was land) with a perimeter above 3 km (ponds are noise), as ways and multipolygon relations with geometry.</summary>
-    public const string OverpassWaterQuery = """[out:json][timeout:180];(way["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord)$"](if:length()>3000)({0});relation["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord)$"]({0}););out geom;""";
+    /// <summary>Inland water bodies the coastline polygons count as land: lakes, reservoirs, lagoons, fjords (the Schlei), river and canal areas (Elbe above Glückstadt, Göta älv, Warnow) and harbour basins, ways with a perimeter above 3 km (ponds are noise) and multipolygon relations.</summary>
+    public const string OverpassWaterQuery = """[out:json][timeout:180];(way["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord|river|canal|harbour|basin)$"](if:length()>3000)({0});relation["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord|river|canal|harbour|basin)$"]({0}););out geom;""";
+
+    /// <summary>Piers, jetties, floating pontoons (man_made=pier + floating=yes), breakwaters and groynes: not part of the coastline, so
+    /// the land polygons do not know them; the router steers round them after smoothing (PierAvoidance).</summary>
+    public const string OverpassPierQuery = """[out:json][timeout:300];way["man_made"~"^(pier|breakwater|groyne)$"]({0});out geom;""";
+
+    public static bool IsPier(IReadOnlyDictionary<string, string> tags) => tags.GetValueOrDefault("man_made") is "pier" or "breakwater" or "groyne";
+
+    /// <summary>Pier ways as lines, closed ways as polygons (pier/breakwater areas).</summary>
+    public static List<(Geometry geom, string label)> ParsePiers(JsonDocument doc, GeometryFactory f)
+    {
+        var result = new List<(Geometry, string)>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (!el.TryGetProperty("tags", out var t) || el.GetProperty("type").GetString() != "way" || !el.TryGetProperty("geometry", out var geom)) continue;
+            var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+            if (!IsPier(tags)) continue;
+            var coords = geom.EnumerateArray().Select(c => new Coordinate(c.GetProperty("lon").GetDouble(), c.GetProperty("lat").GetDouble())).ToArray();
+            if (coords.Length < 2) continue;
+            Geometry? g = coords.Length >= 4 && coords[0].Equals2D(coords[^1]) ? Ring(geom, f) : f.CreateLineString(coords);
+            if (g is null) continue;
+            g.SRID = 4326;
+            var kind = tags["man_made"] switch { "breakwater" => "Mole", "groyne" => "Buhne", _ => tags.GetValueOrDefault("floating") == "yes" ? "Schwimmsteg" : "Steg" };
+            result.Add((g, tags.GetValueOrDefault("name") is { } name ? $"{kind} {name}" : kind));
+        }
+        return result;
+    }
 
     /// <summary>Lakes as polygons with holes (islands): closed ways directly, multipolygon relations by stitching their outer/inner member ways into rings. Only areas of at least minKm2.</summary>
-    public static List<(Polygon area, string? name)> ParseWaterAreas(JsonDocument doc, GeometryFactory f, double minKm2 = 0.5)
+    public static List<(Polygon area, string? name)> ParseWaterAreas(JsonDocument doc, GeometryFactory f, double minKm2 = 0.05)
     {
         var result = new List<(Polygon, string?)>();
         foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())

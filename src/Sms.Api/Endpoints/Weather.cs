@@ -42,6 +42,25 @@ public static class WeatherEndpoints
             return fc is null ? Results.NoContent() : Results.Ok(fc);
         }).RequireRateLimiting("ingest");
 
+        // weather along a planned route: points every 5 nm with ETAs (tacking when close-hauled) and the forecast at the time the boat gets there
+        g.MapPost("/route", async (RouteWeatherRequest r, IWeatherProvider weather, CancellationToken ct) =>
+        {
+            if (r.Coordinates is not { Length: >= 2 and <= 20_000 } || r.Coordinates.Any(c => c is not { Length: >= 2 } || c[1] is < -90 or > 90 || c[0] is < -180 or > 180)) return Invalid("coordinates", "Ungültige Route.");
+            if (r.SpeedKn is < 0.5 or > 40) return Invalid("speedKn", "Geschwindigkeit zwischen 0,5 und 40 kn.");
+            var samples = RouteWeather.SampleLine(r.Coordinates.Select(c => (c[1], c[0])).ToList());
+            if (samples.Count is 0 or > 101) return Invalid("coordinates", "Route zu kurz oder länger als 500 sm.");
+            // one forecast per sample (the provider caches per ~1 km cell), then the ETAs pick the hour
+            var forecasts = new WeatherForecast?[samples.Count];
+            await Parallel.ForEachAsync(Enumerable.Range(0, samples.Count), new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct },
+                async (i, c) => forecasts[i] = await weather.ForecastAsync(samples[i].Lat, samples[i].Lng, c));
+            // nearest hourly value; outside the forecast horizon there is none
+            WeatherPoint? At(int i, DateTimeOffset t) => forecasts[i]?.Hourly.MinBy(h => Math.Abs((h.Time - t).Ticks)) is { } h && Math.Abs((h.Time - t).TotalMinutes) <= 31 ? h : null;
+            var etas = RouteWeather.Chain(samples, r.Departure, r.SpeedKn, (i, t) => At(i, t)?.WindDirDeg);
+            var points = etas.Select((e, i) => { var w = At(i, e.Time); return new RouteWeatherPoint(i + 1, e.Point.Lat, e.Point.Lng, Math.Round(e.Point.DistanceNm, 1), Math.Round(e.Point.HeadingDeg), e.Time, e.Tacking, w is not null, w?.WindKn, w?.WindDirDeg, w?.GustKn, w?.WaveHeightM, w?.WaveDirDeg); }).ToList();
+            var arrival = etas[^1].Time;
+            return Results.Ok(new { departure = r.Departure, arrival, durationHours = Math.Round((arrival - r.Departure).TotalHours, 2), distanceNm = points[^1].DistanceNm, provider = weather.Name, points });
+        }).RequireRateLimiting("ingest");
+
         // observations recorded at live positions (same visibility as the track)
         api.MapGet("/trips/{tripId:guid}/weather", async (Guid tripId, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
         {
@@ -85,3 +104,8 @@ public static class WeatherEndpoints
         });
     }
 }
+
+/// <summary>POST /api/weather/route: the route as GeoJSON positions [lng, lat], departure time and boat speed.</summary>
+public sealed record RouteWeatherRequest(double[][] Coordinates, DateTimeOffset Departure, double SpeedKn);
+/// <summary>A sample point with its ETA; Forecast false when the ETA lies beyond the forecast horizon (or the provider failed).</summary>
+public sealed record RouteWeatherPoint(int No, double Lat, double Lng, double DistanceNm, double HeadingDeg, DateTimeOffset Eta, bool Tacking, bool Forecast, double? WindKn, double? WindDirDeg, double? GustKn, double? WaveHeightM, double? WaveDirDeg);

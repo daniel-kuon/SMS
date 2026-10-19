@@ -375,6 +375,14 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             }
             await WriteEdgesAsync(conn, version, relinks, ct);
             var giantRoot = Find(giant);
+            // nodes outside the main component (enclosed pockets, lakes without a passage): the snap of a map click prefers the main
+            // component, otherwise a click on a town quay snapped into a pond next to it and the route fell back to a straight line
+            await using (var cmd = new NpgsqlCommand("CREATE TABLE IF NOT EXISTS routing_isolated (graph_version int NOT NULL, id bigint NOT NULL, PRIMARY KEY (graph_version, id))", conn)) await cmd.ExecuteNonQueryAsync(ct);
+            await using (var w = await conn.BeginBinaryImportAsync("COPY routing_isolated (graph_version, id) FROM STDIN (FORMAT BINARY)", ct))
+            {
+                foreach (var id in parent.Keys.ToList()) if (Find(id) != giantRoot) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(id, NpgsqlDbType.Bigint, ct); }
+                await w.CompleteAsync(ct);
+            }
             var reached = access.Select(a => a.harbourId).ToHashSet();
             foreach (var h in harbours.Where(h => !reached.Contains(h.Id)))
             {
@@ -406,6 +414,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 DELETE FROM routing_node WHERE graph_version < {version};
                 DELETE FROM routing_land WHERE graph_version < {version};
                 DELETE FROM routing_harbour_access WHERE graph_version < {version};
+                DELETE FROM routing_isolated WHERE graph_version < {version};
                 DELETE FROM "RouteCaches" WHERE "GraphVersion" < {version};
                 """;
             await new NpgsqlCommand(sql, conn, tx) { CommandTimeout = 3600 }.ExecuteNonQueryAsync(ct);

@@ -21,7 +21,7 @@ public enum ProfileVisibility { Public, Registered }
 /// <summary>Fairway: a marked channel area (polygon, OSM seamark:type=fairway) – open water next to it is penalised, water inside it is not.</summary>
 /// <summary>Avoid: a warning/restricted-entry area (firing range outside firing hours) – crossed only when the detour is long.</summary>
 /// <summary>Water: an inland water body (lake, IJsselmeer) that the coastline-based land polygons count as land.</summary>
-public enum CorrectionKind { Block, Passage, Bridge, Lock, OpeningBridge, Fairway, Avoid, Water }
+public enum CorrectionKind { Block, Passage, Bridge, Lock, OpeningBridge, Fairway, Avoid, Water, Pier }
 public enum CorrectionSource { Manual, Derived }
 
 /// <summary>16 compass points (spec 08).</summary>

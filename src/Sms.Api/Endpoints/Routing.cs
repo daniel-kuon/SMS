@@ -279,6 +279,19 @@ public static class RoutingEndpoints
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { created = areas.Count, removed, lakes = areas.Select(a => new { a.name, km2 = Math.Round(a.area.Area * Math.Cos(a.area.Centroid.Y * Math.PI / 180) * WaterGraphTiler.MPerDegLat * WaterGraphTiler.MPerDegLat / 1e6, 1) }).OrderByDescending(x => x.km2).Take(30) });
         });
+        // piers, jetties, pontoons, breakwaters, groynes (not in the coastline land): the router steers round them after smoothing
+        admin.MapPost("/import-piers", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (bbox.Split(',').Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
+            using var doc = await Overpass.QueryAsync(http, cfg, string.Format(Waterways.OverpassPierQuery, bbox), ct);
+            if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
+            var b = bbox.Split(',').Select(x => double.Parse(x, CultureInfo.InvariantCulture)).ToArray();
+            var extent = Geo.Factory.ToGeometry(new Envelope(b[1], b[3], b[0], b[2])); extent.SRID = 4326;
+            var removed = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Pier && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct);
+            var created = await AddPiersAsync(doc, db, current.Id, ct);
+            return Results.Ok(new { created, removed });
+        });
         admin.MapPost("/import-waterways-file", async (HttpRequest http, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
@@ -366,6 +379,19 @@ public static class RoutingEndpoints
         foreach (var a in noGo) db.RoutingCorrections.Add(ToBlock(a, userId));
         await db.SaveChangesAsync(ct);
         return new WaterwayImportResult(ways.Count, old.Count, obstacles.Count(x => !x.IsLock), obstacles.Count(x => x.IsLock), ways.Select(w => (object)new { w.Name, w.Ways, points = w.Line.NumPoints, lengthNm = Math.Round(LengthNm(w.Line), 1) }).ToList(), areas.Count, noGo.Count);
+    }
+
+    /// <summary>Adds the pier ways of an Overpass-style document as derived Pier corrections; drops the route cache (cached routes were
+    /// computed without them) and the router's pier index.</summary>
+    public static async Task<int> AddPiersAsync(JsonDocument doc, SmsDbContext db, Guid? userId, CancellationToken ct)
+    {
+        var piers = Waterways.ParsePiers(doc, Geo.Factory);
+        if (piers.Count == 0) return 0;
+        foreach (var (g, label) in piers) db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Pier, Source = CorrectionSource.Derived, Geometry = g, Active = true, CreatedById = userId, Note = label });
+        await db.SaveChangesAsync(ct);
+        await db.RouteCaches.ExecuteDeleteAsync(ct);
+        SeaRouter.InvalidatePiers();
+        return piers.Count;
     }
 
     /// <summary>A no-go area becomes a Block (the graph build treats it as land, the audit reports routes through it); a warning area
