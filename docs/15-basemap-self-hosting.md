@@ -224,6 +224,23 @@ mv basemap-detail.pmtiles.new basemap-detail.pmtiles        # there is no older 
 # AppHost.cs: Map__RemoteBasemap "false", then restart the AppHost (Martin only lists the files at start)
 ```
 
+**Wide area (2026-10-20, replaces the region pair).** Limit (1) above: the base map now covers **3–31 E, 50.5–66 N** (whole Baltic incl.
+Finland, Gulf of Bothnia up to Oulu/Luleå, Baltic states, St Petersburg, south Norway incl. Bergen, Benelux and the German North Sea coast;
+2 579 of the harbour areas). `osmium extract -b 3,50.5,31,66 --strategy=simple` → `media/cache/osm/wide.osm.pbf` 10.8 GB in 12 min.
+The script knows the area names `region` and `wide` (bbox → `--bounds`, PBF `<area>.osm.pbf`, polygon clipping in detail mode).
+Outside the bbox, MapLibre would draw Liberty's land-coloured background where the sea is, so every lean build merges a **z0–5 world tier**
+(Planetiler, water + boundary only, both from Natural Earth at these zooms; OSM input is any small file, 1.6 min, cached in the volume as
+`world-z5.pmtiles`) into the file with the same tile-join pass; the header then keeps tile-join's world bounds (correct now; z6+ tiles
+outside the bbox are a 204 from Martin). Zoomed in beyond z5 outside the bbox the background is still land-coloured.
+
+| | lean `basemap.pmtiles.new-wide-lean` | detail `basemap-detail.pmtiles.new-wide` |
+|---|---|---|
+| size | **403 MB** (water 198 MB: Finnish/Swedish lakes; place 91 MB, of it islands 10 MB; roads 59 MB; waterway 41 MB; water_name + boundary 34 MB; z0–11 184 MB) | **737 MB**, 58 002 tiles z12–14 (z14 shape 36 706 tiles) |
+| time | Planetiler 9 min 20 s + world tier 1 min 36 s + filter ≈ 2 min = 13.5 min | 13.5 min |
+| tiles | Kiel z10 15.6 KB / 214 f, z12 14.4 KB / 677 f (unchanged); Helsinki z10 42 KB (374 place, mostly islands); Oulu z10 12.9 KB; Riga z10 14.5 KB; Rotterdam z10 14.1 KB; Atlantic z3 4 KB (world tier) | Lübeck z14 158 KB; Helsinki South Harbour z14 215 KB / 6 214 f (4 765 POI); Tallinn z14 190 KB; Den Helder z14 78 KB |
+
+If 403 MB is too much: villages/suburbs from z12 instead of z11 and islands only from z11 would cut most of the 91 MB place layer.
+
 ## 7. Sources
 
 Protomaps docs (downloads, layers, ODbL Produced Work), Planetiler README (hardware/benchmarks: heap ≈ 0.5x PBF, disk 5–10x PBF, v0.10.1 planet in 19 min on 192 cores), Planetiler custommap README (YAML schema),
