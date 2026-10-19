@@ -42,7 +42,8 @@ case "$MODE" in
   filter) OUT="basemap-lean-filtered.pmtiles"; [ -f "$AREA" ] || { echo "filter mode needs a .pmtiles file"; exit 1; };;
   detail) OUT="basemap-detail.pmtiles"
           [ -f "$POLY" ] || { echo "detail mode needs a .poly file (GET /api/admin/map/harbour-areas.poly > media/cache/harbours.poly)"; exit 1; }
-          # landcover (19 % of the bytes; wood/grass discs would end at the polygon edge), housenumber and mountain_peak (Liberty draws neither) go
+          # landcover (19 % of the bytes; wood/grass discs would end at the polygon edge), housenumber and mountain_peak (Liberty draws neither) go;
+          # MapStyle.cs DetailExcluded drops their style layers (keep in sync)
           cp "$POLY" media/cache/planetiler-tmp/area.poly; EXTRA+=(--polygon=/poly/area.poly --minzoom=12 --exclude_layers=landcover,housenumber,mountain_peak)
           # the endpoint lists every harbour; for the region keep only rings touching it, so the bounds taken from the polygon stay the region's
           if [ "$AREA" = region ]; then

@@ -17,6 +17,7 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
         { "version": 8, "sources": { "ne2_shaded": { "type": "raster", "tiles": ["x"] }, "openmaptiles": { "type": "vector", "url": "x" } },
           "layers": [ { "id": "shade", "type": "raster", "source": "ne2_shaded" }, { "id": "water", "type": "fill", "source": "openmaptiles", "source-layer": "water" },
             { "id": "landuse", "type": "fill", "source": "openmaptiles", "source-layer": "landuse" },
+            { "id": "landcover_wood", "type": "fill", "source": "openmaptiles", "source-layer": "landcover" },
             { "id": "building", "type": "fill", "source": "openmaptiles", "source-layer": "building", "minzoom": 12, "maxzoom": 13 },
             { "id": "road", "type": "line", "source": "openmaptiles", "source-layer": "transportation", "filter": ["==", ["get", "brunnel"], "bridge"] },
             { "id": "boundary", "type": "line", "source": "openmaptiles", "source-layer": "boundary" },
@@ -42,7 +43,7 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
         var detail = JsonDocument.Parse(MapStyleEndpoints.Rewrite(LeanAndDetail, "http://localhost:5161/basemap", true, null, "http://localhost:5161/basemap-detail")).RootElement;
         Assert.Equal("http://localhost:5161/basemap-detail", detail.GetProperty("sources").GetProperty("openmaptiles_detail").GetProperty("url").GetString());
         var layers = detail.GetProperty("layers").EnumerateArray().ToDictionary(l => l.GetProperty("id").GetString()!);
-        Assert.Equal(["shade", "water", "water-detail", "landuse", "road", "road-detail", "pier-area", "pier", "boundary", "label_city", "label_city-detail", "label_state"], layers.Keys); // building (maxzoom 13) is dropped
+        Assert.Equal(["shade", "water", "water-detail", "landuse", "road", "road-detail", "pier-area", "pier", "boundary", "label_city", "label_city-detail", "label_state"], layers.Keys); // building (maxzoom 13) and landcover (not in the detail build) are dropped
         Assert.Equal("openmaptiles", layers["road"].GetProperty("source").GetString()); Assert.False(layers["road"].TryGetProperty("minzoom", out _));
         Assert.Equal("openmaptiles_detail", layers["road-detail"].GetProperty("source").GetString()); Assert.Equal(13, layers["road-detail"].GetProperty("minzoom").GetDouble());
         var roadFilter = layers["road-detail"].GetProperty("filter").GetRawText();

@@ -110,6 +110,10 @@ public static class MapStyleEndpoints
         ["place"] = ["continent", "country", "state", "province", "city", "town", "island", "village", "suburb"],
     };
 
+    /// <summary>Source-layers the detail build leaves out (tools/build-basemap.sh --exclude_layers): MapLibre logs an error for every style layer
+    /// that names a source-layer missing from the source's TileJSON, so their layers are dropped.</summary>
+    private static readonly HashSet<string> DetailExcluded = ["landcover", "housenumber", "mountain_peak"];
+
     /// <summary>Points the OpenMapTiles vector source at our tile server; optionally drops remote raster sources (low-zoom shading) and their layers.</summary>
     public static string Rewrite(string styleJson, string tilesUrl, bool keepRemoteRaster = true, string? assetsBaseUrl = null, string? detailTilesUrl = null)
     {
@@ -143,7 +147,7 @@ public static class MapStyleEndpoints
                 if (sl is "boundary" or "water_name") continue;
                 var lean = LeanClasses.TryGetValue(sl, out var inLean);
                 var target = lean ? JsonNode.Parse(l.ToJsonString())!.AsObject() : l;
-                if (target["maxzoom"] is JsonValue mz && mz.GetValue<double>() <= 13) { if (!lean) all.RemoveAt(i--); continue; }
+                if (target["maxzoom"] is JsonValue mz && mz.GetValue<double>() <= 13 || !lean && DetailExcluded.Contains(sl)) { if (!lean) all.RemoveAt(i--); continue; }
                 target["source"] = "openmaptiles_detail";
                 target["minzoom"] = Math.Max(l["minzoom"]?.GetValue<double>() ?? 0, 13);
                 if (!lean) continue; // moved, not cloned

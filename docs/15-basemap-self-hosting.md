@@ -202,10 +202,19 @@ shields stay visible at z13+ outside the harbour areas too. Layers on source-lay
 aerodrome_label, …) move to the detail source with minzoom 13 (no copy left on lean; a layer whose maxzoom ≤ 13 is dropped). Lean layers get a
 z13+ detail twin that only draws what lean filtered out (`!(class in LeanClasses && ramp != 1)`): side streets, links, paths, hamlets, but never a
 second motorway or city label. water/waterway twins are plain (same colour; the finer z14 coast covers the overzoomed z12 one); boundary and
-water_name get no twin. The pier rules read the detail source. 111 Liberty layers → 189 (86 lean, 101 detail; previously ~222).
+water_name get no twin. The pier rules read the detail source. Layers on source-layers the detail build excludes (`DetailExcluded`:
+landcover, housenumber, mountain_peak) are dropped, because MapLibre logs an error for every layer naming a source-layer missing from the
+TileJSON. 111 Liberty layers → 184 (86 lean, 96 detail; previously ~222).
 `LeanClasses` in MapStyle.cs and `LEAN_FILTER` in the script must stay in sync.
 
-**Switch (not done yet):**
+**Browser check 2026-10-20** (screenshots `.playwright-mcp/bm-*.png`): overview z6–z11, Kiel z12–z15, inland Schleswig-Holstein z13, open sea,
+Stockholm archipelago z10/z13 render as intended; no double roads or labels; the app's own layers (POI, seamarks, depth, harbours, route) stay above
+every base-map layer. Tiles come from Martin in 10–18 ms, panning z9–z13 shows no long tasks. Known limits: (1) **outside the region
+(east of 19.5 E, north of 60 N, south of 52 N) there are no tiles, so the sea is drawn in land colour**, although harbours exist there
+(of 6 439 harbour rings only 1 670 lie in the region); (2) the detail area ends at z13/z14 tile edges (squares, not circles), and outside it a
+town at z14 shows only main roads; (3) `highway-shield-*` filters warn about a missing `ref_length` (a Liberty quirk, harmless).
+
+**Switch (done 2026-10-20 by the user):**
 
 ```bash
 cd "/d/Rider Projects 2/SMS/media/tiles"
