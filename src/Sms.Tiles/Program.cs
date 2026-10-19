@@ -26,36 +26,48 @@ app.MapGet("/tiles/depth/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int 
     {
         entry.SlidingExpiration = TimeSpan.FromMinutes(30);
         await using var cmd = db.CreateCommand("""
-            WITH b AS (SELECT ST_TileEnvelope(@z, @x, @y) AS geom, ST_Transform(ST_TileEnvelope(@z, @x, @y), 4326) AS geom4326),
-            -- the depth areas come per z12 source tile with overlapping margins: unioned per depth step so no seams or double fills show;
-            -- made valid and unioned on a grid (simplified rings self-intersected: GEOS TopologyException, tile 500)
-            d AS (
+            WITH b AS (SELECT ST_TileEnvelope(@z, @x, @y) AS geom, ST_Transform(ST_TileEnvelope(@z, @x, @y, margin => 1.0 / 64), 4326)::box2d AS m),
+            -- all geometry work happens on the tile's pixel grid: clipped to the tile (+ margin) first, then simplified and turned into
+            -- tile coordinates by ST_AsMVTGeom (which also makes them valid). The depth areas come per z12 source tile with ~2 % overlapping
+            -- margins: each is cut back to its own z12 cell (the one with its centre), so they no longer overlap and need no ST_Union per
+            -- step (that union and the 300 m buffer of whole coast polygons cost 100-700 ms per tile and kept Postgres busy on every pan)
+            -- ponytail: still computed per request (cold z10 tiles 20-60 ms); a per-zoom table filled after the depth import / graph build if that matters
+            src AS MATERIALIZED (
                 SELECT d.min_depth_m AS min_depth, d.max_depth_m AS max_depth,
-                       ST_Union(ST_MakeValid(ST_SimplifyPreserveTopology(d.geom, @tol)), @tol / 8) AS geom
-                FROM routing_depth d, b WHERE d.geom && ST_Expand(b.geom4326, (ST_XMax(b.geom4326) - ST_XMin(b.geom4326)) / 32)
-                  AND (@z >= 10 OR d.max_depth_m <= 10)
-                GROUP BY d.min_depth_m, d.max_depth_m
+                       ST_AsMVTGeom(ST_Simplify(ST_ClipByBox2D(ST_Transform(ST_ClipByBox2D(g, b.m), 3857),
+                                    ST_TileEnvelope(12, floor((ST_X(c) + 20037508.342789244) / 9783.939620502539)::int, floor((20037508.342789244 - ST_Y(c)) / 9783.939620502539)::int)),
+                                    (ST_XMax(b.geom) - ST_XMin(b.geom)) / 2048), b.geom, 4096, 64, true) AS geom
+                FROM routing_depth d, b, LATERAL (SELECT ST_Transform(ST_Centroid(ST_Envelope(d.geom)), 3857) AS c,
+                                                         CASE WHEN ST_IsValid(d.geom) THEN d.geom ELSE ST_MakeValid(d.geom) END AS g) cc
+                WHERE d.geom && b.m AND (@z >= 10 OR d.max_depth_m <= 10)
             ),
-            -- the depth raster stops short of the coast (and has no band above 6 ft): the water within ~300 m of the active land that no depth area
-            -- covers is added as the shallowest step (0 - 1.83 m, unknown = 1), so the shallow colour reaches the land; only from z10 (sub-pixel below)
-            land AS (
-                SELECT ST_Union(ST_MakeValid(ST_SimplifyPreserveTopology(r.geom, @tol))) AS geom
-                FROM routing_land r, b
-                WHERE @z >= 10 AND r.graph_version = (SELECT value::int FROM routing_meta WHERE key = 'active_version')
-                  AND r.geom && ST_Expand(b.geom4326, GREATEST((ST_XMax(b.geom4326) - ST_XMin(b.geom4326)) / 32, 0.006))
+            d AS MATERIALIZED (SELECT min_depth, max_depth, geom FROM src WHERE min_depth < 18), -- deeper steps are drawn transparent
+            -- water with no charted depth: the raster stops short of the coast and has no step above 6 ft, so whatever is neither land nor a
+            -- depth area is shallower than 1.83 m (the Wadden flats, the strip along the shore) and comes as the shallowest step, unknown = 1.
+            -- Not land here: the no-go Block corrections the graph build writes into routing_land (same bounding box as a Block correction),
+            -- so no band rings the protected areas; land are the inland waters (Water corrections, no depth data) and everything outside the
+            -- graph region. Only from z10, where the deeper steps are part of the tile.
+            dry AS (
+                SELECT ST_AsMVTGeom(ST_Transform(ST_Simplify(ST_ClipByBox2D(s.g, b.m), @tol), 3857), b.geom, 4096, 64, true) AS geom
+                FROM b, LATERAL (
+                    SELECT r.geom AS g FROM routing_land r
+                    WHERE r.graph_version = (SELECT value::int FROM routing_meta WHERE key = 'active_version') AND r.geom && b.m
+                      AND NOT EXISTS (SELECT 1 FROM "RoutingCorrections" c WHERE c."Kind" = 'Block' AND c."Geometry" ~= r.geom)
+                    UNION ALL
+                    SELECT c."Geometry" FROM "RoutingCorrections" c WHERE c."Kind" = 'Water' AND c."Active" AND c."Geometry" && b.m
+                    UNION ALL
+                    SELECT ST_Difference(ST_MakeEnvelope(-180, -85, 180, 85, 4326), ST_MakeEnvelope(a[1], a[2], a[3], a[4], 4326))
+                    FROM (SELECT string_to_array(value, ',')::float8[] AS a FROM routing_meta WHERE key = 'region') r
+                ) s WHERE @z >= 10
+                UNION ALL SELECT geom FROM src WHERE @z >= 10
             ),
-            coast AS (
+            coast AS MATERIALIZED (
                 SELECT 0.0::float8 AS min_depth, 1.8288::float8 AS max_depth, 1 AS unknown,
-                       ST_Difference(ST_Buffer(ST_Transform(l.geom, 3857), 300 / cos(radians(ST_Y(ST_Centroid(b.geom4326))))),
-                                     ST_Union(ST_Transform(l.geom, 3857), COALESCE((SELECT ST_Transform(ST_Union(d.geom), 3857) FROM d), 'GEOMETRYCOLLECTION EMPTY'::geometry))) AS geom
-                FROM land l, b WHERE l.geom IS NOT NULL
+                       ST_Difference(ST_MakeEnvelope(-64, -64, 4160, 4160, 3857), ST_UnaryUnion(ST_Collect(geom), 1)) AS geom
+                FROM dry HAVING @z >= 10
             ),
-            q AS (
-                SELECT min_depth, max_depth, 0 AS unknown, ST_AsMVTGeom(ST_Transform(d.geom, 3857), b.geom, 4096, 32, true) AS geom FROM d, b
-                UNION ALL
-                SELECT min_depth, max_depth, unknown, ST_AsMVTGeom(coast.geom, b.geom, 4096, 32, true) FROM coast, b
-            )
-            SELECT COALESCE(ST_AsMVT(q, 'depth', 4096, 'geom'), ''::bytea) FROM q WHERE geom IS NOT NULL
+            q AS (SELECT min_depth, max_depth, 0 AS unknown, geom FROM d UNION ALL SELECT * FROM coast)
+            SELECT COALESCE(ST_AsMVT(q, 'depth', 4096, 'geom'), ''::bytea) FROM q WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
             """);
         cmd.Parameters.AddWithValue("z", z); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y);
         cmd.Parameters.AddWithValue("tol", 360.0 / (1 << z) / 2048); // about two tile pixels in degrees

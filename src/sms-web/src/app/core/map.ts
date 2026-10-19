@@ -218,19 +218,21 @@ async function poiBadge(kind: string, cls: string, inverted = false): Promise<Im
 const DEPTH_STORAGE = 'sms.depthOverlay';
 /**
  * Depth shading as one blue ramp (the shallower the darker; drying a greenish grey like paper charts; from 18 m clear). A ship draft adds two
- * violet warning steps for what is too shallow (draft + 0.5 m) - fully (max depth below) darker, partly lighter - and a red hatch layer on the first.
- * Water with no charted depth next to the coast comes from the tiles as the shallowest step (min_depth 0).
+ * violet warning steps for what is too shallow (draft + 0.5 m) - fully (max depth below) darker, partly lighter - and a thin red hatch on the first
+ * from z12. Water with no charted depth (the strip along the shore, the Wadden flats) comes from the tiles as the shallowest step with unknown = 1:
+ * one quieter even colour (a grey teal, with a draft "partly too shallow"), never hatched - as the hatched shallowest step it ringed every island.
  */
+const UNKNOWN = ['==', ['get', 'unknown'], 1];
 function depthFillColour(draftM: number | null): unknown {
   const limit = draftM == null ? null : draftM + 0.5;
   const steps = ['step', ['get', 'min_depth'], '#9fb98a', 0, '#1d4f9c', 1.8, '#3274c4', 3.6, '#5b9bdc', 5.4, '#8dbbea', 9, '#bdd8f4', 18, 'rgba(0,0,0,0)'];
-  return limit == null ? steps : ['case', ['<', ['get', 'max_depth'], limit], '#34357a', ['<', ['get', 'min_depth'], limit], '#7a78c8', steps];
+  return limit == null ? ['case', UNKNOWN, '#6f9fa0', steps] : ['case', UNKNOWN, '#7a78c8', ['<', ['get', 'max_depth'], limit], '#34357a', ['<', ['get', 'min_depth'], limit], '#7a78c8', steps];
 }
-const depthHatchFilter = (draftM: number | null): unknown => draftM == null ? ['<', ['get', 'max_depth'], -1e9] : ['<', ['get', 'max_depth'], draftM + 0.5];
-/** Diagonal red stripes for the "too shallow for the ship" hatch. */
+const depthHatchFilter = (draftM: number | null): unknown => draftM == null ? ['<', ['get', 'max_depth'], -1e9] : ['all', ['!', UNKNOWN], ['<', ['get', 'max_depth'], draftM + 0.5]];
+/** Thin diagonal red stripes for the "too shallow for the ship" hatch. */
 function depthHatchImage(): ImageData {
-  const size = 16, c = document.createElement('canvas'); c.width = c.height = size;
-  const g = c.getContext('2d')!; g.strokeStyle = 'rgba(229,57,53,0.85)'; g.lineWidth = 2;
+  const size = 24, c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d')!; g.strokeStyle = 'rgba(229,57,53,0.45)'; g.lineWidth = 1.5;
   for (const o of [-size, 0, size]) { g.beginPath(); g.moveTo(o, size); g.lineTo(o + size, 0); g.stroke(); }
   return g.getImageData(0, 0, size, size);
 }
@@ -242,9 +244,9 @@ export function addDepthOverlay(map: MlMap, tilesUrl: string): void {
   let on = false; try { on = localStorage.getItem(DEPTH_STORAGE) === '1'; } catch { /* ignore */ }
   const before = ['seamark-sectors-fill', 'seamark-lines', 'seamark-icons', 'seamark-points'].find(id => map.getLayer(id));
   map.addLayer({ id: 'depth-fill', type: 'fill', source: 'depth', 'source-layer': 'depth', minzoom: 7, layout: { visibility: on ? 'visible' : 'none' },
-    paint: { 'fill-color': depthFillColour(null) as never, 'fill-opacity': 0.55, 'fill-antialias': false } }, before);
+    paint: { 'fill-color': depthFillColour(null) as never, 'fill-opacity': ['case', UNKNOWN, 0.35, 0.55] as never, 'fill-antialias': false } }, before);
   if (!map.hasImage('depth-hatch')) map.addImage('depth-hatch', depthHatchImage(), { pixelRatio: 2 });
-  map.addLayer({ id: 'depth-hatch', type: 'fill', source: 'depth', 'source-layer': 'depth', minzoom: 7, layout: { visibility: on ? 'visible' : 'none' }, filter: depthHatchFilter(null) as never,
+  map.addLayer({ id: 'depth-hatch', type: 'fill', source: 'depth', 'source-layer': 'depth', minzoom: 12, layout: { visibility: on ? 'visible' : 'none' }, filter: depthHatchFilter(null) as never,
     paint: { 'fill-pattern': 'depth-hatch', 'fill-antialias': false } }, before);
   const wrap = document.createElement('div'); wrap.className = 'maplibregl-ctrl maplibregl-ctrl-group depth-overlay-ctrl';
   const button = document.createElement('button'); button.type = 'button'; button.className = 'depth-overlay-button'; button.title = 'Tiefen anzeigen'; button.setAttribute('aria-label', 'Tiefen anzeigen');
