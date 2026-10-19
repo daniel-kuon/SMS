@@ -52,6 +52,10 @@ public sealed class RoutingOptions
     public double NarrowBufferM { get; set; } = 40;
     public double NarrowLegFactor { get; set; } = 1.5;
     public double MaxRouteNm { get; set; } = 500;
+    /// <summary>Smoothing: a pulled or tightened leg keeps this far off the raw coastline, except along the graph path's own corridor
+    /// (narrow sounds, channels, passages, harbour approaches – where the path itself runs closer) and near the route ends (0 = off).
+    /// The visibility graph keeps CoastBufferM; without it the pull cut corners to a few metres off the beach (Skjoldnæs).</summary>
+    public double CoastClearanceM { get; set; } = 100;
     /// <summary>Assumed passages (ferry lines and buoy gaps across the coastline land, notes "Annahme…"): routes may use them and then
     /// carry a warning. Off closes them at query time (the graph keeps them, no rebuild needed).</summary>
     public bool AssumedPassages { get; set; } = true;
@@ -314,6 +318,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var nodeIndex = waterNodes is null ? null : NodeIndex.Build(waterNodes);
         var channelEdgeFrom = new List<int>(); // index ranges of derived channel edges: they run through whatever depth the sound has
         var passageRows = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage).Select(c => new { c.Geometry, c.Note }).ToListAsync(ct);
+        var fairwayJumps = 0;
         Phase("passages", passageRows.Count);
         foreach (var pc in passageRows)
         {
@@ -323,6 +328,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             var isChannel = pc.Note != null && pc.Note.StartsWith("Enge");
             // an assumed passage (ferry line / buoy gap across land) is a guide, not a marked channel: cost ×1, flagged for the warning
             var assumed = pc.Note != null && pc.Note.StartsWith(AssumedPassages.NotePrefix);
+            var isFairway = pc.Note != null && pc.Note.StartsWith("Fahrwasser");
             var factor = assumed ? 1 : o.PassageCostFactor;
             var firstEdge = extraEdges.Count;
             long? prev = null; var sinceLink = 0.0;
@@ -330,7 +336,16 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             {
                 var p = ls.GetCoordinateN(i);
                 var id = NodeAt(p);
-                if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); var segM = Haversine(q.Y, q.X, p.Y, p.X); sinceLink += segM; extraEdges.Add(new GraphEdge(pv, id, segM * factor, Geo.Factory.CreateLineString([q, p]), Assumed: assumed)); }
+                if (prev is { } pv && pv != id)
+                {
+                    var q = ls.GetCoordinateN(i - 1); var segM = Haversine(q.Y, q.X, p.Y, p.X); sinceLink += segM;
+                    // a buoy chain is chained greedily up to 2 km: a link jumping over an island (Kragerø: 1.5 km across Langøy, the
+                    // route crossed it) costs FairwayJumpPenaltyM extra and stays a leg of its own (its ends are kept as junctions);
+                    // usable only where nothing else leads on (an inland river the coastline counts as land: buoyed, often no other line)
+                    var jump = isFairway && SeaGraph.InteriorLandM(q, p, c => OnLinkLand(linkLand, c)) > FairwayJumpLandM;
+                    if (jump) { linkNodes.Add(pv); linkNodes.Add(id); fairwayJumps++; }
+                    extraEdges.Add(new GraphEdge(pv, id, segM * factor + (jump ? FairwayJumpPenaltyM : 0), Geo.Factory.CreateLineString([q, p]), Assumed: assumed));
+                }
                 // ends always hook into the water graph; inner vertices every ~1 km (derived channels have a vertex every few metres)
                 var isEnd = i == 0 || i == ls.NumPoints - 1;
                 if (isEnd) passageEndIds.Add((id, p));
@@ -390,7 +405,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         extraEdges = PassageContraction.Contract(extraEdges, keep, nodeId => nodeId <= gridNodeCount);
         var extraNodeIds = extraEdges.SelectMany(e => new[] { e.Source, e.Target }).ToHashSet();
         extraNodes = extraNodes.Where(n => extraNodeIds.Contains(n.Id)).ToList();
-        Report("passages", $"{before} passage edges contracted to {extraEdges.Count}, {extraNodes.Count} nodes kept ({sw.Elapsed:hh\\:mm\\:ss})");
+        Report("passages", $"{before} passage edges contracted to {extraEdges.Count}, {extraNodes.Count} nodes kept, {fairwayJumps} fairway links across land penalized ({sw.Elapsed:hh\\:mm\\:ss})");
         await using (var w = await conn.BeginBinaryImportAsync("COPY routing_node (graph_version, id, geom) FROM STDIN (FORMAT BINARY)", ct))
         {
             foreach (var n in extraNodes) { await w.StartRowAsync(ct); await w.WriteAsync(version, NpgsqlDbType.Integer, ct); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, ct); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, ct); }
@@ -793,6 +808,14 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             if (!middle && onLand - leading <= 2 && leading * 25 <= 1500) return n;
         }
         return null;
+    }
+
+    /// <summary>A fairway link crossing more land than this between water costs FairwayJumpPenaltyM extra (as the router penalizes a link across a mole).</summary>
+    private const double FairwayJumpLandM = 300, FairwayJumpPenaltyM = 20_000;
+    private static bool OnLinkLand(STRtree<(IPreparedGeometry prepared, Geometry geom)> land, Coordinate c)
+    {
+        var pt = Geo.Factory.CreatePoint(c);
+        return land.Query(new Envelope(c)).Any(l => l.prepared.Contains(pt));
     }
 
     /// <summary>The raw land of this graph version (coast tiles with lakes cut out, no-go blocks) as a prepared index for the link checks.</summary>

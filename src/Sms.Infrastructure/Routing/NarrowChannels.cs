@@ -21,19 +21,78 @@ namespace Sms.Infrastructure.Routing;
 /// </summary>
 public static class NarrowChannels
 {
-    public sealed record Options(double FineBufferM = 20, double CoastBufferM = 150, double OpenMarginM = 100, double MinClearanceM = 20, double DensifyM = 15, double FillHoleKm2 = 3, double MinCoreAreaM2 = 20_000, double MinChannelM = 300);
+    public sealed record Options(double FineBufferM = 20, double CoastBufferM = 150, double OpenMarginM = 100, double MinClearanceM = 20, double DensifyM = 15, double FillHoleKm2 = 3, double MinCoreAreaM2 = 20_000, double MinChannelM = 300, double PinchBufferM = 5, double SliverM = 15);
 
-    /// <summary>Channel centrelines (WGS84) inside <paramref name="tile"/> for the raw land polygons that touch it.</summary>
+    /// <summary>
+    /// Channel centrelines (WGS84) inside <paramref name="tile"/> for the raw land polygons that touch it. A lead whose mouths are
+    /// narrower than ~2 × (FineBufferM + MinClearanceM) – the Kragerø inner lead between Gumøy and Langøy is 40 m and 20 m wide at its
+    /// mouths – looks like an enclosed pond to the first pass and got no line at all. A second, thin pass (buffer PinchBufferM, clearance
+    /// and sliver PinchBufferM / 2: a gap wider than ~3 × PinchBufferM stays open; open-shore fringe cut off entirely) supplies the
+    /// lines of such leads: its network from the enclosed pieces outwards, up to the first pass's lines (0 = off).
+    /// </summary>
     public static List<LineString> Derive(IReadOnlyList<Geometry> rawLand, Envelope tile, Options o, GeometryFactory f)
     {
         var cos = Math.Cos((tile.MinY + tile.MaxY) / 2 * Math.PI / 180);
-        double Deg(double m) => m / WaterGraphTiler.MPerDegLat;
+        var enclosed = new List<Geometry>();
+        var lines = Pass(rawLand, tile, o, f, cos, enclosed);
+        if (o.PinchBufferM > 0 && o.PinchBufferM < o.FineBufferM && enclosed.Count > 0)
+        {
+            var p = o.PinchBufferM;
+            // ponytail: the thin pass runs over the whole tile; per-piece boxes if dense tiles get slow
+            var thin = Pass(rawLand, tile, o with { FineBufferM = p, MinClearanceM = p / 2, SliverM = p / 2, OpenMarginM = o.CoastBufferM - p }, f, cos, null);
+            lines.AddRange(Leads(thin, enclosed, lines, f));
+        }
+        return lines.Select(l => (LineString)Scale(l, 1 / cos)).Where(l => l.NumPoints >= 2).ToList();
+    }
+
+    /// <summary>The thin lines reachable from the enclosed pieces over shared ends, minus the part within 25 m of a first-pass line
+    /// (where the first pass serves the water already; a line reaching that far is not followed further).</summary>
+    private static IEnumerable<LineString> Leads(List<LineString> thin, List<Geometry> enclosed, List<LineString> first, GeometryFactory f)
+    {
+        var near = Deg(25);
+        var firstIndex = new NetTopologySuite.Index.Strtree.STRtree<LineString>();
+        foreach (var l in first) firstIndex.Insert(l.EnvelopeInternal, l);
+        Geometry? Covered(LineString l)
+        {
+            var env = new Envelope(l.EnvelopeInternal); env.ExpandBy(near);
+            var hits = firstIndex.Query(env).Where(x => x.IsWithinDistance(l, near)).Select(x => x.Buffer(near)).ToList();
+            return hits.Count == 0 ? null : UnaryUnionOp.Union(hits);
+        }
+        var zone = PreparedGeometryFactory.Prepare(UnaryUnionOp.Union(enclosed));
+        var byEnd = new Dictionary<(long, long), List<int>>();
+        for (var i = 0; i < thin.Count; i++)
+            foreach (var c in new[] { thin[i].StartPoint.Coordinate, thin[i].EndPoint.Coordinate })
+                (byEnd.TryGetValue(Key(c), out var list) ? list : byEnd[Key(c)] = []).Add(i);
+        var seen = new HashSet<int>(); var queue = new Queue<int>();
+        for (var i = 0; i < thin.Count; i++) if (zone.Intersects(thin[i]) && seen.Add(i)) queue.Enqueue(i);
+        while (queue.Count > 0)
+        {
+            var i = queue.Dequeue(); var l = thin[i];
+            var covered = Covered(l);
+            if (covered is null)
+            {
+                yield return l;
+                foreach (var c in new[] { l.StartPoint.Coordinate, l.EndPoint.Coordinate })
+                    foreach (var j in byEnd[Key(c)]) if (seen.Add(j)) queue.Enqueue(j);
+                continue;
+            }
+            foreach (var part in LineStrings(OverlayNGRobust.Overlay(l, covered, SpatialFunction.Difference))) if (part.Length >= Deg(20)) yield return part;
+        }
+    }
+
+    private static IEnumerable<LineString> LineStrings(Geometry g) => g switch { LineString l => l.IsEmpty ? [] : [l], GeometryCollection c => c.Geometries.SelectMany(LineStrings), _ => [] };
+    private static double Deg(double m) => m / WaterGraphTiler.MPerDegLat;
+
+    /// <summary>Channel lines of one pass, in the tile's scaled frame (x × cos φ).</summary>
+    /// <param name="enclosed">Collects (scaled, buffered 60 m) the narrow water pieces skipped because no open water is in reach.</param>
+    private static List<LineString> Pass(IReadOnlyList<Geometry> rawLand, Envelope tile, Options o, GeometryFactory f, double cos, List<Geometry>? enclosed)
+    {
         var box = f.ToGeometry(new Envelope(tile.MinX * cos, tile.MaxX * cos, tile.MinY, tile.MaxY));
         var pieces = rawLand.Where(g => g.EnvelopeInternal.Intersects(tile)).Select(g => Scale(g, cos)).ToList();
         if (pieces.Count == 0) return [];
         Geometry land;
         try { land = UnaryUnionOp.Union(pieces); } catch (TopologyException) { land = new GeometryCollection(pieces.ToArray()).Buffer(0); }
-        var fine = TopologyPreservingSimplifier.Simplify(land.Buffer(Deg(o.FineBufferM)), Deg(5));
+        var fine = TopologyPreservingSimplifier.Simplify(land.Buffer(Deg(o.FineBufferM)), Deg(Math.Min(5, o.FineBufferM / 2)));
         var water = Diff(box, fine);
         if (water.IsEmpty) return [];
         var coarse = fine.Buffer(Deg(o.CoastBufferM - o.FineBufferM));
@@ -43,7 +102,7 @@ public static class NarrowChannels
         if (narrow.IsEmpty) return [];
         // the part of the narrow water that is not merely the fringe of an open shore
         var core = open.IsEmpty ? narrow : Diff(narrow, open.Buffer(Deg(o.OpenMarginM)));
-        core = core.Buffer(-Deg(15)).Buffer(Deg(15)); // slivers along the shore
+        core = core.Buffer(-Deg(o.SliverM)).Buffer(Deg(o.SliverM)); // slivers along the shore
         var minArea = Deg(1) * Deg(1) * o.MinCoreAreaM2;
         var waterPrepared = PreparedGeometryFactory.Prepare(water);
         var openBoundary = open.IsEmpty ? null : open.Boundary;
@@ -52,7 +111,7 @@ public static class NarrowChannels
         foreach (var piece in Polygons(core).Where(p => p.Area >= minArea))
         {
             // an enclosed water body (a lake below the hole-filling size, a cut-off lagoon) is not a channel: nothing leads into it
-            if (openBoundary is null || piece.Distance(open) > reachDeg) continue;
+            if (openBoundary is null || piece.Distance(open) > reachDeg) { enclosed?.Add(piece.Buffer(Deg(60))); continue; }
             var inner = piece.Buffer(-Deg(o.MinClearanceM));
             if (inner.IsEmpty) continue;
             var innerPrepared = PreparedGeometryFactory.Prepare(inner);
@@ -118,8 +177,7 @@ public static class NarrowChannels
         foreach (var l in merged) foreach (var c in new[] { l.StartPoint.Coordinate, l.EndPoint.Coordinate }) { var k = Key(c); ends[k] = ends.GetValueOrDefault(k) + 1; }
         var minLen = Deg(o.MinChannelM);
         return merged.Where(l => l.Length >= minLen || ends[Key(l.StartPoint.Coordinate)] > 1 || ends[Key(l.EndPoint.Coordinate)] > 1)
-            .Select(l => DouglasPeuckerSimplifier.Simplify(l, Deg(8)) as LineString ?? l)
-            .Select(l => (LineString)Scale(l, 1 / cos)).Where(l => l.NumPoints >= 2).ToList();
+            .Select(l => DouglasPeuckerSimplifier.Simplify(l, Deg(Math.Min(8, o.FineBufferM / 2))) as LineString ?? l).ToList();
     }
 
     private static Geometry Diff(Geometry a, Geometry b) => OverlayNGRobust.Overlay(a, b, SpatialFunction.Difference);

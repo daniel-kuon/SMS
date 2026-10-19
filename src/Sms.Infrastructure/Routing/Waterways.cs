@@ -100,8 +100,10 @@ public static class Waterways
         return result;
     }
 
-    /// <summary>Inland water bodies the coastline polygons count as land: lakes, reservoirs, lagoons, fjords (the Schlei), river and canal areas (Elbe above Glückstadt, Göta älv, Warnow) and harbour basins, ways with a perimeter above 3 km (ponds are noise) and multipolygon relations.</summary>
-    public const string OverpassWaterQuery = """[out:json][timeout:180];(way["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord|river|canal|harbour|basin)$"](if:length()>3000)({0});relation["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord|river|canal|harbour|basin)$"]({0}););out geom;""";
+    /// <summary>Inland water bodies the coastline polygons count as land: lakes, reservoirs, lagoons, fjords (the Schlei), river and canal areas (Elbe above Glückstadt, Göta älv, Warnow) and harbour basins, ways with a perimeter above 3 km (ponds are noise) and multipolygon relations. Harbour basins come at any
+    /// size (from HarbourMinKm2): the Glückstadt Außenhafen (0.04 km², 1.2 km round) stayed land, the harbour's start snapped 330 m out
+    /// and its entrance from the Nebenelbe was missing from the graph.</summary>
+    public const string OverpassWaterQuery = """[out:json][timeout:180];(way["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord|river|canal)$"](if:length()>3000)({0});way["natural"="water"]["water"~"^(harbour|basin)$"]({0});relation["natural"="water"]["water"~"^(lake|reservoir|lagoon|fjord|river|canal|harbour|basin)$"]({0}););out geom;""";
 
     /// <summary>Piers, jetties, floating pontoons (man_made=pier + floating=yes), breakwaters and groynes: not part of the coastline, so
     /// the land polygons do not know them; the router steers round them after smoothing (PierAvoidance).</summary>
@@ -159,6 +161,9 @@ public static class Waterways
     }
 
     /// <summary>Lakes as polygons with holes (islands): closed ways directly, multipolygon relations by stitching their outer/inner member ways into rings. Only areas of at least minKm2.</summary>
+    /// <summary>Smallest harbour basin taken (a marina box of ~70 × 70 m).</summary>
+    public const double HarbourMinKm2 = 0.005;
+
     public static List<(Polygon area, string? name)> ParseWaterAreas(JsonDocument doc, GeometryFactory f, double minKm2 = 0.05)
     {
         var result = new List<(Polygon, string?)>();
@@ -168,8 +173,9 @@ public static class Waterways
             var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
             if (tags.GetValueOrDefault("natural") != "water") continue;
             var name = tags.GetValueOrDefault("name");
+            var min = tags.GetValueOrDefault("water") is "harbour" or "basin" ? Math.Min(minKm2, HarbourMinKm2) : minKm2;
             var type = el.GetProperty("type").GetString();
-            if (type == "way" && el.TryGetProperty("geometry", out var geom)) { if (Ring(geom, f) is { } ring && AreaKm2(ring) >= minKm2) result.Add((ring, name)); }
+            if (type == "way" && el.TryGetProperty("geometry", out var geom)) { if (Ring(geom, f) is { } ring && AreaKm2(ring) >= min) result.Add((ring, name)); }
             else if (type == "relation" && el.TryGetProperty("members", out var members))
             {
                 var outers = new List<Coordinate[]>(); var inners = new List<Coordinate[]>();
@@ -186,7 +192,7 @@ public static class Waterways
                     Polygon poly;
                     try { poly = f.CreatePolygon(shell, holes.Where(h => shell.EnvelopeInternal.Contains(h.EnvelopeInternal) && f.CreatePolygon(shell).Contains(h.StartPoint)).ToArray()); if (!poly.IsValid) poly = poly.Buffer(0) as Polygon ?? poly; }
                     catch (Exception) { continue; }
-                    if (AreaKm2(poly) >= minKm2) result.Add((poly, name));
+                    if (AreaKm2(poly) >= min) result.Add((poly, name));
                 }
             }
         }

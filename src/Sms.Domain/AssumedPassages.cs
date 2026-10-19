@@ -80,13 +80,16 @@ public static class AssumedPassages
     }
 
     /// <summary>A pair of lateral marks with a short land strip between them (indexes into the marks).</summary>
-    public readonly record struct Gap(int A, int B, double DistanceM, double LandM, Coordinate LandMid);
+    /// <param name="ContinuesChain">The pair continues the buoy chain of one of its marks (see BuoyGaps) rather than linking two channels side by side.</param>
+    public readonly record struct Gap(int A, int B, double DistanceM, double LandM, Coordinate LandMid, bool ContinuesChain = true);
 
     /// <summary>
     /// Candidate buoy gaps: two marks in water at most maxPairM apart whose straight line crosses land, at most maxLandM of it. Pairs
     /// across the same strip are clustered (shortest pair first; another pair whose land lies within clusterM of an accepted one is
     /// dropped). The router decides afterwards whether the graph lacks the connection. hitsLand: an optional quick segment test that
-    /// spares the sampling of pairs in open water.
+    /// spares the sampling of pairs in open water. ContinuesChain tells whether the pair continues the buoy chain of one of its marks
+    /// (Along) – two buoyed channels side by side do not: the Elbe and the Glückstädter Nebenelbe either side of Rhinplate got a
+    /// "Tonnenlücke" straight across the island, and routes from Glückstadt used it.
     /// </summary>
     public static List<Gap> BuoyGaps(IReadOnlyList<Coordinate> marks, Func<Coordinate, bool> onLand, double maxPairM = 1500, double maxLandM = 300, double clusterM = 300, double stepM = 10, Func<Coordinate, Coordinate, bool>? hitsLand = null)
     {
@@ -116,13 +119,48 @@ public static class AssumedPassages
                 }
                 var landM = land * d / n;
                 if (land == 0 || landM > maxLandM) continue;
-                candidates.Add(new Gap(i, j, d, landM, new Coordinate(mx / land, my / land)));
+                candidates.Add(new Gap(i, j, d, landM, new Coordinate(mx / land, my / land), Along(i, j) || Along(j, i)));
             }
         }
         var accepted = new List<Gap>();
         foreach (var c in candidates.OrderBy(c => c.DistanceM))
             if (!accepted.Any(x => SeaGraph.Haversine(x.LandMid.Y, x.LandMid.X, c.LandMid.Y, c.LandMid.X) <= clusterM)) accepted.Add(c);
         return accepted;
+
+        // the chain of mark m: the wet marks within maxPairM of it on its own side of the land (straight line without land). The pair
+        // continues it when the chain ends at m towards the other mark (the marks lie behind m, hardly any ahead) and the direction
+        // m -> other lies within 45 degrees of the chain's main axis (unless the chain has no clear axis: eigenvalue ratio below 2).
+        // A mark with fewer than two such neighbours tells nothing (true). Two channels side by side fail: their marks lie both ways.
+        bool Along(int m, int other)
+        {
+            var a = marks[m]; var b = marks[other]; var cos = Math.Cos(a.Y * Math.PI / 180);
+            double ux = (b.X - a.X) * cos, uy = b.Y - a.Y; var ul = Math.Sqrt(ux * ux + uy * uy); ux /= ul; uy /= ul;
+            var dLat = maxPairM / SeaGraph.MPerDeg; var dLng = dLat / Math.Max(0.2, cos);
+            double sxx = 0, syy = 0, sxy = 0, ahead = 0, behind = 0; var count = 0;
+            foreach (var k in index.Query(new Envelope(a.X - dLng, a.X + dLng, a.Y - dLat, a.Y + dLat)))
+            {
+                if (k == m || k == other) continue;
+                var q = marks[k];
+                if (SeaGraph.Haversine(a.Y, a.X, q.Y, q.X) > maxPairM || Crosses(a, q)) continue;
+                double x = (q.X - a.X) * cos, y = q.Y - a.Y;
+                sxx += x * x; syy += y * y; sxy += x * y; count++;
+                var proj = x * ux + y * uy;
+                if (proj > 0) ahead += proj; else behind -= proj;
+            }
+            if (count < 2) return true;
+            if (ahead > 0.25 * behind) return false;
+            var spread = Math.Sqrt((sxx - syy) * (sxx - syy) + 4 * sxy * sxy);
+            if (sxx + syy + spread < 2 * (sxx + syy - spread)) return true;
+            var axis = 0.5 * Math.Atan2(2 * sxy, sxx - syy);
+            return Math.Abs(Math.IEEERemainder(Math.Atan2(uy, ux) - axis, Math.PI)) <= Math.PI / 4;
+        }
+        bool Crosses(Coordinate p, Coordinate q)
+        {
+            if (hitsLand is not null) return hitsLand(p, q);
+            var n = Math.Max(2, (int)Math.Ceiling(SeaGraph.Haversine(p.Y, p.X, q.Y, q.X) / (5 * stepM)));
+            for (var k = 1; k < n; k++) if (onLand(Lerp(p, q, (double)k / n))) return true;
+            return false;
+        }
     }
 
     /// <summary>

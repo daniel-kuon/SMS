@@ -79,6 +79,19 @@ public class AssumedPassagesTests
     }
 
     [Fact]
+    public void A_gap_between_two_channels_side_by_side_does_not_continue_a_chain()
+    {
+        // north-south chains in two channels left and right of an island strip (Elbe / Glückstädter Nebenelbe either side of Rhinplate)
+        var side = Enumerable.Range(0, 5).SelectMany(k => new Coordinate[] { new(10.002, 54 + 0.003 * k), new(10.008, 54 + 0.003 * k) }).ToArray();
+        Assert.All(AssumedPassages.BuoyGaps(side, Land((10.004, 10.006))), g => Assert.False(g.ContinuesChain));
+        // one east-west chain interrupted by the strip
+        Coordinate[] chain = [new(9.98, 54), new(9.99, 54), new(10.0, 54), new(10.01, 54), new(10.02, 54), new(10.03, 54)];
+        var gap = Assert.Single(AssumedPassages.BuoyGaps(chain, Land((10.004, 10.006))));
+        Assert.Equal((2, 3), (gap.A, gap.B));
+        Assert.True(gap.ContinuesChain);
+    }
+
+    [Fact]
     public void Buoy_pairs_farther_apart_than_the_limit_are_no_gap()
     {
         Coordinate[] marks = [new(10.0, 54), new(10.03, 54)]; // ~2 km

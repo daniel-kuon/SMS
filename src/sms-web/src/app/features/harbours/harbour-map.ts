@@ -338,7 +338,12 @@ export class HarbourMapPage {
         this.pinned = false; this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line', !!r.warnings?.length, r.warnings); this.pinned = true;
         this.pointPopup.setDOMContent(textEl(r.method === 'straight-line' ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${r.straightLineNm} sm${routeWarningText(r.warnings)}`));
       },
-      error: () => this.pointPopup?.setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie)`)),
+      // 422 "no sea route" (the point is too far from navigable water or not connected): no line across land, the reason in the popup
+      error: err => {
+        if (!this.pointPopup?.isOpen()) return;
+        (map.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
+        this.pointPopup.setDOMContent(textEl(`${errorMessage(err)} (Luftlinie ${straightNm(h, to)} sm)`));
+      },
     });
   }
   private pointPopup?: maplibregl.Popup;

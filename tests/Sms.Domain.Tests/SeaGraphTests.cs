@@ -337,4 +337,13 @@ public class StringPullTests
         Assert.True(pts.Count > 4);
         Assert.All(fx.Take(fx.Count - 1), Assert.False);
     }
+
+    [Fact]
+    public void InteriorLandM_measures_land_between_water_only()
+    {
+        Func<Coordinate, bool> island = c => c.X >= 10.01 && c.X <= 10.02; // ~650 m wide at 54 N
+        Assert.InRange(SeaGraph.InteriorLandM(new(10.0, 54), new(10.03, 54), island), 600, 700);
+        Assert.Equal(0, SeaGraph.InteriorLandM(new(10.015, 54), new(10.03, 54), island)); // starts on land: a quay, not an island
+        Assert.Equal(0, SeaGraph.InteriorLandM(new(10.0, 54), new(10.009, 54), island));
+    }
 }

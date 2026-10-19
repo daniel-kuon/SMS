@@ -116,6 +116,21 @@ public sealed class SeaGraph
         }
         return false;
     }
+
+    /// <summary>The longest stretch (metres, sampled every stepM) of the leg a→b that lies on land with water before and after it: an
+    /// island the leg jumps over. Land at the start or end only counts nothing.</summary>
+    public static double InteriorLandM(Coordinate a, Coordinate b, Func<Coordinate, bool> onLand, double stepM = 25)
+    {
+        var n = Math.Max(2, (int)Math.Ceiling(Haversine(a.Y, a.X, b.Y, b.X) / stepM));
+        var step = Haversine(a.Y, a.X, b.Y, b.X) / n;
+        var water = false; var run = 0; var longest = 0;
+        for (var k = 0; k <= n; k++)
+        {
+            if (onLand(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n))) { if (water) run++; }
+            else { longest = Math.Max(longest, run); run = 0; water = true; }
+        }
+        return longest * step;
+    }
     public Coordinate Node(int id) => new(_x[id], _y[id]);
 
     /// <summary>The edge's geometry from source to target.</summary>

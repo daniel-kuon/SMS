@@ -14,7 +14,7 @@ namespace Sms.Api.Endpoints;
 public sealed record WaterwayImportResult(int Created, int Removed, int Bridges, int Locks, IReadOnlyList<object> Lines, int FairwayAreas = 0, int NoGoAreas = 0);
 public record CorrectionUpsert(CorrectionKind Kind, Geometry Geometry, string? Note, bool Active = true, double? ClearanceM = null);
 
-/// <summary>Spec 10 §10.4. Falls back to straight lines (method "straight-line") while no graph is built.</summary>
+/// <summary>Spec 10 §10.4. Falls back to straight lines (method "straight-line") while no graph is built; with a graph, no route is a 422.</summary>
 public static class RoutingEndpoints
 {
     public const string Disclaimer = "Entfernungen sind Schätzwerte und nicht zur Navigation geeignet.";
@@ -82,6 +82,10 @@ public static class RoutingEndpoints
 
             if (r is null)
             {
+                // with a graph, "no route" is an answer of its own: a straight line would cross land without a word (an inland logbook
+                // harbour 2.5 km from the Strelasund drew 5.4 nm across Rügen's mainland side as "straight-line", graph version 0)
+                if (await router.ActiveVersionAsync(ct) > 0)
+                    return Results.Problem(statusCode: 422, title: $"Keine Seeroute: Start oder Ziel liegt mehr als {SeaRouter.WaterSearchM / 1000:0} km vom befahrbaren Wasser entfernt, die Punkte sind nicht durch Wasser verbunden oder mehr als {router.MaxRouteNm:0} sm entfernt.");
                 var nm = Math.Round((decimal)(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / 1852), 1);
                 var line = Geo.Factory.CreateLineString([a.Coordinate, b.Coordinate]);
                 return Results.Ok(new { distanceNm = nm, straightLineNm = nm, geometry = line, graphVersion = 0, method = "straight-line", disclaimer = Disclaimer, attribution = Attribution });
@@ -337,7 +341,9 @@ public static class RoutingEndpoints
                 if (Near(gap.LandMid, 200)) continue; // a guide-line stretch already crosses this strip
                 Coordinate a = marks[gap.A], c = marks[gap.B];
                 var graphM = await router.GraphDistanceAsync(a, c, ct);
-                if (graphM is { } gm && gm <= 3 * gap.DistanceM) continue;
+                // where the graph connects the marks at all, an island over 100 m wide crossed between two channels side by side is no gap
+                // (Rhinplate between the Elbe and the Glückstädter Nebenelbe: 3.2 km round its tip, the assumed 0.5 nm across it was taken)
+                if (graphM is { } gm && (gm <= 3 * gap.DistanceM || (gap.LandM > 100 && !gap.ContinuesChain))) continue;
                 Coordinate[] coords = [a, c]; var note = "Annahme: Tonnenlücke";
                 var pa = Geo.Factory.CreatePoint(a); var pc = Geo.Factory.CreatePoint(c); var tolDeg = 100 / WaterGraphTiler.MPerDegLat;
                 if (guides.FirstOrDefault(gl => gl.Line.IsWithinDistance(pa, tolDeg) && gl.Line.IsWithinDistance(pc, tolDeg)) is { } guide)
