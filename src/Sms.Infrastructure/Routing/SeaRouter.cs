@@ -382,8 +382,14 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 .OrderBy(x => x.Geometry.Distance(pt)).Select(x => x.Note).FirstOrDefaultAsync(ct);
             result.Add(Warning(c, note));
         }
-        return result;
+        return Dedupe(result);
     }
+
+    /// <summary>One warning per assumed passage: a passage is cut into several edges (and pieces "(x sm)"), and a Stockholm route
+    /// listed the same ferry line 9–16 times.</summary>
+    internal static List<RouteWarning> Dedupe(IEnumerable<RouteWarning> warnings) =>
+        warnings.GroupBy(w => w.Kind == "assumedPassage" ? System.Text.RegularExpressions.Regex.Replace(w.Note, @"\s*\(\d+[,.]?\d* sm\)", "") : w.Kind + w.Lat + w.Lng)
+            .Select(g => g.First() with { Note = System.Text.RegularExpressions.Regex.Replace(g.First().Note, @"\s*\(\d+[,.]?\d* sm\)", "") }).ToList();
 
     private static RouteWarning LandWarning(string kind, Coordinate land, Coordinate water, string text)
     {
@@ -410,6 +416,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             if (routes[i] is { } route)
                 foreach (var p in passages)
                     if (AssumedPassages.Follows(route, p.Geometry.Coordinates)) result[i].Add(Warning(AssumedPassages.Midpoint(p.Geometry.Coordinates), p.Note));
+        for (var i = 0; i < result.Length; i++) result[i] = Dedupe(result[i]);
         return result;
     }
 
