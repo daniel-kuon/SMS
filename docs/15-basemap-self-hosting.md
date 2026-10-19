@@ -1,6 +1,6 @@
 # 15 – Self-hosted base map: options, measurements, recommendation
 
-Status 2026-10-19 (research only, nothing built or changed). Goal: our own tiles for the whole routing region
+Status 2026-10-19: research below; what was then built (class-filtered lean set, 1.5 km harbour detail, thinned style) is in **§6**. Goal: our own tiles for the whole routing region
 (4.5–19.5 E, 52–60 N) with **very little detail away from harbours** (coast/land/water, city names, Autobahn/Bundesstrasse
 only) and **full detail within ~3 km of a harbour** (4 556 harbours). Today the app runs on OpenFreeMap
 (`Map__RemoteBasemap=true` in `src/Sms.AppHost/AppHost.cs`) because the local `media/tiles/basemap.pmtiles` is only the
@@ -13,7 +13,7 @@ Schleswig-Holstein extract (bounds 7.46–11.80 E, 53.36–55.15 N, 130 MB, Open
   (`ghcr.io/onthegomap/planetiler:latest`, help output shows 0.10.x, `--polygon` is supported), temp files in the Docker volume `sms-planetiler-tmp`.
 * `GET /api/admin/map/harbour-areas.poly` (MapStyle.cs) delivers the union of 3 km circles around all harbours as a Planetiler `.poly`.
 * `MapStyle.Rewrite` repoints the OpenFreeMap Liberty style to Martin, and, when `basemap-detail.pmtiles` exists, clones every
-  Liberty layer onto a second source `openmaptiles_detail` with `minzoom >= 13`. Martin serves every `.pmtiles` in `media/tiles`.
+  Liberty layer onto a second source `openmaptiles_detail` with `minzoom >= 13` (replaced by the lean/detail split in §6). Martin serves every `.pmtiles` in `media/tiles`.
 * The lean Europe build was never run ("on hold until the WSL memory cap is set", docs/13: the host crashed on 2026-10-17 when the
   35 GB Europe PBF import and an mmap Planetiler Europe build ran side by side).
 * `media/cache/osm/` holds `europe-latest.osm.pbf` (35.2 GB, 2026-10-17) and `schleswig-holstein-latest.osm.pbf` (159 MB).
@@ -158,7 +158,64 @@ Then: verify in the browser at Kiel, Grossenbrode, Swedish archipelago (coast jo
 
 Developer effort: 0.5 day (step 0) + 1–1.5 days (a) = **about 2 days**, of which ~3 h is machine time; +1 day for step 5; (b) instead of (a) would be 2–3 days, (c) 2–3 days.
 
-## 6. Sources
+## 6. Built 2026-10-19/20 (lean filter, 1.5 km detail, thinned style)
+
+**Region cut:** `media/cache/osm/region.osm.pbf` (3.9 GB, osmium, `--strategy=simple`; "missing node" warnings in Planetiler are the ways cut at the bbox edge).
+
+**Lean tiles = Planetiler `lean region` + class filter.** Mechanism: tippecanoe `tile-join -j` (felt/tippecanoe 2.79.0, built once into the
+local Docker image `sms-tippecanoe:2.79.0` by `tools/build-basemap.sh`, ~1 min). Chosen over a Planetiler YAML schema (would re-implement the
+whole OpenMapTiles profile, coast/water handling included) and over our own filter tool (code to maintain, and the pmtiles writer is not in the
+repo): it is one scripted pass, does not touch geometry, and its filter knows the tile zoom (`$zoom`). It runs inside the Docker volume (on the
+Windows bind mount it took 14 min instead of 45 s), keeps only the attributes the style reads (`-y`, the ~80 `name:xx` translations per label were
+a big part of place/water_name), and the input's pmtiles header is copied back afterwards with go-pmtiles (`protomaps/go-pmtiles:v1.31.2 edit`),
+because tile-join writes world bounds. `tools/build-basemap.sh lean region` runs it after Planetiler; `tools/build-basemap.sh filter <file>` runs it alone.
+
+| layer | kept |
+|---|---|
+| transportation | motorway, trunk, primary, ferry, main rail (`class=rail`, no `service`); secondary from z10; no links (`ramp=1`), nothing else |
+| transportation_name | motorway, trunk, primary; secondary from z10 (ref shields, road names) |
+| place | continent, country, state, province, city, town, island; village and suburb from z11 (no hamlet, isolated_dwelling, neighbourhood, quarter, locality) |
+| boundary | admin_level ≤ 4 |
+| water, waterway, water_name | unchanged |
+
+Result (`basemap.pmtiles.new-lean`): **116 MB** (unfiltered 216 MB; without the attribute cut 127 MB). Size shares measured with `tile-join -l`: water 65 MB
+(coast, Swedish/Norwegian lakes; untouchable), place 28 → ~12 MB, transportation(_name) 17 MB, waterway 8.5 MB, water_name + boundary 11 MB; z12 is ~60 %
+of the file. Main rail costs 2.1 MB (1.9 %), secondary at z10–11 2.2 MB, both kept. Filter run: 45–60 s.
+
+| tile | before | after |
+|---|---|---|
+| Kiel z10 | 32.4 KB / 577 f | 15.6 KB / 214 f |
+| Kiel z12 | 35.6 KB / 1 356 f | 14.4 KB / 677 f (540 of them secondary/trunk pieces) |
+| Stockholm archipelago z10 | 31.4 KB / 250 f | 28.6 KB / 190 f (water 22 KB) |
+
+**Detail tiles:** harbour polygon with 1.5 km radius (`GET /api/admin/map/harbour-areas.poly?radiusKm=1.5` → `media/cache/harbours-1500.poly`, 6 439 rings
+for all harbours; the script keeps the 1 676 merged rings touching the region). **The first two detail builds (3 km and 1.5 km) were silently
+full-region z12–14 (2.76 GB, 588 k tiles, a tile in inland Sweden):** Planetiler 0.10.3 ignores `--polygon` when `--bounds` is set too
+(`Bounds.setShape` does not recompute the tile extents). The script now passes no `--bounds` in detail mode, the polygon supplies them
+(log line `prepareShapeForZoom z14 … tiles=20,521`). Landcover was 106 MB of the 561 MB result (and wood/grass discs ended at the polygon edge),
+housenumber 42 MB and mountain_peak are not drawn by Liberty: all three are excluded. Result (`basemap-detail.pmtiles.new`): **414 MB**, 32 179
+tiles z12–14, Planetiler 6 min. Lübeck z14: 158 KB / 3 666 f (poi 2 599, building 241), Kiel z14 118 KB / 3 442 f.
+
+**Style (`MapStyle.Rewrite`, only when a detail file exists):** decision for the double draw from 3.3: the lean source keeps every layer on
+`water, waterway, place, transportation, transportation_name, boundary, water_name` at all zooms (overzoomed z12), so main roads, town labels and
+shields stay visible at z13+ outside the harbour areas too. Layers on source-layers lean lacks (landuse, landcover, park, poi, building, aeroway,
+aerodrome_label, …) move to the detail source with minzoom 13 (no copy left on lean; a layer whose maxzoom ≤ 13 is dropped). Lean layers get a
+z13+ detail twin that only draws what lean filtered out (`!(class in LeanClasses && ramp != 1)`): side streets, links, paths, hamlets, but never a
+second motorway or city label. water/waterway twins are plain (same colour; the finer z14 coast covers the overzoomed z12 one); boundary and
+water_name get no twin. The pier rules read the detail source. 111 Liberty layers → 189 (86 lean, 101 detail; previously ~222).
+`LeanClasses` in MapStyle.cs and `LEAN_FILTER` in the script must stay in sync.
+
+**Switch (not done yet):**
+
+```bash
+cd "/d/Rider Projects 2/SMS/media/tiles"
+mv basemap.pmtiles basemap.pmtiles.bak                     # Schleswig-Holstein full build
+mv basemap.pmtiles.new-lean basemap.pmtiles
+mv basemap-detail.pmtiles.new basemap-detail.pmtiles        # there is no older basemap-detail.pmtiles
+# AppHost.cs: Map__RemoteBasemap "false", then restart the AppHost (Martin only lists the files at start)
+```
+
+## 7. Sources
 
 Protomaps docs (downloads, layers, ODbL Produced Work), Planetiler README (hardware/benchmarks: heap ≈ 0.5x PBF, disk 5–10x PBF, v0.10.1 planet in 19 min on 192 cores), Planetiler custommap README (YAML schema),
 tilemaker README (`--store`, Lua profile, pmtiles output, FTWPL), OpenFreeMap quick start (usage limits, attribution), `pmtiles show/extract --dry-run` against build.protomaps.com/20261018.pmtiles.

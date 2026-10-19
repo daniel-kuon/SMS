@@ -100,6 +100,16 @@ public static class MapStyleEndpoints
         return Results.File(local, contentType, enableRangeProcessing: false);
     }
 
+    /// <summary>What the lean tiles carry at z13+ (overzoomed z12, tools/build-basemap.sh LEAN_FILTER – keep in sync): source-layer → classes
+    /// without ramps (null = every feature). Detail twins draw only the rest.</summary>
+    private static readonly Dictionary<string, string[]?> LeanClasses = new()
+    {
+        ["water"] = null, ["waterway"] = null,
+        ["transportation"] = ["motorway", "trunk", "primary", "secondary", "ferry", "rail"],
+        ["transportation_name"] = ["motorway", "trunk", "primary", "secondary"],
+        ["place"] = ["continent", "country", "state", "province", "city", "town", "island", "village", "suburb"],
+    };
+
     /// <summary>Points the OpenMapTiles vector source at our tile server; optionally drops remote raster sources (low-zoom shading) and their layers.</summary>
     public static string Rewrite(string styleJson, string tilesUrl, bool keepRemoteRaster = true, string? assetsBaseUrl = null, string? detailTilesUrl = null)
     {
@@ -117,18 +127,33 @@ public static class MapStyleEndpoints
             foreach (var layer in layers.Where(l => removed.Contains(l?["source"]?.GetValue<string>() ?? "")).ToList()) layers.Remove(layer);
         if (detailTilesUrl is not null && style["layers"] is JsonArray all)
         {
-            // lean tiles (z ≤ 12, overzoomed) everywhere; the detail set adds every OpenMapTiles layer again from z13 (buildings, shops, side streets, piers) where it has tiles
+            // Lean tiles (z ≤ 12, overzoomed, class-filtered by tools/build-basemap.sh) everywhere; the detail set (z13+, harbour areas only)
+            // supplies what lean lacks. Layers on source-layers lean does not carry (landuse, landcover, park, poi, building, aeroway,
+            // housenumber, …) move to the detail source from z13; transportation/transportation_name/place stay on lean at every zoom and
+            // get a detail twin that draws only the classes lean filtered out, so main roads and town labels are never drawn twice
+            // and stay visible at z13+ outside the harbour areas. water/waterway get a plain twin (same colour, the finer z14 coast
+            // covers the overzoomed z12 one); boundary/water_name get none (lean has them complete).
             sources["openmaptiles_detail"] = new JsonObject { ["type"] = "vector", ["url"] = detailTilesUrl };
             var vectorSource = sources.First(s => s.Value!["type"]?.GetValue<string>() == "vector" && s.Key != "openmaptiles_detail").Key;
             for (var i = 0; i < all.Count; i++)
             {
                 var l = all[i]!.AsObject();
                 if (l["source"]?.GetValue<string>() != vectorSource) continue;
-                var clone = JsonNode.Parse(l.ToJsonString())!.AsObject();
-                clone["id"] = l["id"]!.GetValue<string>() + "-detail"; clone["source"] = "openmaptiles_detail";
-                clone["minzoom"] = Math.Max(l["minzoom"]?.GetValue<double>() ?? 0, 13);
-                if (clone["maxzoom"] is JsonValue mz && mz.GetValue<double>() <= 13) continue;
-                all.Insert(++i, clone);
+                var sl = l["source-layer"]?.GetValue<string>() ?? "";
+                if (sl is "boundary" or "water_name") continue;
+                var lean = LeanClasses.TryGetValue(sl, out var inLean);
+                var target = lean ? JsonNode.Parse(l.ToJsonString())!.AsObject() : l;
+                if (target["maxzoom"] is JsonValue mz && mz.GetValue<double>() <= 13) { if (!lean) all.RemoveAt(i--); continue; }
+                target["source"] = "openmaptiles_detail";
+                target["minzoom"] = Math.Max(l["minzoom"]?.GetValue<double>() ?? 0, 13);
+                if (!lean) continue; // moved, not cloned
+                target["id"] = l["id"]!.GetValue<string>() + "-detail";
+                if (inLean is not null)
+                {
+                    var notLean = new JsonArray("!", new JsonArray("all", new JsonArray("match", new JsonArray("get", "class"), new JsonArray(inLean.Select(c => (JsonNode?)c).ToArray()), true, false), new JsonArray("!=", new JsonArray("get", "ramp"), 1)));
+                    target["filter"] = l["filter"] is { } f ? new JsonArray("all", f.DeepClone(), notLean) : notLean;
+                }
+                all.Insert(++i, target);
             }
         }
         // Liberty has no rule for piers; harbour piers ("Stege") matter here – on the main source whenever it carries z13+ (full builds)
@@ -139,6 +164,7 @@ public static class MapStyleEndpoints
             var anchor = hit.l is null ? ls.Count - 1 : hit.i; // after the roads, or at the end when the style has none
             var pierArea = JsonNode.Parse("""{"id":"pier-area","type":"fill","source-layer":"landuse","minzoom":13,"filter":["==",["get","class"],"pier"],"paint":{"fill-color":"#e0e0e0"}}""")!.AsObject();
             var pier = JsonNode.Parse("""{"id":"pier","type":"line","source-layer":"transportation","minzoom":13,"filter":["==",["get","class"],"pier"],"paint":{"line-color":"#9e9e9e","line-width":["interpolate",["linear"],["zoom"],13,1,17,5]}}""")!.AsObject();
+            if (detailTilesUrl is not null) src = "openmaptiles_detail"; // lean tiles have no piers
             pierArea["source"] = src; pier["source"] = src;
             ls.Insert(anchor + 1, pierArea); ls.Insert(anchor + 2, pier);
         }

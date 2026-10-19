@@ -28,7 +28,7 @@ var api = builder.AddProject<Projects.Sms_Api>("api")
     .WithReference(db).WaitFor(db)
     .WithEnvironment("SMTP_ENDPOINT", mailpit.GetEndpoint("smtp"))
     .WithEnvironment("Map__BaseTilesUrl", "/basemap") // relative: the web dev server proxies /basemap to Martin (works from LAN devices too)
-    .WithEnvironment("Map__RemoteBasemap", "true") // for now OpenFreeMap's tiles (the local base map covers only part of the region); false = Martin/pmtiles
+    .WithEnvironment("Map__RemoteBasemap", "false") // self-hosted: lean region tiles (z0–12) + harbour detail (z12–14, 1.5 km) from tools/build-basemap.sh; true = OpenFreeMap
     .WithEnvironment("SIGNOZ_OTLP_ENDPOINT", signoz.OtlpGrpc)
     .WithEnvironment("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=development")
     .WithHttpHealthCheck("/health")

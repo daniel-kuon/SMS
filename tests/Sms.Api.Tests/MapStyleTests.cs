@@ -13,6 +13,17 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
           "layers": [ { "id": "shade", "type": "raster", "source": "ne2_shaded" }, { "id": "water", "type": "fill", "source": "openmaptiles", "source-layer": "water" } ] }
         """;
 
+    private const string LeanAndDetail = """
+        { "version": 8, "sources": { "ne2_shaded": { "type": "raster", "tiles": ["x"] }, "openmaptiles": { "type": "vector", "url": "x" } },
+          "layers": [ { "id": "shade", "type": "raster", "source": "ne2_shaded" }, { "id": "water", "type": "fill", "source": "openmaptiles", "source-layer": "water" },
+            { "id": "landuse", "type": "fill", "source": "openmaptiles", "source-layer": "landuse" },
+            { "id": "building", "type": "fill", "source": "openmaptiles", "source-layer": "building", "minzoom": 12, "maxzoom": 13 },
+            { "id": "road", "type": "line", "source": "openmaptiles", "source-layer": "transportation", "filter": ["==", ["get", "brunnel"], "bridge"] },
+            { "id": "boundary", "type": "line", "source": "openmaptiles", "source-layer": "boundary" },
+            { "id": "label_city", "type": "symbol", "source": "openmaptiles", "source-layer": "place", "minzoom": 14 },
+            { "id": "label_state", "type": "symbol", "source": "openmaptiles", "source-layer": "place", "maxzoom": 8 } ] }
+        """;
+
     [Fact]
     public void Rewrites_the_vector_source_and_optionally_drops_remote_raster_layers()
     {
@@ -26,13 +37,20 @@ public class MapStyleTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal("http://localhost:5173/api/map/fonts/{fontstack}/{range}.pbf", proxied.GetProperty("glyphs").GetString());
         Assert.Equal("http://localhost:5173/api/map/sprites/ofm", proxied.GetProperty("sprite").GetString());
 
-        // a harbour-detail tile set clones every vector layer from z13 and adds pier rules
-        var detail = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", true, null, "http://localhost:5161/basemap-detail")).RootElement;
+        // a harbour-detail tile set: lean layers keep their source and get a z13+ detail twin (roads/places only for the classes lean lacks),
+        // layers lean does not carry move to the detail source, boundaries are not doubled, the pier rules read the detail source
+        var detail = JsonDocument.Parse(MapStyleEndpoints.Rewrite(LeanAndDetail, "http://localhost:5161/basemap", true, null, "http://localhost:5161/basemap-detail")).RootElement;
         Assert.Equal("http://localhost:5161/basemap-detail", detail.GetProperty("sources").GetProperty("openmaptiles_detail").GetProperty("url").GetString());
-        var ids = detail.GetProperty("layers").EnumerateArray().Select(l => l.GetProperty("id").GetString()).ToList();
-        Assert.Equal(["shade", "water", "water-detail", "pier-area", "pier"], ids); // the pier rules follow the last transportation line layer, here the end
-        var clone = detail.GetProperty("layers")[2];
-        Assert.Equal("openmaptiles_detail", clone.GetProperty("source").GetString()); Assert.Equal(13, clone.GetProperty("minzoom").GetDouble());
+        var layers = detail.GetProperty("layers").EnumerateArray().ToDictionary(l => l.GetProperty("id").GetString()!);
+        Assert.Equal(["shade", "water", "water-detail", "landuse", "road", "road-detail", "pier-area", "pier", "boundary", "label_city", "label_city-detail", "label_state"], layers.Keys); // building (maxzoom 13) is dropped
+        Assert.Equal("openmaptiles", layers["road"].GetProperty("source").GetString()); Assert.False(layers["road"].TryGetProperty("minzoom", out _));
+        Assert.Equal("openmaptiles_detail", layers["road-detail"].GetProperty("source").GetString()); Assert.Equal(13, layers["road-detail"].GetProperty("minzoom").GetDouble());
+        var roadFilter = layers["road-detail"].GetProperty("filter").GetRawText();
+        Assert.StartsWith("[\"all\",[\"==\",[\"get\",\"brunnel\"],\"bridge\"],[\"!\"", roadFilter); Assert.Contains("motorway", roadFilter);
+        Assert.Equal("openmaptiles_detail", layers["landuse"].GetProperty("source").GetString()); Assert.Equal(13, layers["landuse"].GetProperty("minzoom").GetDouble());
+        Assert.Equal(14, layers["label_city-detail"].GetProperty("minzoom").GetDouble());
+        Assert.False(layers["water-detail"].TryGetProperty("filter", out _));
+        Assert.Equal("openmaptiles_detail", layers["pier"].GetProperty("source").GetString());
 
         var offline = JsonDocument.Parse(MapStyleEndpoints.Rewrite(Liberty, "http://localhost:5161/basemap", keepRemoteRaster: false)).RootElement;
         Assert.False(offline.GetProperty("sources").TryGetProperty("ne2_shaded", out _));
