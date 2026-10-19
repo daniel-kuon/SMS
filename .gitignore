@@ -248,3 +248,9 @@ media/
 # self-hosted base map tiles (built by tools/build-basemap.sh)
 media/tiles/*
 !media/tiles/.gitkeep
+
+# legacy data backup (local only)
+upload.zip
+upload/
+*.mdf
+*.ldf
