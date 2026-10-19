@@ -54,7 +54,7 @@ public static class HarbourEndpoints
             return Results.Ok(ToDto(h, names, current.IsAuthenticated, photos));
         });
 
-        g.MapPost("", async (HarbourUpsert req, SmsDbContext db, CurrentUser current, HtmlSanitizerService html, CancellationToken ct) =>
+        g.MapPost("", async (HarbourUpsert req, SmsDbContext db, CurrentUser current, HtmlSanitizerService html, SurroundingsJob surroundings, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.Name)) return Invalid("name", "Name fehlt.");
             var h = new Harbour { Source = HarbourSource.User, CreatedById = current.Id };
@@ -62,19 +62,22 @@ public static class HarbourEndpoints
             db.Harbours.Add(h);
             await db.SaveChangesAsync(ct);
             await ComputeServicesAsync(db, [h.Id], ct);
+            surroundings.Enqueue(h.Id);   // POIs around a new harbour: Overpass, in the background
             return Results.Created($"/api/harbours/{h.Id}", new { h.Id });
         }).RequireAuthorization();
 
-        g.MapPut("/{id:guid}", async (Guid id, HarbourUpsert req, SmsDbContext db, CurrentUser current, HtmlSanitizerService html, CancellationToken ct) =>
+        g.MapPut("/{id:guid}", async (Guid id, HarbourUpsert req, SmsDbContext db, CurrentUser current, HtmlSanitizerService html, SurroundingsJob surroundings, CancellationToken ct) =>
         {
             var h = await db.Harbours.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (h is null) return Results.NotFound();
             if (string.IsNullOrWhiteSpace(req.Name)) return Invalid("name", "Name fehlt.");
             db.HarbourRevisions.Add(new HarbourRevision { HarbourId = id, ChangedById = current.Id, SnapshotJson = Snapshot(h) });
+            var moved = Math.Abs(h.Location.Y - req.Lat) > 1e-5 || Math.Abs(h.Location.X - req.Lng) > 1e-5;
             Apply(h, req, html);
             h.UpdatedById = current.Id;
             await db.SaveChangesAsync(ct);
             await ComputeServicesAsync(db, [h.Id], ct);
+            if (moved) surroundings.Enqueue(h.Id);
             return Results.NoContent();
         }).RequireAuthorization();
 
@@ -154,7 +157,7 @@ public static class HarbourEndpoints
         }).RequireAuthorization();
 
         // --- admin: OSM import (Overpass, small areas; spec 10.3) and merge
-        api.MapPost("/admin/harbours/import-osm", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
+        api.MapPost("/admin/harbours/import-osm", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, IConfiguration cfg, SurroundingsJob surroundings, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             var p = bbox.Split(',');
@@ -165,8 +168,23 @@ public static class HarbourEndpoints
             var r = await ImportAsync(doc, db, current.Id, ct);
             var s = p.Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
             var area = Geo.Factory.ToGeometry(new Envelope(s[1], s[3], s[0], s[2]));
-            await ComputeServicesAsync(db, await db.Harbours.Where(h => h.IsActive && h.MergedIntoId == null && h.Location.Intersects(area)).Select(h => h.Id).ToListAsync(ct), ct);
-            return Results.Ok(new { r.created, r.updated, r.skipped });
+            var ids = await db.Harbours.Where(h => h.IsActive && h.MergedIntoId == null && h.Location.Intersects(area)).Select(h => h.Id).ToListAsync(ct);
+            await ComputeServicesAsync(db, ids, ct);
+            // harbours without any POI within 1 km (new regions): fetch their surroundings in the background
+            var bare = ids.Count == 0 ? [] : await db.Database.SqlQueryRaw<Guid>("""
+                SELECT h."Id" AS "Value" FROM "Harbours" h WHERE h."Id" = ANY({0}) AND NOT EXISTS (SELECT 1 FROM "Pois" p
+                    WHERE ST_DWithin(p."Location", ST_Transform(h."Location"::geometry, 3857), 1000 / cos(radians(ST_Y(h."Location"::geometry)))))
+                """, ids.ToArray()).ToListAsync(ct);
+            foreach (var b in bare) surroundings.Enqueue(b);
+            return Results.Ok(new { r.created, r.updated, r.skipped, surroundingsQueued = bare.Count });
+        }).RequireAuthorization().WithTags("Admin");
+
+        // POIs within 3 km from Overpass and the services of one harbour, in the background (see SurroundingsJob)
+        api.MapPost("/admin/harbours/{id:guid}/refresh-surroundings", async (Guid id, SmsDbContext db, CurrentUser current, SurroundingsJob surroundings, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (!await db.Harbours.AnyAsync(h => h.Id == id && h.IsActive, ct)) return Results.NotFound();
+            return Results.Accepted(value: new { queued = surroundings.Enqueue(id) });
         }).RequireAuthorization().WithTags("Admin");
 
         // Nearest services (HarbourServices) for all active harbours: one PostGIS query per batch, ~14 k harbours in seconds.
