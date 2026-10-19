@@ -32,4 +32,29 @@ public class HarbourServicesTests
     [Fact]
     public void Every_poi_service_has_a_display_slot() =>
         Assert.All(HarbourServices.PoiKinds, k => Assert.Contains(k.Service, HarbourServices.Order));
+
+    [Fact]
+    public void Public_transport_kinds_from_osm_tags()
+    {
+        string? K(params string[] kv) => HarbourServices.TransportKind(kv.Chunk(2).ToDictionary(p => p[0], p => p[1]));
+        Assert.Equal("bus_stop", K("highway", "bus_stop"));
+        Assert.Equal("bus_stop", K("public_transport", "platform", "bus", "yes"));
+        Assert.Null(K("public_transport", "platform", "train", "yes"));          // railway platform: the station is the place
+        Assert.Null(K("public_transport", "stop_position", "bus", "yes"));      // the bus's halt on the road
+        Assert.Equal("bus_station", K("amenity", "bus_station"));
+        Assert.Equal("station", K("railway", "station", "station", "subway"));   // metro counts as train
+        Assert.Equal("station", K("railway", "halt"));
+        Assert.Equal("station", K("public_transport", "station", "train", "yes"));
+        Assert.Null(K("railway", "station", "station", "miniature"));
+        Assert.Equal("tram_stop", K("railway", "tram_stop", "public_transport", "platform"));
+        Assert.Equal("ferry_terminal", K("amenity", "ferry_terminal"));
+        Assert.Null(K("amenity", "restaurant"));
+    }
+
+    [Fact]
+    public void Bus_stops_nearest_only()
+    {
+        var r = HarbourServices.Select(new Dictionary<string, bool>(), [new("bus", 800, "Markt", 1), new("bus", 250, "Hafen", 2), new("train", 1400, "Bahnhof", 3)]);
+        Assert.Equal([new HarbourService("bus", 250, "Hafen", 2), new HarbourService("train", 1400, "Bahnhof", 3)], r);
+    }
 }

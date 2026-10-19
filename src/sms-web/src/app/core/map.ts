@@ -197,8 +197,9 @@ export const POI_ICON: Record<string, string> = {
   atm: 'local_atm', bank: 'account_balance', police: 'local_police', post_office: 'local_post_office', bicycle_rental: 'pedal_bike', bicycle: 'pedal_bike', laundry: 'local_laundry_service', marina: 'anchor', slipway: 'anchor',
   museum: 'museum', attraction: 'attractions', information: 'info', viewpoint: 'visibility', beach: 'beach_access', swimming: 'pool', sports_centre: 'fitness_center', theatre: 'theater_comedy', cinema: 'movie', library: 'local_library',
   clothes: 'checkroom', hairdresser: 'content_cut', kiosk: 'storefront', gift: 'redeem', books: 'menu_book', electronics: 'devices', hardware: 'hardware', doityourself: 'hardware', butcher: 'kebab_dining', seafood: 'set_meal', greengrocer: 'nutrition', alcohol: 'wine_bar',
+  bus_stop: 'directions_bus', bus_station: 'directions_bus', station: 'train', tram_stop: 'tram', ferry_terminal: 'directions_boat',
 };
-const POI_COLOUR: Record<string, string> = { amenity: '#6d4c41', shop: '#1565c0', tourism: '#2e7d32', leisure: '#00838f', craft: '#4e342e', office: '#546e7a', healthcare: '#c62828' };
+const POI_COLOUR: Record<string, string> = { amenity: '#6d4c41', shop: '#1565c0', tourism: '#2e7d32', leisure: '#00838f', craft: '#4e342e', office: '#546e7a', healthcare: '#c62828', public_transport: '#283593' };
 
 /** 26 px round badge with a Material Symbols glyph, drawn once per kind; inverted = filled in the POI's colour with a white glyph (highlighted places). */
 async function poiBadge(kind: string, cls: string, inverted = false): Promise<ImageData> {

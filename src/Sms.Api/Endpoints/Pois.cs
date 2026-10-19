@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Sms.Domain;
 using Sms.Infrastructure;
+using static Sms.Api.ApiHelpers;
 
 namespace Sms.Api.Endpoints;
 
@@ -44,6 +45,22 @@ public static class PoiEndpoints
                 return new { x.Id, x.Name, kind, poiClass = x.Class, poiKind = x.Kind, x.OsmType, x.OsmId, lat = pLat, lng = pLng, distanceM = (int)Math.Round(x.Location.Distance(at) * k), i.OpeningHours, i.Cuisine, i.Website, i.Phone, i.Address };
             }));
         }).WithTags("Pois").RequireRateLimiting("ingest");
+        // public transport only (HarbourServices.TransportKind) near the harbours, without re-importing all POIs; Overpass, so 2°×2° chunks at most
+        api.MapPost("/admin/pois/import-transport", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, IConfiguration cfg, ILogger<PbfImportJob> log, CancellationToken ct, double radiusKm = 3) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var b = bbox.Split(',').Select(v => double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : double.NaN).ToArray();
+            if (b.Length != 4 || b.Any(double.IsNaN) || b[0] >= b[2] || b[1] >= b[3] || b[2] - b[0] > 2.01 || b[3] - b[1] > 2.01)
+                return Invalid("bbox", "bbox=south,west,north,east, at most 2°×2°");
+            var near = new PbfImportJob.NearIndex(Math.Clamp(radiusKm, 0.5, 10) * 1000);
+            foreach (var h in await db.Harbours.AsNoTracking().Select(h => h.Location).ToListAsync(ct)) near.Add(h.Y, h.X);
+            var bb = string.Join(",", b.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            var query = $"""[out:json][timeout:300];(nwr["highway"="bus_stop"]({bb});nwr["public_transport"="platform"]["bus"="yes"]({bb});nwr["amenity"~"^(bus_station|ferry_terminal)$"]({bb});nwr["railway"~"^(station|halt|tram_stop)$"]({bb});nwr["public_transport"="station"]["train"="yes"]({bb});nwr["public_transport"="station"]["bus"="yes"]({bb}););out center tags;""";
+            using var doc = await Overpass.QueryAsync(http, cfg, query, ct, log);
+            if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
+            var found = doc.RootElement.GetProperty("elements").GetArrayLength();
+            return Results.Ok(new { found, imported = await ImportAsync(doc, near, db, ct) });
+        }).RequireAuthorization().WithTags("Admin");
         api.MapGet("/pois/status", async (SmsDbContext db, CancellationToken ct) => Results.Ok(new { count = await db.Pois.CountAsync(ct) })).WithTags("Pois");
     }
 
@@ -97,11 +114,12 @@ public static class PoiEndpoints
             else continue;
             if (!near.Near(lat, lng) || !el.TryGetProperty("tags", out var tags)) continue;
             var dict = tags.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
-            var key = Keys.FirstOrDefault(dict.ContainsKey);
+            var transport = HarbourServices.TransportKind(dict);   // class public_transport, also for amenity=bus_station/ferry_terminal
+            var key = transport is null ? Keys.FirstOrDefault(dict.ContainsKey) : "public_transport";
             if (key is null) continue;
             var poi = existing.GetValueOrDefault((type, osmId));
             if (poi is null) { poi = new Poi { OsmType = type, OsmId = osmId }; db.Pois.Add(poi); }
-            poi.Class = key; poi.Kind = Cut(dict[key], 200); poi.Name = Cut(dict.GetValueOrDefault("name"), 200); poi.TagsJson = tags.GetRawText();
+            poi.Class = key; poi.Kind = transport ?? Cut(dict[key], 200); poi.Name = Cut(dict.GetValueOrDefault("name"), 200); poi.TagsJson = tags.GetRawText();
             poi.Location = SeamarkEndpoints.ToMercator(lat, lng); poi.ImportedAt = DateTimeOffset.UtcNow;
             n++;
         }

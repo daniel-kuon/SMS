@@ -218,10 +218,11 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
 
     private static readonly HashSet<string> PoiKeys = ["amenity", "shop", "tourism", "leisure", "craft", "office", "healthcare"];
     private static readonly HashSet<string> PoiSkip = ["parking", "bench", "waste_basket", "bicycle_parking", "parking_space", "parking_entrance", "grave_yard", "vending_machine", "recycling", "shelter", "hunting_stand", "picnic_table", "yes", "pitch", "garden", "playground", "swimming_pool", "track", "park", "nature_reserve", "artwork", "information", "viewpoint"];
-    /// <summary>Named shops, restaurants, services; toilets and fuel also without a name (as OpenSeaMap shows them).</summary>
+    /// <summary>Named shops, restaurants, services; toilets, fuel and public transport stops also without a name (as OpenSeaMap shows them).</summary>
     public static bool IsPoi(IReadOnlyDictionary<string, string> t)
     {
         if (IsHarbour(t) || t.ContainsKey("seamark:type")) return false;
+        if (HarbourServices.TransportKind(t) is not null) return true;   // bus stops, stations, ferry terminals, named or not
         foreach (var k in PoiKeys)
             if (t.TryGetValue(k, out var v) && !PoiSkip.Contains(v))
                 return t.ContainsKey("name") || v is "toilets" or "fuel" or "drinking_water" or "atm" or "shower";

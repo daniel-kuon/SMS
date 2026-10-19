@@ -33,7 +33,7 @@ import { applyDepthShading, applyHazardFilter } from '../../core/map';
 const NEAR_RADIUS_M = 3000;
 
 /** Service glyphs not covered by the POI icons (Material Symbols). */
-const SERVICE_ICON: Record<string, string> = { power_supply: 'electrical_services', sanitary_dump_station: 'plumbing', waste_disposal: 'delete', internet_access: 'wifi', bus_station: 'directions_bus', chandlery: 'sailing', slipway: 'rowing' };
+const SERVICE_ICON: Record<string, string> = { power_supply: 'electrical_services', sanitary_dump_station: 'plumbing', waste_disposal: 'delete', internet_access: 'wifi', bus: 'directions_bus', tram: 'tram', train: 'train', ferry: 'directions_boat', chandlery: 'sailing', slipway: 'rowing' };
 const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
 
 @Component({

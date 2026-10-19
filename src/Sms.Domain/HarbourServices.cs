@@ -31,14 +31,33 @@ public static class HarbourServices
         ("pharmacy", "amenity", "pharmacy"), ("pharmacy", "healthcare", "pharmacy"),
         ("atm", "amenity", "atm"), ("atm", "amenity", "bank"),
         ("bicycle_rental", "amenity", "bicycle_rental"),
-        ("bus_station", "amenity", "bus_station"),
+        ("bus", "public_transport", "bus_stop"), ("bus", "public_transport", "bus_station"),
+        ("tram", "public_transport", "tram_stop"),
+        ("train", "public_transport", "station"),
+        ("ferry", "public_transport", "ferry_terminal"),
     ];
+
+    /// <summary>
+    /// Pois.Kind of a public transport stop (Pois.Class "public_transport"), or null. Metro/light rail stations count as train.
+    /// Stop positions on the road (public_transport=stop_position) are left out: the platform or bus_stop node is the place to walk to.
+    /// </summary>
+    public static string? TransportKind(IReadOnlyDictionary<string, string> t)
+    {
+        string? T(string k) => t.GetValueOrDefault(k);
+        if ((T("railway") is "station" or "halt" && T("station") != "miniature") || (T("public_transport") == "station" && T("train") == "yes")) return "station";
+        if (T("railway") == "tram_stop") return "tram_stop";
+        if (T("amenity") == "ferry_terminal") return "ferry_terminal";
+        if (T("amenity") == "bus_station" || (T("public_transport") == "station" && T("bus") == "yes")) return "bus_station";
+        if (T("highway") == "bus_stop" || (T("public_transport") == "platform" && T("bus") == "yes")) return "bus_stop";
+        return null;
+    }
 
     /// <summary>Display order; power_supply and internet_access come only from the harbour's own facility flags.</summary>
     public static readonly string[] Order =
     [
         "fuel", "power_supply", "drinking_water", "toilets", "shower", "laundry", "sanitary_dump_station", "waste_disposal", "slipway", "chandlery", "boat_repair",
-        "supermarket", "convenience", "bakery", "restaurant", "cafe", "pharmacy", "atm", "internet_access", "bicycle_rental", "bus_station",
+        "supermarket", "convenience", "bakery", "restaurant", "cafe", "pharmacy", "atm", "internet_access", "bicycle_rental",
+        "bus", "tram", "train", "ferry",
     ];
 
     /// <summary>

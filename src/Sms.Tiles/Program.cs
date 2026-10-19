@@ -65,7 +65,7 @@ app.MapGet("/tiles/poi/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int y,
                 SELECT p."OsmId" AS osm_id, p."OsmType" AS osm_type, p."Class" AS class, p."Kind" AS kind, p."Name" AS name,
                        ST_AsMVTGeom(p."Location", b.geom, 4096, 64, true) AS geom
                 FROM "Pois" p, b WHERE p."Location" && ST_Expand(b.geom, (ST_XMax(b.geom) - ST_XMin(b.geom)) / 64)
-                  AND (@z >= 15 OR p."Kind" IN ('toilets', 'fuel', 'supermarket', 'restaurant', 'hotel', 'marina', 'chandler', 'boat_repair', 'drinking_water', 'shower', 'pharmacy', 'hospital', 'atm', 'bank', 'police'))
+                  AND (@z >= 15 OR p."Kind" IN ('toilets', 'fuel', 'supermarket', 'restaurant', 'hotel', 'marina', 'chandler', 'boat_repair', 'drinking_water', 'shower', 'pharmacy', 'hospital', 'atm', 'bank', 'police', 'station', 'ferry_terminal'))
             )
             SELECT COALESCE(ST_AsMVT(q, 'poi', 4096, 'geom'), ''::bytea) FROM q
             """);
