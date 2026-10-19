@@ -1,4 +1,4 @@
-import { Component, computed, effect, ElementRef, inject, input, signal, viewChild } from '@angular/core';
+import { Component, computed, effect, ElementRef, inject, input, signal, untracked, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { MatListModule } from '@angular/material/list';
@@ -17,10 +17,13 @@ import { TranslatePipe } from '@ngx-translate/core';
 import type { GeoJSONSource, MapMouseEvent } from 'maplibre-gl';
 import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
-import { Harbour, HarbourMarker, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
+import { Harbour, HarbourMarker, HarbourService, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
 import { Location } from '@angular/common';
-import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, setPoiFocus, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
+import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, ServiceSpot, setPoiFocus, setServiceHighlight, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
+import { formatServiceDistance } from '../../core/service-distance';
+import { appI18n } from '../../core/site';
+import { TranslateService } from '@ngx-translate/core';
 import { UploadZone } from '../../shared/shared';
 import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
 import { ShipContextService } from '../../core/ship-context';
@@ -63,7 +66,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
           @if (h.vhfChannel) { <div>{{ 'harbour.vhf' | translate }}: {{ h.vhfChannel }}</div> }
           @if (services().length) {
             <div class="services" [attr.aria-label]="'harbour.services' | translate">@for (s of services(); track s.kind) {
-              <span class="chip svc" [title]="('harbour.svc.' + s.kind | translate) + (s.name ? ': ' + s.name : '')"><mat-icon inline>{{ serviceIcon(s.kind) }}</mat-icon> {{ s.distanceM ? s.distanceM + ' m' : ('harbour.onSite' | translate) }}</span>
+              <span class="chip svc" role="button" tabindex="0" [class.active]="activeService() === s.kind" (click)="toggleService(s)" (keydown.enter)="toggleService(s)" [title]="('harbour.svc.' + s.kind | translate) + (s.name ? ': ' + s.name : '')"><mat-icon inline>{{ serviceIcon(s.kind) }}</mat-icon> {{ distance(s.distanceM) }}</span>
             }</div>
           }
           @if (h.photoUrls.length) { <div class="photo-grid">@for (p of h.photoUrls; track p) { <img [src]="p" /> }</div> }
@@ -121,7 +124,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     .ship-ctx { position: absolute; left: 50px; top: 10px; background: rgba(255,255,255,.95); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.3); padding: 4px 8px; display: flex; gap: 8px; align-items: center; font-size: 12px; z-index: 2; }
     .ship-ctx input { width: 44px; } .ship-ctx select { max-width: 140px; } .ship-ctx .small { font-size: 11px; }
     .full-width { width: 100%; }
-    .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: default; } .svc mat-icon { font-size: 16px; }
+    .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; } .svc.active { outline: 2px solid #e65100; } .svc mat-icon { font-size: 16px; }
     @media (max-width: 800px) { .layout { flex-direction: column; } .panel.open { width: 100%; } }
   `,
 })
@@ -145,6 +148,23 @@ export class HarbourMapPage {
   /** Nearest services (computed server-side); until they are computed the harbour's own facility flags, on site. */
   services = computed(() => { const h = this.harbour(); return !h ? [] : h.services?.length ? h.services : Object.keys(h.facilities).filter(k => h.facilities[k]).map(kind => ({ kind, distanceM: 0, name: null, poiId: null })); });
   serviceIcon = (kind: string) => SERVICE_ICON[kind] ?? POI_ICON[kind] ?? 'check';
+  private translate = inject(TranslateService);
+  distance = (m: number) => formatServiceDistance(m, appI18n.lang(), this.translate.instant('harbour.onSite') as string);
+  activeService = signal<string | null>(null);
+  /** Highlights where the service is around the harbour (all POIs of that kind within 1.5 km, nearest emphasised); again = off. A facility flag without a POI is the harbour itself. */
+  toggleService(s: HarbourService): void {
+    const h = this.harbour(), map = this.map;
+    if (!h || !map) return;
+    if (this.activeService() === s.kind) { this.clearService(); return; }
+    this.activeService.set(s.kind);
+    const label = this.translate.instant('harbour.svc.' + s.kind) as string;
+    if (!s.poiId) { setServiceHighlight(map, [{ lat: h.lat, lng: h.lng, text: `${label}: ${this.distance(0)}`, nearest: true }], h); return; }
+    this.api.get<{ name: string | null; lat: number; lng: number; distanceM: number }[]>('/api/pois/near', { lat: h.lat, lng: h.lng, kind: s.kind, radiusM: 1500 }).subscribe(r => {
+      if (this.activeService() !== s.kind || this.harbour() !== h || !this.map) return;
+      setServiceHighlight(this.map, r.map((p, i): ServiceSpot => ({ lat: p.lat, lng: p.lng, text: `${p.name ?? label} · ${this.distance(p.distanceM)}`, nearest: i === 0 })), h);
+    });
+  }
+  private clearService(): void { this.activeService.set(null); if (this.map) setServiceHighlight(this.map, [], null); }
   hovered: string | null = null;
   private map?: MlMap;
   private harbours = new Map<string, HarbourMarker>();
@@ -156,7 +176,7 @@ export class HarbourMapPage {
 
   constructor() {
     effect(() => { const id = this.id(); if (id) this.load(id); else this.harbour.set(null); });
-    effect(() => { const h = this.harbour(); if (this.map) setPoiFocus(this.map, h?.id ? h : null); });
+    effect(() => { const h = this.harbour(); if (this.map) setPoiFocus(this.map, h?.id ? h : null); untracked(() => { if (this.activeService()) this.clearService(); }); });
     effect(() => { const draft = this.shipCtx.draftM(); if (this.map) { applyHazardFilter(this.map, draft); applyDepthShading(this.map, draft); } });
   }
   pickShip(id: string): void { this.shipCtx.select(this.shipCtx.myShips().find(s => s.id === id) ?? null); }

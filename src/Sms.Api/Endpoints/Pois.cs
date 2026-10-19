@@ -26,6 +26,23 @@ public static class PoiEndpoints
             var p = await db.Pois.AsNoTracking().Where(x => x.Name == name && x.Location.IsWithinDistance(at, radius)).OrderBy(x => x.Location.Distance(at)).FirstOrDefaultAsync(ct);
             return p is null ? Results.NotFound() : Results.Ok(Details(p));
         }).WithTags("Pois");
+        // all POIs that provide a harbour service (HarbourServices.PoiKinds, e.g. "toilets") around a point, nearest first
+        api.MapGet("/pois/near", async (double lat, double lng, string kind, SmsDbContext db, CancellationToken ct, int radiusM = HarbourServices.MaxDistanceM) =>
+        {
+            var tags = HarbourServices.PoiKinds.Where(k => k.Service == kind).ToList();
+            if (tags.Count == 0 || Math.Abs(lat) > 85 || Math.Abs(lng) > 180) return Results.BadRequest();
+            radiusM = Math.Clamp(radiusM, 1, 5000);
+            var at = SeamarkEndpoints.ToMercator(lat, lng);
+            var k = Math.Cos(lat * Math.PI / 180);   // Pois are EPSG:3857, metres stretched by 1/cos(lat)
+            var kinds = tags.Select(t => t.Kind).ToList();
+            var rows = await db.Pois.AsNoTracking().Where(x => kinds.Contains(x.Kind) && x.Location.IsWithinDistance(at, radiusM / k))
+                .OrderBy(x => x.Location.Distance(at)).Take(100).Select(x => new { x.Id, x.Name, x.Class, x.Kind, x.Location }).ToListAsync(ct);
+            return Results.Ok(rows.Where(x => tags.Any(t => t.Class == x.Class && t.Kind == x.Kind)).Take(50).Select(x =>
+            {
+                var (pLat, pLng) = Sms.Infrastructure.Routing.Fairways.FromMercator(x.Location.X, x.Location.Y);
+                return new { x.Id, x.Name, kind, lat = pLat, lng = pLng, distanceM = (int)Math.Round(x.Location.Distance(at) * k) };
+            }));
+        }).WithTags("Pois").RequireRateLimiting("ingest");
         api.MapGet("/pois/status", async (SmsDbContext db, CancellationToken ct) => Results.Ok(new { count = await db.Pois.CountAsync(ct) })).WithTags("Pois");
     }
 

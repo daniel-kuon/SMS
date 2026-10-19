@@ -1,5 +1,5 @@
 import * as maplibregl from 'maplibre-gl';
-import type { ExpressionSpecification, Map as MlMap, MapOptions, StyleSpecification } from 'maplibre-gl';
+import type { ExpressionSpecification, GeoJSONSource, Map as MlMap, MapOptions, StyleSpecification } from 'maplibre-gl';
 import { formatPosition, seamarkTypeLabel } from './seamark-icons';
 import { appI18n } from './site';
 import { chartIconExpression, chartTopmarkExpression, chartTopmarkOffset, hazardFilter, lightIconExpression } from './chart-symbols';
@@ -287,6 +287,26 @@ export function setPoiFocus(map: MlMap, at: { lat: number; lng: number } | null)
   const dLat = 1500 / 111_320, dLng = dLat / Math.cos(at.lat * Math.PI / 180);
   const ring = [[at.lng - dLng, at.lat - dLat], [at.lng + dLng, at.lat - dLat], [at.lng + dLng, at.lat + dLat], [at.lng - dLng, at.lat + dLat], [at.lng - dLng, at.lat - dLat]];
   map.setFilter('poi-icons-near', ['within', { type: 'Polygon', coordinates: [ring] }] as never);
+}
+
+/** A highlighted service location: ring on top of the map with a label, the nearest one emphasised. */
+export interface ServiceSpot { lat: number; lng: number; text: string; nearest: boolean; }
+/** Highlights the spots (empty = clear). The map moves only when a spot (or the harbour) is off-screen. */
+export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: { lat: number; lng: number } | null): void {
+  if (!map.getSource('service-hl')) {
+    if (!spots.length) return;
+    map.addSource('service-hl', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'service-hl-ring', type: 'circle', source: 'service-hl', paint: { 'circle-radius': ['case', ['get', 'nearest'], 20, 14], 'circle-color': '#ff6f00', 'circle-opacity': 0.18, 'circle-stroke-color': ['case', ['get', 'nearest'], '#e65100', '#ff9800'], 'circle-stroke-width': ['case', ['get', 'nearest'], 4, 2.5] } });
+    map.addLayer({ id: 'service-hl-label', type: 'symbol', source: 'service-hl', layout: { 'text-field': ['get', 'text'], 'text-size': 12, 'text-offset': [0, 1.9], 'text-anchor': 'top', 'text-font': ['Noto Sans Regular'], 'text-allow-overlap': true }, paint: { 'text-color': '#bf360c', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
+  }
+  (map.getSource('service-hl') as GeoJSONSource).setData({ type: 'FeatureCollection', features: spots.map(s => ({ type: 'Feature', properties: { text: s.text, nearest: s.nearest }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } })) });
+  if (!spots.length) return;
+  const pts = [...spots, ...(harbour ? [harbour] : [])];
+  const view = map.getBounds();
+  if (pts.every(p => view.contains([p.lng, p.lat]))) return;
+  const b = new maplibregl.LngLatBounds([pts[0].lng, pts[0].lat], [pts[0].lng, pts[0].lat]);
+  for (const p of pts) b.extend([p.lng, p.lat]);
+  map.fitBounds(b, { padding: 70, maxZoom: 17 });
 }
 
 /** Map view in the URL (?c=lat,lng,zoom), like Google Maps: survives reloads, Back returns to the previous view. */
