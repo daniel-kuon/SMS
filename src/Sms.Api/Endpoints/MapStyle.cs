@@ -16,8 +16,9 @@ public static class MapStyleEndpoints
 {
     public const string DefaultStyleUrl = "https://tiles.openfreemap.org/styles/liberty";
 
+    /// <summary>Map:RemoteBasemap=true uses OpenFreeMap's own tiles (full Europe, all detail) even when a local base map exists.</summary>
     public static bool BasemapAvailable(IConfiguration cfg, IWebHostEnvironment env) =>
-        cfg["Map:BaseTilesUrl"] is { Length: > 0 } && cfg["Map:BasemapFile"] is { Length: > 0 } f && File.Exists(Path.GetFullPath(Path.Combine(env.ContentRootPath, f)));
+        !cfg.GetValue("Map:RemoteBasemap", false) && cfg["Map:BaseTilesUrl"] is { Length: > 0 } && cfg["Map:BasemapFile"] is { Length: > 0 } f && File.Exists(Path.GetFullPath(Path.Combine(env.ContentRootPath, f)));
 
     /// <summary>A second tile set with full detail (z12–14) only around harbours: media/tiles/basemap-detail.pmtiles (tools/build-basemap.sh detail …).</summary>
     public static bool DetailAvailable(IConfiguration cfg, IWebHostEnvironment env) =>
