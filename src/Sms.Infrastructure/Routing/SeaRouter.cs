@@ -330,8 +330,9 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         row ??= await db.Database.SqlQueryRaw<SnapRow>("""
             SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
             FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
+              AND ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) <= {5} -- the box corners are farther: a grid node there must not beat a passage node next to the point
             ORDER BY EXISTS (SELECT 1 FROM routing_isolated i WHERE i.graph_version = {0} AND i.id = routing_node.id), CASE WHEN id <= (SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes') THEN 0 ELSE 1 END, geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
-            """, version, p.X, p.Y, degLng, degLat).FirstOrDefaultAsync(ct);
+            """, version, p.X, p.Y, degLng, degLat, maxM).FirstOrDefaultAsync(ct);
         return row is not null && row.Metres <= maxM ? row.Id : null;
     }
 
