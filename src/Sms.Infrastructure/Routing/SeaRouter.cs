@@ -200,6 +200,19 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             .OrderBy(r => r.DistanceNm).Take(limit).ToList();
     }
 
+    private static (int count, (double, double)[] bands)? _depthBands;
+    /// <summary>The lowest charted depth band floor a ship with this draft may cross (see <see cref="DepthBands"/>).</summary>
+    private async Task<double> DepthFloorAsync(double draftM, CancellationToken ct)
+    {
+        if (_depthBands is null)
+        {
+            var rows = await db.Database.SqlQueryRaw<BandRow>("SELECT DISTINCT min_depth_m AS \"Min\", max_depth_m AS \"Max\" FROM routing_depth").ToListAsync(ct);
+            _depthBands = (rows.Count, rows.Select(r => (r.Min, r.Max)).ToArray());
+        }
+        return DepthBands.EffectiveFloor(draftM + builder.Options.DepthSafetyMarginM, _depthBands.Value.bands);
+    }
+    private sealed class BandRow { public double Min { get; set; } public double Max { get; set; } }
+
     private async Task<RouteResult?> RouteEndsAsync(SeaGraph graph, SeaGraph.End from, SeaGraph.End to, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null)
     {
         // bridges lower than the ship's air draft close their passage edges (clearance_m is null elsewhere); charted depth areas
@@ -217,7 +230,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         if (straightM > builder.Options.MaxRouteNm * Nm) return null;
         timings ??= []; var clock = Stopwatch.StartNew();
         var o = builder.Options;
-        var limits = new SeaGraph.Limits(airDraftM, draftM is { } dm ? dm + o.DepthSafetyMarginM : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat);
+        var limits = new SeaGraph.Limits(airDraftM, draftM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat);
         var path = graph.Route(from, to, limits);
         timings["astar"] = clock.ElapsedMilliseconds; clock.Restart();
         if (path is null) { logger.LogInformation("No sea route between {From} and {To}", from, to); return null; }
@@ -318,7 +331,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             }
         }
         Lap("smooth-bridges");
-        var limit = draftM is { } dm ? dm + builder.Options.DepthSafetyMarginM : double.MinValue;
+        var limit = draftM is { } dm ? await DepthFloorAsync(dm, ct) : double.MinValue;
         if (draftM is not null)
         {
             var shallow = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_depth WHERE min_depth_m < {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", limit, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);

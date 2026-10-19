@@ -42,7 +42,7 @@ public static class Seed
             (string name, double lat, double lng, string? cat)[] harbours =
             [
                 ("Kiel Düsternbrook", 54.3390, 10.1530, "marina"), ("Kiel Schilksee", 54.4245, 10.1710, "marina"), ("Strande", 54.4330, 10.1740, "marina"),
-                ("Laboe", 54.4105, 10.2190, "marina"), ("Möltenort", 54.3780, 10.1940, "marina"), ("Lippe (Hohenfelde)", 54.3980, 10.4340, "marina"),
+                ("Laboe", 54.4105, 10.2190, "marina"), ("Möltenort", 54.3780, 10.1940, "marina"), ("Lippe", 54.3357, 10.6477, "marina"),
                 ("Eckernförde", 54.4720, 9.8380, "marina"), ("Damp", 54.5780, 10.0290, "marina"), ("Maasholm", 54.6830, 9.9900, "marina"),
                 ("Kappeln", 54.6620, 9.9330, "marina"), ("Schleimünde", 54.6730, 10.0370, "harbour"), ("Heiligenhafen", 54.3740, 10.9800, "marina"),
                 ("Burgtiefe (Fehmarn)", 54.4010, 11.2020, "marina"), ("Grömitz", 54.1420, 10.9680, "marina"), ("Neustadt in Holstein", 54.1040, 10.8150, "marina"),
