@@ -124,7 +124,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
       </aside>
     </div>`,
   styles: `
-    .layout { flex: 1; display: flex; position: relative; min-height: calc(100vh - 64px - 40px); }
+    .layout { flex: 1; display: flex; position: relative; height: calc(100dvh - 64px - 40px); min-height: 420px; } /* fixed height: a tall panel scrolls instead of stretching the map past the viewport (fitBounds then placed places off-screen) */
     .map { flex: 1; min-height: 60vh; }
     .panel { width: 0; overflow: hidden; transition: width .2s; background: white; box-shadow: -2px 0 8px rgba(0,0,0,.15); }
     .panel.open { width: 420px; max-width: 100vw; padding: 12px; overflow-y: auto; }
@@ -135,7 +135,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     .full-width { width: 100%; }
     .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; } .svc.active { outline: 2px solid #e65100; }
     .places { list-style: none; margin: 0 0 8px; padding: 0; max-height: 40vh; overflow-y: auto; font-size: 13px; } .places li { padding: 6px 8px; border-bottom: 1px solid #e0e0e0; cursor: pointer; } .places li:hover, .places li.sel { background: #fff3e0; } .places li.sel { border-left: 3px solid #d50000; } .places .row { white-space: pre-line; } .places .badge { font-weight: 600; white-space: nowrap; color: #c62828; } .places .badge.open { color: #2e7d32; } .places a mat-icon { font-size: 14px; vertical-align: middle; } .svc mat-icon { font-size: 16px; }
-    @media (max-width: 800px) { .layout { flex-direction: column; } .panel.open { width: 100%; } }
+    @media (max-width: 800px) { .layout { flex-direction: column; height: auto; } .map { height: 60vh; flex: none; } .panel.open { width: 100%; } }
   `,
 })
 export class HarbourMapPage {
