@@ -36,12 +36,12 @@ public static class PoiEndpoints
             var k = Math.Cos(lat * Math.PI / 180);   // Pois are EPSG:3857, metres stretched by 1/cos(lat)
             var kinds = tags.Select(t => t.Kind).ToList();
             var rows = await db.Pois.AsNoTracking().Where(x => kinds.Contains(x.Kind) && x.Location.IsWithinDistance(at, radiusM / k))
-                .OrderBy(x => x.Location.Distance(at)).Take(100).Select(x => new { x.Id, x.Name, x.Class, x.Kind, x.Location, x.TagsJson }).ToListAsync(ct);
+                .OrderBy(x => x.Location.Distance(at)).Take(100).Select(x => new { x.Id, x.Name, x.Class, x.Kind, x.OsmType, x.OsmId, x.Location, x.TagsJson }).ToListAsync(ct);
             return Results.Ok(rows.Where(x => tags.Any(t => t.Class == x.Class && t.Kind == x.Kind)).Take(50).Select(x =>
             {
                 var (pLat, pLng) = Sms.Infrastructure.Routing.Fairways.FromMercator(x.Location.X, x.Location.Y);
                 var i = Info(x.TagsJson);
-                return new { x.Id, x.Name, kind, lat = pLat, lng = pLng, distanceM = (int)Math.Round(x.Location.Distance(at) * k), i.OpeningHours, i.Cuisine, i.Website, i.Phone, i.Address };
+                return new { x.Id, x.Name, kind, poiClass = x.Class, poiKind = x.Kind, x.OsmType, x.OsmId, lat = pLat, lng = pLng, distanceM = (int)Math.Round(x.Location.Distance(at) * k), i.OpeningHours, i.Cuisine, i.Website, i.Phone, i.Address };
             }));
         }).WithTags("Pois").RequireRateLimiting("ingest");
         api.MapGet("/pois/status", async (SmsDbContext db, CancellationToken ct) => Results.Ok(new { count = await db.Pois.CountAsync(ct) })).WithTags("Pois");

@@ -12,7 +12,7 @@ describe('service-place', () => {
   it('lists only the available details', () => {
     const p: ServicePlace = { id: 1, name: null, kind: 'restaurant', lat: 0, lng: 0, distanceM: 10, openingHours: 'Mo-Su 10:00-22:00', cuisine: null, website: 'https://www.example.com/', phone: '+49 431 123', address: null };
     const l = { hours: 'H', cuisine: 'C', website: 'W', phone: 'P', address: 'A' };
-    expect(placeRows(p, 'de', l)).toEqual([{ label: 'H', value: 'Mo-Su 10:00-22:00' }, { label: 'P', value: '+49 431 123', href: 'tel:+49431123' }, { label: 'W', value: 'example.com', href: 'https://www.example.com/' }]);
+    expect(placeRows(p, 'de', l, new Date('2026-10-17T12:00:00'))).toEqual([{ label: 'H', value: 'täglich 10:00–22:00', badge: { text: 'jetzt geöffnet', open: true } }, { label: 'P', value: '+49 431 123', href: 'tel:+49431123' }, { label: 'W', value: 'example.com', href: 'https://www.example.com/' }]);
   });
 });
 

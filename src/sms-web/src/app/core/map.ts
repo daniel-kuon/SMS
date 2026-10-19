@@ -2,6 +2,7 @@ import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, GeoJSONSource, Map as MlMap, MapOptions, StyleSpecification } from 'maplibre-gl';
 import { formatPosition, seamarkTypeLabel } from './seamark-icons';
 import { appI18n } from './site';
+import { hoursRow, PlaceRow } from './service-place';
 import { chartIconExpression, chartTopmarkExpression, chartTopmarkOffset, hazardFilter, lightIconExpression } from './chart-symbols';
 
 /** Public map configuration served by the API (/api/config). */
@@ -259,10 +260,10 @@ export function addPoiOverlay(map: MlMap, tilesUrl: string): void {
   const paint = { 'text-color': '#37474f', 'text-halo-color': '#ffffff', 'text-halo-width': 1.2 };
   map.addLayer({ id: 'poi-icons', type: 'symbol', source: 'poi', 'source-layer': 'poi', minzoom: 16, layout: layout as never, paint }, before);
   map.addLayer({ id: 'poi-icons-near', type: 'symbol', source: 'poi', 'source-layer': 'poi', minzoom: 13, maxzoom: 16, layout: { ...layout, visibility: 'none' } as never, paint }, before);
-  for (const id of ['poi-icons', 'poi-icons-near']) clickable(map, id, e => { const f = e.features?.[0]; if (f && !(map.getLayer('service-hl-ring') && map.queryRenderedFeatures(e.point, { layers: ['service-hl-ring'] }).length)) void showPoiPopup(map, f.properties as Record<string, unknown>, e.lngLat); });
+  for (const id of ['poi-icons', 'poi-icons-near']) clickable(map, id, e => { const f = e.features?.[0]; if (f && !hlAt(map, e.point)) void showPoiPopup(map, f.properties as Record<string, unknown>, e.lngLat); });
   // the basemap's own POI labels (OpenMapTiles "poi" layer): name and kind, details from our Pois table when it knows the place
   for (const l of map.getStyle().layers) if ('source-layer' in l && l['source-layer'] === 'poi' && l.type === 'symbol') clickable(map, l.id, e => {
-    const p = e.features?.[0]?.properties as Record<string, unknown> | undefined; if (!p) return;
+    const p = e.features?.[0]?.properties as Record<string, unknown> | undefined; if (!p || hlAt(map, e.point)) return;
     const name = p['name:de'] ?? p['name'];
     void showPoiPopup(map, { name, kind: p['subclass'] ?? p['class'] }, e.lngLat, name ? `/api/pois/lookup?${new URLSearchParams({ name: String(name), lat: e.lngLat.lat.toFixed(6), lng: e.lngLat.lng.toFixed(6) })}` : null);
   });
@@ -289,49 +290,63 @@ export function setPoiFocus(map: MlMap, at: { lat: number; lng: number } | null)
   map.setFilter('poi-icons-near', ['within', { type: 'Polygon', coordinates: [ring] }] as never);
 }
 
-/** A highlighted service location: ring on top of the map with a label and a straight line from the harbour, the nearest one emphasised. */
-export interface ServiceSpot { lat: number; lng: number; text: string; nearest: boolean; popup?: () => HTMLElement; }
+/** A highlighted service place: drawn with the same icon image as our POI tiles (poi|class|kind), bigger and on top, even where the tiles do not have it at this zoom. */
+export interface ServiceSpot { lat: number; lng: number; icon: string; popup?: () => HTMLElement; }
 let hlSpots: ServiceSpot[] = [], hlPick: ((i: number) => void) | undefined, hlPopup: maplibregl.Popup | undefined;
-const HL_ORANGE = '#ff9800', HL_DARK = '#e65100';
-/** Highlights the spots (empty = clear); a click on a ring opens its popup and reports its index to onPick. The map moves only when a spot (or the harbour) is off-screen. */
+const HL_LAYERS = ['service-hl-icons', 'service-hl-icons-active'];
+const hlAt = (map: MlMap, point: maplibregl.PointLike) => HL_LAYERS.every(id => map.getLayer(id)) && map.queryRenderedFeatures(point, { layers: HL_LAYERS }).length > 0;
+const dimmed = new Map<string, unknown>();
+/** While a service is selected all other POIs (ours and the basemap's labels) are half transparent. */
+function dimOtherPois(map: MlMap, on: boolean): void {
+  const ids = ['poi-icons', 'poi-icons-near', ...map.getStyle().layers.filter(l => 'source-layer' in l && l['source-layer'] === 'poi' && l.type === 'symbol').map(l => l.id)];
+  for (const id of ids) for (const prop of ['icon-opacity', 'text-opacity'] as const) {
+    if (!map.getLayer(id)) continue;
+    const key = `${id}|${prop}`;
+    if (on) {
+      if (!dimmed.has(key)) dimmed.set(key, map.getPaintProperty(id, prop));
+      const o = dimmed.get(key);
+      map.setPaintProperty(id, prop, typeof o === 'number' || o == null ? 0.5 * (o as number ?? 1) : 0.5);   // ponytail: a zoom-dependent original opacity becomes a flat 0.5
+    } else if (dimmed.has(key)) { map.setPaintProperty(id, prop, (dimmed.get(key) ?? null) as never); dimmed.delete(key); }
+  }
+}
+/** Highlights the places (empty = clear): bigger POI icons on top, all other POIs dimmed, the map fitted to the places and the harbour. A click on an icon opens its popup and reports its index to onPick. */
 export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: { lat: number; lng: number } | null, onPick?: (i: number) => void): void {
   hlSpots = spots; hlPick = onPick; hlPopup?.remove(); hlPopup = undefined;
   if (!map.getSource('service-hl')) {
     if (!spots.length) return;
     map.addSource('service-hl', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    const none = ['==', ['get', 'i'], -1] as never;
-    const line = { type: 'line', source: 'service-hl', layout: { 'line-cap': 'round' } } as const;
-    map.addLayer({ ...line, id: 'service-hl-line', filter: ['!', ['get', 'nearest']], paint: { 'line-color': HL_ORANGE, 'line-width': 1, 'line-dasharray': [3, 3] } });
-    map.addLayer({ ...line, id: 'service-hl-line-near', filter: ['get', 'nearest'], paint: { 'line-color': HL_DARK, 'line-width': 2.5, 'line-dasharray': [3, 2] } });
-    map.addLayer({ ...line, id: 'service-hl-line-active', filter: none, paint: { 'line-color': '#d50000', 'line-width': 3.5 } });
-    map.addLayer({ id: 'service-hl-ring', type: 'circle', source: 'service-hl', filter: ['has', 'text'], paint: { 'circle-radius': ['case', ['get', 'nearest'], 20, 14], 'circle-color': '#ff6f00', 'circle-opacity': 0.18, 'circle-stroke-color': ['case', ['get', 'nearest'], HL_DARK, HL_ORANGE], 'circle-stroke-width': ['case', ['get', 'nearest'], 4, 2.5] } });
-    map.addLayer({ id: 'service-hl-ring-active', type: 'circle', source: 'service-hl', filter: none, paint: { 'circle-radius': 22, 'circle-color': '#d50000', 'circle-opacity': 0.25, 'circle-stroke-color': '#d50000', 'circle-stroke-width': 4 } });
-    map.addLayer({ id: 'service-hl-label', type: 'symbol', source: 'service-hl', filter: ['has', 'text'], layout: { 'text-field': ['get', 'text'], 'text-size': 12, 'text-offset': [0, 1.9], 'text-anchor': 'top', 'text-font': ['Noto Sans Regular'], 'text-optional': true }, paint: { 'text-color': '#bf360c', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
-    clickable(map, 'service-hl-ring', e => {
+    const point = ['==', ['geometry-type'], 'Point'];
+    map.addLayer({ id: 'service-hl-line', type: 'line', source: 'service-hl', filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'i'], -1]], layout: { 'line-cap': 'round' }, paint: { 'line-color': '#d50000', 'line-width': 3, 'line-dasharray': [3, 2] } });
+    const icon = (size: number) => ({ 'icon-image': ['get', 'icon'], 'icon-size': ['interpolate', ['linear'], ['zoom'], 13, 0.9 * size, 16, 1.3 * size], 'icon-allow-overlap': true, 'icon-ignore-placement': true });
+    map.addLayer({ id: 'service-hl-icons', type: 'symbol', source: 'service-hl', filter: point as never, layout: icon(1) as never });
+    map.addLayer({ id: 'service-hl-icons-active', type: 'symbol', source: 'service-hl', filter: ['all', point, ['==', ['get', 'i'], -1]] as never, layout: icon(1.4) as never });
+    for (const id of HL_LAYERS) clickable(map, id, e => {
       const i = e.features?.[0]?.properties?.['i'] as number | undefined, s = i === undefined ? undefined : hlSpots[i];
       if (i === undefined || !s) return;
       hlPopup?.remove();
-      if (s.popup) hlPopup = new maplibregl.Popup({ offset: 16, maxWidth: '300px' }).setLngLat([s.lng, s.lat]).setDOMContent(s.popup()).addTo(map);
+      if (s.popup) hlPopup = new maplibregl.Popup({ offset: 18, maxWidth: '300px' }).setLngLat([s.lng, s.lat]).setDOMContent(s.popup()).addTo(map);
       hlPick?.(i);
     });
   }
-  const features: GeoJSON.Feature[] = spots.flatMap((s, i) => [
-    { type: 'Feature' as const, properties: { i, text: s.text, nearest: s.nearest }, geometry: { type: 'Point' as const, coordinates: [s.lng, s.lat] } },
-    ...(harbour && (s.lat !== harbour.lat || s.lng !== harbour.lng) ? [{ type: 'Feature' as const, properties: { i, nearest: s.nearest }, geometry: { type: 'LineString' as const, coordinates: [[harbour.lng, harbour.lat], [s.lng, s.lat]] } }] : []),
-  ]);
-  (map.getSource('service-hl') as GeoJSONSource).setData({ type: 'FeatureCollection', features });
+  (map.getSource('service-hl') as GeoJSONSource).setData({ type: 'FeatureCollection', features: spots.flatMap((s, i) => [
+    { type: 'Feature' as const, properties: { i, icon: s.icon }, geometry: { type: 'Point' as const, coordinates: [s.lng, s.lat] } },
+    ...(harbour && (s.lat !== harbour.lat || s.lng !== harbour.lng) ? [{ type: 'Feature' as const, properties: { i }, geometry: { type: 'LineString' as const, coordinates: [[harbour.lng, harbour.lat], [s.lng, s.lat]] } }] : []),
+  ]) });
   setServiceActive(map, null);
+  dimOtherPois(map, spots.length > 0);
   if (!spots.length) return;
   const pts = [...spots, ...(harbour ? [harbour] : [])];
-  const view = map.getBounds();
-  if (pts.every(p => view.contains([p.lng, p.lat]))) return;
   const b = new maplibregl.LngLatBounds([pts[0].lng, pts[0].lat], [pts[0].lng, pts[0].lat]);
   for (const p of pts) b.extend([p.lng, p.lat]);
-  map.fitBounds(b, { padding: 70, maxZoom: 17 });
+  if (b.getWest() !== b.getEast() || b.getSouth() !== b.getNorth()) map.fitBounds(b, { padding: 70, maxZoom: 17, duration: 800 });
 }
-/** Emphasises one spot's ring and line (null = none), e.g. for the hovered list item. */
+/** Emphasises one place (null = none): its icon grows and the line from the harbour is drawn, e.g. for the hovered list item. */
 export function setServiceActive(map: MlMap, i: number | null): void {
-  for (const id of ['service-hl-line-active', 'service-hl-ring-active']) if (map.getLayer(id)) map.setFilter(id, ['==', ['get', 'i'], i ?? -1] as never);
+  if (!map.getLayer('service-hl-line')) return;
+  const on = ['==', ['get', 'i'], i ?? -1];
+  map.setFilter('service-hl-line', ['all', ['==', ['geometry-type'], 'LineString'], on] as never);
+  map.setFilter('service-hl-icons-active', ['all', ['==', ['geometry-type'], 'Point'], on] as never);
+  map.setFilter('service-hl-icons', ['all', ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'i'], i ?? -1]] as never);
 }
 
 /** Map view in the URL (?c=lat,lng,zoom), like Google Maps: survives reloads, Back returns to the previous view. */
@@ -398,10 +413,17 @@ export async function showPoiPopup(map: MlMap, p: Record<string, unknown>, lngLa
       if (href) { const a = document.createElement('a'); a.href = href; a.target = '_blank'; a.rel = 'noreferrer'; a.textContent = value; r.appendChild(a); } else r.appendChild(textEl(value));
       div.appendChild(r);
     };
-    row('Adresse', d.address); row('Öffnungszeiten', d.openingHours); row('Küche', d.cuisine); row('Telefon', d.phone, d.phone ? `tel:${d.phone}` : undefined); row('E-Mail', d.email, d.email ? `mailto:${d.email}` : undefined);
+    row('Adresse', d.address);
+    if (d.openingHours) { const r = document.createElement('div'); r.appendChild(textEl('Öffnungszeiten: ')); r.appendChild(rowValueEl(hoursRow(d.openingHours, '', appI18n.lang()))); div.appendChild(r); } row('Küche', d.cuisine); row('Telefon', d.phone, d.phone ? `tel:${d.phone}` : undefined); row('E-Mail', d.email, d.email ? `mailto:${d.email}` : undefined);
     row('Website', d.website, httpUrl(d.website)); if (d.description) div.appendChild(textEl(d.description, 'div')); row('OSM', `${d.osmType}/${d.osmId}`, d.osmUrl);
     popup.setDOMContent(div);
   } catch { /* the tile properties stay */ }
+}
+/** A row's value as an element: one line per opening-hours rule plus the open/closed badge (colour set inline, popups are outside the component styles). */
+export function rowValueEl(row: PlaceRow): HTMLElement {
+  const el = textEl(row.value); el.style.whiteSpace = 'pre-line';
+  if (row.badge) { const b = textEl(' ' + row.badge.text); b.style.cssText = `font-weight:600;white-space:nowrap;color:${row.badge.open ? '#2e7d32' : '#c62828'}`; el.append(b); }
+  return el;
 }
 /** Only http(s) links become clickable; anything else from the OSM tag (javascript:, data:, …) stays plain text. */
 export function httpUrl(u: string | null | undefined): string | undefined {

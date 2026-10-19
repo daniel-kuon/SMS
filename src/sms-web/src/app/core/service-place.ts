@@ -1,6 +1,7 @@
+import { formatOpeningHours, isOpenNow, openNowText } from './opening-hours';
 /** A place of a harbour service from GET /api/pois/near (details parsed from the OSM tags). */
 export interface ServicePlace {
-  id: number; name: string | null; kind: string; lat: number; lng: number; distanceM: number;
+  id: number; name: string | null; kind: string; poiClass?: string; poiKind?: string; osmType?: string; osmId?: number; lat: number; lng: number; distanceM: number;
   openingHours: string | null; cuisine: string | null; website: string | null; phone: string | null; address: string | null;
 }
 
@@ -24,11 +25,16 @@ export function cuisineText(v: string, lang: string): string {
 export const googleRouteUrl = (from: { lat: number; lng: number }, to: { lat: number; lng: number }) =>
   `https://www.google.com/maps/dir/?api=1&origin=${from.lat},${from.lng}&destination=${to.lat},${to.lng}&travelmode=walking`;
 
-export interface PlaceRow { label: string; value: string; href?: string; }
+/** The opening hours as one line per rule plus an open/closed badge; values that cannot be parsed stay as they are. */
+export function hoursRow(raw: string, label: string, lang: string, now = new Date()): PlaceRow {
+  const lines = formatOpeningHours(raw, lang), open = lines ? isOpenNow(raw, now) : null;
+  return { label, value: lines ? lines.join('\n') : raw, badge: open === null ? undefined : { text: openNowText(open, lang), open } };
+}
+export interface PlaceRow { label: string; value: string; href?: string; badge?: { text: string; open: boolean }; }
 /** The available details as label/value rows (labels already translated); shared by the side-panel list and the map popups. */
-export function placeRows(p: ServicePlace, lang: string, labels: { hours: string; cuisine: string; website: string; phone: string; address: string }): PlaceRow[] {
+export function placeRows(p: ServicePlace, lang: string, labels: { hours: string; cuisine: string; website: string; phone: string; address: string }, now = new Date()): PlaceRow[] {
   const rows: PlaceRow[] = [];
-  if (p.openingHours) rows.push({ label: labels.hours, value: p.openingHours });
+  if (p.openingHours) rows.push(hoursRow(p.openingHours, labels.hours, lang, now));
   if (p.cuisine) rows.push({ label: labels.cuisine, value: cuisineText(p.cuisine, lang) });
   if (p.address) rows.push({ label: labels.address, value: p.address });
   // OSM tags are user data: links only for http(s) and plain phone numbers (a "javascript:" website tag must not become a link)

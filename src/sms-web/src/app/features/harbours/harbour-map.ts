@@ -19,7 +19,7 @@ import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, HarbourService, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
 import { Location } from '@angular/common';
-import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, ServiceSpot, setPoiFocus, setServiceActive, setServiceHighlight, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
+import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, rowValueEl, ServiceSpot, setPoiFocus, setServiceActive, setServiceHighlight, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
 import { formatServiceDistance } from '../../core/service-distance';
 import { googleRouteUrl, PlaceRow, placeRows, ServicePlace } from '../../core/service-place';
@@ -73,7 +73,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
               <ul class="places">@for (p of places(); track p.id; let i = $index) {
                 <li [id]="'svc-place-' + i" [class.sel]="selected() === i" (mouseenter)="focusPlace(i)" (mouseleave)="focusPlace(null)" (click)="selectPlace(i)">
                   <div><b>{{ p.name }}</b> <span class="muted">· {{ p.dist }}</span></div>
-                  @for (r of p.rows; track r.label) { <div class="muted">{{ r.label }}: @if (r.href) { <a [href]="r.href" target="_blank" rel="noopener" (click)="$event.stopPropagation()">{{ r.value }}</a> } @else { {{ r.value }} }</div> }
+                  @for (r of p.rows; track r.label) { <div class="muted row">{{ r.label }}: @if (r.href) { <a [href]="r.href" target="_blank" rel="noopener" (click)="$event.stopPropagation()">{{ r.value }}</a> } @else { {{ r.value }} } @if (r.badge; as b) { <span class="badge" [class.open]="b.open">{{ b.text }}</span> }</div> }
                   <a [href]="p.route" target="_blank" rel="noopener" (click)="$event.stopPropagation()"><mat-icon inline>directions_walk</mat-icon> {{ 'harbour.googleRoute' | translate }}</a>
                 </li> }</ul>
             } @else if (placesEmpty()) { <p class="muted">{{ 'harbour.noPlaces' | translate }}</p> }
@@ -134,7 +134,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     .ship-ctx input { width: 44px; } .ship-ctx select { max-width: 140px; } .ship-ctx .small { font-size: 11px; }
     .full-width { width: 100%; }
     .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; } .svc.active { outline: 2px solid #e65100; }
-    .places { list-style: none; margin: 0 0 8px; padding: 0; max-height: 40vh; overflow-y: auto; font-size: 13px; } .places li { padding: 6px 8px; border-bottom: 1px solid #e0e0e0; cursor: pointer; } .places li:hover, .places li.sel { background: #fff3e0; } .places li.sel { border-left: 3px solid #d50000; } .places a mat-icon { font-size: 14px; vertical-align: middle; } .svc mat-icon { font-size: 16px; }
+    .places { list-style: none; margin: 0 0 8px; padding: 0; max-height: 40vh; overflow-y: auto; font-size: 13px; } .places li { padding: 6px 8px; border-bottom: 1px solid #e0e0e0; cursor: pointer; } .places li:hover, .places li.sel { background: #fff3e0; } .places li.sel { border-left: 3px solid #d50000; } .places .row { white-space: pre-line; } .places .badge { font-weight: 600; white-space: nowrap; color: #c62828; } .places .badge.open { color: #2e7d32; } .places a mat-icon { font-size: 14px; vertical-align: middle; } .svc mat-icon { font-size: 16px; }
     @media (max-width: 800px) { .layout { flex-direction: column; } .panel.open { width: 100%; } }
   `,
 })
@@ -165,7 +165,7 @@ export class HarbourMapPage {
   places = signal<{ id: number; name: string; dist: string; rows: PlaceRow[]; route: string }[]>([]);
   placesEmpty = signal(false);
   selected = signal<number | null>(null);
-  /** Highlights where the service is around the harbour (the nearest 50 POIs of that kind within 5 km with a line from the harbour, nearest emphasised) and lists them; again = off. A facility flag without a POI is the harbour itself. */
+  /** Highlights where the service is around the harbour (the nearest 50 POIs of that kind within 5 km as bigger POI icons, other POIs dimmed, map fitted to all of them) and lists them; again = off. A facility flag without a POI is the harbour itself. */
   toggleService(s: HarbourService): void {
     const h = this.harbour(), map = this.map;
     if (!h || !map) return;
@@ -173,22 +173,22 @@ export class HarbourMapPage {
     this.clearService();
     this.activeService.set(s.kind);
     const label = this.translate.instant('harbour.svc.' + s.kind) as string;
-    if (!s.poiId) { setServiceHighlight(map, [{ lat: h.lat, lng: h.lng, text: `${label}: ${this.distance(0)}`, nearest: true }], h); return; }
+    if (!s.poiId) { setServiceHighlight(map, [{ lat: h.lat, lng: h.lng, icon: `poi|amenity|${s.kind}` }], h); return; }
     this.api.get<ServicePlace[]>('/api/pois/near', { lat: h.lat, lng: h.lng, kind: s.kind, radiusM: 5000 }).subscribe(r => {
       if (this.activeService() !== s.kind || this.harbour() !== h || !this.map) return;
       const lang = appI18n.lang(), t = (k: string) => this.translate.instant('harbour.' + k) as string;
       const labels = { hours: t('openingHours'), cuisine: t('cuisine'), website: t('website'), phone: t('phone'), address: t('address') };
-      const view = r.map((p, i) => ({ p, name: p.name ?? label, dist: this.distance(p.distanceM), rows: placeRows(p, lang, labels), route: googleRouteUrl(h, p), nearest: i === 0 }));
+      const view = r.map(p => ({ p, name: p.name ?? label, dist: this.distance(p.distanceM), rows: placeRows(p, lang, labels), route: googleRouteUrl(h, p) }));
       this.places.set(view.map(v => ({ id: v.p.id, name: v.name, dist: v.dist, rows: v.rows, route: v.route })));
       this.placesEmpty.set(!r.length);
       setServiceHighlight(this.map, view.map((v): ServiceSpot => ({
-        lat: v.p.lat, lng: v.p.lng, text: `${v.name} · ${v.dist}`, nearest: v.nearest,
+        lat: v.p.lat, lng: v.p.lng, icon: `poi|${v.p.poiClass ?? 'amenity'}|${v.p.poiKind ?? s.kind}`,
         popup: () => {
           const d = document.createElement('div'); d.className = 'poi-popup';
           d.append(textEl(v.name, 'b'), textEl(' · ' + v.dist, 'span'));
           for (const row of v.rows) {
             const line = document.createElement('div'); line.append(textEl(row.label + ': '));
-            if (row.href) { const a = document.createElement('a'); a.href = row.href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = row.value; line.append(a); } else line.append(textEl(row.value));
+            if (row.href) { const a = document.createElement('a'); a.href = row.href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = row.value; line.append(a); } else line.append(rowValueEl(row));
             d.append(line);
           }
           const a = document.createElement('a'); a.href = v.route; a.target = '_blank'; a.rel = 'noopener'; a.textContent = this.translate.instant('harbour.googleRoute') as string;
@@ -198,10 +198,10 @@ export class HarbourMapPage {
       })), h, i => this.pickPlace(i));
     });
   }
-  /** Hover on a list item (null = leave): its ring and line stand out on the map; the picked one stays highlighted. */
+  /** Hover on a list item (null = leave): its icon grows and the line from the harbour is drawn; the picked one stays highlighted. */
   focusPlace(i: number | null): void { if (this.map) setServiceActive(this.map, i ?? this.selected()); }
   selectPlace(i: number): void { this.selected.set(i); this.focusPlace(i); }
-  /** A ring was clicked on the map: highlight and scroll the list item into view. */
+  /** An icon was clicked on the map: highlight and scroll the list item into view. */
   private pickPlace(i: number): void {
     this.selectPlace(i);
     setTimeout(() => document.getElementById('svc-place-' + i)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
