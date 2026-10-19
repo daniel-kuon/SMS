@@ -15,7 +15,7 @@ public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, Lin
 public sealed record NearbyResult(Guid HarbourId, decimal DistanceNm, decimal StraightLineNm);
 public sealed record GraphStatus(int ActiveVersion, string? BuiltAt, string? Region, long Nodes, long Edges);
 
-/// <summary>Query side of spec 10 §10.2: snapping, pgRouting A* / driving distance, string-pulling smoothing, cache.</summary>
+/// <summary>Query side of spec 10 §10.2: snapping, in-memory A* (SeaGraph, one per graph version), pgRouting driving distance, string-pulling smoothing, cache.</summary>
 public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILogger<SeaRouter> logger)
 {
     private static readonly ActivitySource Activity = new("Sms");
@@ -47,7 +47,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var start = await AccessNodeAsync(from, version, ct);
         var end = await AccessNodeAsync(to, version, ct);
         if (start is null || end is null) return null;
-        var result = await RouteNodesAsync(start.Value, end.Value, a, b, version, ct, airDraftM, draftM);
+        var graph = await GraphAsync(version);
+        var result = await RouteEndsAsync(graph, new SeaGraph.End(a.Coordinate, (int)start.Value), new SeaGraph.End(b.Coordinate, (int)end.Value), version, ct, airDraftM, draftM);
         if (result is null) return null;
         if (airDraftM is not null || draftM is not null) return result;
         db.RouteCaches.Add(new RouteCache { FromHarbourId = from, ToHarbourId = to, GraphVersion = version, DistanceNm = result.DistanceNm, Geometry = result.Geometry });
@@ -56,15 +57,123 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return result;
     }
 
-    /// <summary>Point → point route (map clicks). Points are snapped to the nearest water node within 2 km.</summary>
+    /// <summary>Point → point route (map clicks). Each point snaps to a linked harbour next to it, a passage edge or the nearest node (EndAsync).</summary>
     public async Task<RouteResult?> RouteAsync(Point from, Point to, CancellationToken ct, double? airDraftM = null, double? draftM = null)
     {
         var version = await ActiveVersionAsync(ct);
         if (version == 0) return null;
-        var start = await SnapAsync(from, version, ct);
-        var end = await SnapAsync(to, version, ct);
+        var clock = Stopwatch.StartNew();
+        var graph = await GraphAsync(version);
+        var timings = new Dictionary<string, long> { ["graph"] = clock.ElapsedMilliseconds }; clock.Restart();
+        var start = await EndAsync(from, version, graph, ct);
+        var end = await EndAsync(to, version, graph, ct);
+        timings["snap"] = clock.ElapsedMilliseconds;
         if (start is null || end is null) return null;
-        return await RouteNodesAsync(start.Value, end.Value, from, to, version, ct, airDraftM, draftM);
+        return await RouteEndsAsync(graph, start, end, version, ct, airDraftM, draftM, timings);
+    }
+
+    /// <summary>A click within this distance of a harbour the builder linked snaps to the harbour's access node.</summary>
+    private const double HarbourSnapM = 150;
+
+    /// <summary>
+    /// Route end for a map click: (1) a linked harbour within HarbourSnapM – its access node, even when the harbour lies behind
+    /// a dike beyond the snap distance (the builder links up to HarbourAccessM, the final leg draws the link); (2) otherwise
+    /// the nearest node (SnapAsync), unless a passage edge is closer – a contracted canal stretch has no node inside, so the
+    /// end is projected onto it and the edge split there (the leg to the projection must not cross land while a node is at hand).
+    /// </summary>
+    private async Task<SeaGraph.End?> EndAsync(Point p, int version, SeaGraph graph, CancellationToken ct)
+    {
+        var access = await db.Database.SqlQueryRaw<long>("""
+            SELECT a.node_id AS "Value" FROM "Harbours" h JOIN routing_harbour_access a ON a.harbour_id = h."Id" AND a.graph_version = {0}
+            WHERE ST_DWithin(h."Location", ST_SetSRID(ST_MakePoint({1}, {2}), 4326)::geography, {3})
+            ORDER BY ST_Distance(h."Location", ST_SetSRID(ST_MakePoint({1}, {2}), 4326)::geography) LIMIT 1
+            """, version, p.X, p.Y, HarbourSnapM).ToListAsync(ct);
+        if (access.Count > 0) return new SeaGraph.End(p.Coordinate, (int)access[0]);
+        var (node, metres, maxM) = await SnapAsync(p, version, ct);
+        var onEdge = graph.SnapToPassage(p.Coordinate, node is null ? maxM : metres);
+        if (onEdge is not null && (node is null || !await CrossesLandAsync(p.Coordinate, onEdge.Point, version, ct))) return new SeaGraph.End(p.Coordinate, OnEdge: onEdge);
+        return node is { } n ? new SeaGraph.End(p.Coordinate, (int)n) : null;
+    }
+
+    private async Task<bool> CrossesLandAsync(Coordinate a, Coordinate b, int version, CancellationToken ct) =>
+        await db.Database.SqlQueryRaw<int>("""
+            SELECT 1 AS "Value" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope(LEAST({1}, {3}), LEAST({2}, {4}), GREATEST({1}, {3}), GREATEST({2}, {4}), 4326)
+              AND ST_Intersects(geom, ST_SetSRID(ST_MakeLine(ST_MakePoint({1}, {2}), ST_MakePoint({3}, {4})), 4326))
+            """, version, a.X, a.Y, b.X, b.Y).AnyAsync(ct);
+
+    // the graph of the active version, loaded once per process on first use (the old version is dropped when a new one is active)
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<Task<SeaGraph>>> _graphs = new();
+
+    private async Task<SeaGraph> GraphAsync(int version)
+    {
+        foreach (var old in _graphs.Keys.Where(k => k != version).ToList()) _graphs.TryRemove(old, out _);
+        var lazy = _graphs.GetOrAdd(version, v => new Lazy<Task<SeaGraph>>(() => LoadGraphAsync((NpgsqlConnection)((ICloneable)db.Database.GetDbConnection()).Clone(), v, logger))); // a clone keeps the password an opened connection string has lost
+        try { return await lazy.Value; }
+        catch { _graphs.TryRemove(new KeyValuePair<int, Lazy<Task<SeaGraph>>>(version, lazy)); throw; } // the next request retries
+    }
+
+    /// <summary>Nodes, edges (cost, depth, clearance, interior points of multi-point edges) and isolated nodes of a graph version.</summary>
+    public static async Task<SeaGraph> LoadGraphAsync(NpgsqlConnection connection, int version, ILogger logger)
+    {
+        var sw = Stopwatch.StartNew(); var before = GC.GetTotalMemory(false);
+        await using var conn = connection;
+        await conn.OpenAsync();
+        async Task<long> Scalar(string sql)
+        {
+            await using var c = new NpgsqlCommand(sql, conn); c.Parameters.AddWithValue("v", version);
+            return Convert.ToInt64(await c.ExecuteScalarAsync() ?? 0L);
+        }
+        var maxNode = (int)await Scalar("SELECT COALESCE(MAX(id), 0) FROM routing_node WHERE graph_version = @v");
+        var edgeCount = (int)await Scalar("SELECT COUNT(*) FROM routing_edge WHERE graph_version = @v");
+        var gridNodes = await Scalar("SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes'");
+        var x = new double[maxNode + 1]; var y = new double[maxNode + 1];
+        Array.Fill(x, double.NaN); Array.Fill(y, double.NaN);
+        await using (var c = new NpgsqlCommand("SELECT id, ST_X(geom), ST_Y(geom) FROM routing_node WHERE graph_version = @v", conn) { CommandTimeout = 600 })
+        {
+            c.Parameters.AddWithValue("v", version);
+            await using var r = await c.ExecuteReaderAsync();
+            while (await r.ReadAsync()) { var id = (int)r.GetInt64(0); x[id] = r.GetDouble(1); y[id] = r.GetDouble(2); }
+        }
+        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount];
+        var geomStart = new int[edgeCount + 1]; var geom = new List<double>();
+        var m = 0;
+        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
+        {
+            c.Parameters.AddWithValue("v", version);
+            await using var r = await c.ExecuteReaderAsync();
+            while (await r.ReadAsync() && m < edgeCount)
+            {
+                src[m] = (int)r.GetInt64(0); tgt[m] = (int)r.GetInt64(1); cost[m] = (float)r.GetDouble(2);
+                depth[m] = r.IsDBNull(3) ? float.NaN : (float)r.GetDouble(3);
+                clear[m] = r.IsDBNull(4) ? float.NaN : (float)r.GetDouble(4);
+                geomStart[m] = geom.Count / 2;
+                if (!r.IsDBNull(5)) AppendInterior(r.GetFieldValue<byte[]>(5), geom);
+                m++;
+            }
+        }
+        geomStart[m] = geom.Count / 2;
+        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref geomStart, m + 1); }
+        var isolated = new bool[maxNode + 1];
+        await using (var c = new NpgsqlCommand("SELECT id FROM routing_isolated WHERE graph_version = @v", conn))
+        {
+            c.Parameters.AddWithValue("v", version);
+            await using var r = await c.ExecuteReaderAsync();
+            while (await r.ReadAsync()) { var id = r.GetInt64(0); if (id <= maxNode) isolated[id] = true; }
+        }
+        var loaded = sw.ElapsedMilliseconds;
+        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated);
+        logger.LogInformation("Routing graph v{Version} in memory: {Nodes} node slots, {Edges} edges, {Snap} passage edges for snapping, heuristic x{Factor:F6}, ~{Mb} MB (GC +{GcMb} MB); read {Read} ms, indexed {Index} ms",
+            version, graph.NodeSlots, graph.EdgeCount, graph.SnapEdgeCount, graph.HeuristicFactor, graph.ApproxBytes >> 20, (GC.GetTotalMemory(false) - before) >> 20, loaded, sw.ElapsedMilliseconds - loaded);
+        return graph;
+    }
+
+    /// <summary>Interior points of a WKB linestring (2D) appended as x,y pairs.</summary>
+    private static void AppendInterior(byte[] wkb, List<double> into)
+    {
+        var le = wkb[0] == 1;
+        double D(int at) => le ? System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(wkb.AsSpan(at)) : System.Buffers.Binary.BinaryPrimitives.ReadDoubleBigEndian(wkb.AsSpan(at));
+        var n = le ? System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(wkb.AsSpan(5)) : System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(wkb.AsSpan(5));
+        for (var k = 1; k < n - 1; k++) { into.Add(D(9 + 16 * k)); into.Add(D(9 + 16 * k + 8)); }
     }
 
     public async Task<List<NearbyResult>?> NearbyAsync(Guid? harbourId, Point? origin, double maxNm, int limit, CancellationToken ct)
@@ -72,7 +181,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         using var span = Activity.StartActivity("routing.nearby");
         var version = await ActiveVersionAsync(ct);
         if (version == 0) return null;
-        long? start = harbourId is { } h ? await AccessNodeAsync(h, version, ct) : origin is not null ? await SnapAsync(origin, version, ct) : null;
+        long? start = harbourId is { } h ? await AccessNodeAsync(h, version, ct) : origin is not null ? (await SnapAsync(origin, version, ct)).Id : null;
         if (start is null) return null;
         var startPoint = origin ?? await db.Harbours.AsNoTracking().Where(x => x.Id == harbourId).Select(x => x.Location).FirstAsync(ct);
         var radiusM = maxNm * Nm;
@@ -91,63 +200,29 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             .OrderBy(r => r.DistanceNm).Take(limit).ToList();
     }
 
-    private async Task<RouteResult?> RouteNodesAsync(long start, long end, Point a, Point b, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null)
+    private async Task<RouteResult?> RouteEndsAsync(SeaGraph graph, SeaGraph.End from, SeaGraph.End to, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null)
     {
         // bridges lower than the ship's air draft close their passage edges (clearance_m is null elsewhere); charted depth areas
         // shallower than draft + margin close grid edges (min_depth_m is null on marked passages: a buoyed channel is followed anyway)
-        var clearance = airDraftM is { } ad ? $" AND (clearance_m IS NULL OR clearance_m >= {ad.ToString(System.Globalization.CultureInfo.InvariantCulture)})" : "";
         // the edges at the two end nodes are exempt from the depth limit: a harbour basin is charted shallow at this resolution and
         // one has to get in anyway; from there on only deep legs or the buoyed channel (passage edges carry no limit) continue
         // … and so is the harbour approach (HarbourAccessM around both ends): the charted fathom steps call a dredged fjord or marina
         // basin shallow, and one has to get in and out anyway (Nyborg Fjord: 1.8 m charted, 7 m dredged channel)
         // the shallow approach legs that remain cost ×3: the buoyed channel (no depth limit, cost ×1) wins where one exists, the
         // bare crossing of a charted flat is taken only when nothing else leads in
-        var costExpr = "cost, reverse_cost";
-        if (draftM is { } dm)
-        {
-            var inv = System.Globalization.CultureInfo.InvariantCulture;
-            var accessDeg = (builder.Options.HarbourAccessM / WaterGraphTiler.MPerDegLat).ToString(inv);
-            var limit = (dm + builder.Options.DepthSafetyMarginM).ToString(inv);
-            clearance += $" AND (min_depth_m IS NULL OR min_depth_m >= {limit} OR source IN ({start}, {end}) OR target IN ({start}, {end})"
-                + $" OR ST_DWithin(geom, ST_SetSRID(ST_MakePoint({a.X.ToString(inv)}, {a.Y.ToString(inv)}), 4326), {accessDeg}) OR ST_DWithin(geom, ST_SetSRID(ST_MakePoint({b.X.ToString(inv)}, {b.Y.ToString(inv)}), 4326), {accessDeg}))";
-            costExpr = $"CASE WHEN min_depth_m < {limit} THEN cost * 3 ELSE cost END AS cost, CASE WHEN min_depth_m < {limit} THEN reverse_cost * 3 ELSE reverse_cost END AS reverse_cost";
-        }
         using var span = Activity.StartActivity("routing.route");
         span?.SetTag("routing.graph_version", version);
+        var a = from.Point; var b = to.Point;
         var straightM = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X);
-        var maxM = builder.Options.MaxRouteNm * Nm;
-        if (straightM > maxM) return null;
-        var timings = new Dictionary<string, long>(); var clock = Stopwatch.StartNew();
-        List<Coordinate>? path = null;
-        for (var pad = 0.3; pad <= 2.5 && path is null; pad *= 2)
-        {
-            var env = Expand(a, b, Math.Max(straightM * pad, 20_000));
-            // the path is the chain of edge geometries (a contracted passage edge is a whole canal stretch), each oriented from
-            // the node the search left it at; the last row (edge -1) only names the end node
-            var rows = await db.Database.SqlQueryRaw<PathRow>("""
-                SELECT r.seq AS "Seq", r.node AS "Node", r.edge AS "Edge", e.source AS "Source", e.geom AS "Geom", ST_X(n.geom) AS "X", ST_Y(n.geom) AS "Y"
-                FROM pgr_aStar(
-                    'SELECT id, source, target, ' || {8} || ', x1, y1, x2, y2 FROM routing_edge WHERE graph_version = ' || {0} || ' AND geom && ST_MakeEnvelope(' || {1} || ',' || {2} || ',' || {3} || ',' || {4} || ', 4326)' || {7},
-                    {5}::bigint, {6}::bigint, directed := false, heuristic := 2) r
-                JOIN routing_node n ON n.id = r.node AND n.graph_version = {0}
-                LEFT JOIN routing_edge e ON e.id = r.edge AND e.graph_version = {0}
-                ORDER BY r.seq
-                """, version, env.MinX, env.MinY, env.MaxX, env.MaxY, start, end, clearance, costExpr).ToListAsync(ct);
-            if (rows.Count > 0)
-            {
-                path = [];
-                foreach (var r in rows)
-                {
-                    if (r.Geom is null) { if (path.Count == 0 || !path[^1].Equals2D(new Coordinate(r.X, r.Y))) path.Add(new Coordinate(r.X, r.Y)); continue; }
-                    var cs = r.Geom.Coordinates; if (r.Source != r.Node) Array.Reverse(cs);
-                    foreach (var c in cs) if (path.Count == 0 || !path[^1].Equals2D(c)) path.Add(c);
-                }
-            }
-        }
+        if (straightM > builder.Options.MaxRouteNm * Nm) return null;
+        timings ??= []; var clock = Stopwatch.StartNew();
+        var o = builder.Options;
+        var limits = new SeaGraph.Limits(airDraftM, draftM is { } dm ? dm + o.DepthSafetyMarginM : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat);
+        var path = graph.Route(from, to, limits);
         timings["astar"] = clock.ElapsedMilliseconds; clock.Restart();
-        if (path is null) { logger.LogInformation("No sea route between nodes {Start} and {End}", start, end); return null; }
-        path.Insert(0, a.Coordinate); path.Add(b.Coordinate);
-        var smoothed = await SmoothAsync(path, version, ct, airDraftM, draftM, timings);
+        if (path is null) { logger.LogInformation("No sea route between {From} and {To}", from, to); return null; }
+        span?.SetTag("routing.settled", path.Settled);
+        var smoothed = await SmoothAsync(path.Points, path.Fixed, version, ct, airDraftM, draftM, timings);
         timings["smooth"] = clock.ElapsedMilliseconds;
         var metres = 0.0;
         for (var i = 1; i < smoothed.Count; i++) metres += RoutingGraphBuilder.Haversine(smoothed[i - 1].Y, smoothed[i - 1].X, smoothed[i].Y, smoothed[i].X);
@@ -157,9 +232,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     /// <summary>
-    /// String pulling: connect each point to the farthest later point whose segment does not cross land. Offshore grid edges
-    /// are up to 20 km long, so the path is densified first (every ≤ 500 m) – otherwise the pulled string could only bend at
-    /// grid nodes and kept a dog-leg when the direct line to the next node grazed the coast.
+    /// Smoothing (SmoothAsync): string pulling over the path's own points (StringPull) with land, low bridges, shallow areas and
+    /// the uncharted channel zone as obstacles. Offshore grid edges are up to 20 km long, so the free legs are densified first
+    /// (every ≤ 1 km) – otherwise the pulled string could only bend at grid nodes and kept a dog-leg when the direct line to the
+    /// next node grazed the coast. Passage geometry outside charted deep water keeps its shape.
     /// </summary>
     private sealed record SmoothStatics(STRtree<(Geometry geom, double? clearance)> Bridges, STRtree<Geometry> Zone);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<Task<SmoothStatics>>> _statics = new();
@@ -218,11 +294,11 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return tree;
     }
 
-    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null)
+    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, List<bool> fixedSeg, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null)
     {
         var clock = Stopwatch.StartNew();
         void Lap(string k) { if (timings is not null) timings[k] = clock.ElapsedMilliseconds; clock.Restart(); }
-        path = Densify(path, 500);
+        (path, fixedSeg) = StringPull.Densify(path, fixedSeg, 1000); // passage geometry stays as it is
         var env = new Envelope(); foreach (var c in path) env.ExpandToInclude(c); env.ExpandBy(0.05);
         var land = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", version, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
         var index = new STRtree<IPreparedGeometry>();
@@ -230,9 +306,9 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         Lap("smooth-land");
         // what A* avoided must stay avoided when the string is pulled: too-low bridges (a circle around the point, a band along a
         // line), the impassable parts of bridges with charted spans, and too-shallow areas count as land
+        var statics = await StaticsAsync(version, ct);
         {
             // bridge pieces (chains, charted spans) are the same for every route of a graph version: computed once, queried by envelope
-            var statics = await StaticsAsync(version, ct);
             var radiusDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
             foreach (var (g, clearance) in statics.Bridges.Query(env))
             {
@@ -242,98 +318,143 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             }
         }
         Lap("smooth-bridges");
-        if (draftM is { } dm)
+        var limit = draftM is { } dm ? dm + builder.Options.DepthSafetyMarginM : double.MinValue;
+        if (draftM is not null)
         {
-            var shallow = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_depth WHERE min_depth_m < {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", dm + builder.Options.DepthSafetyMarginM, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
+            var shallow = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_depth WHERE min_depth_m < {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", limit, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
             foreach (var g in shallow) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
         }
-        Lap("smooth-depth");
-        // the channel zone (water next to a buoy chain, minus the chain's own corridor) counts as an obstacle too: where the chart
-        // has no depth data (Wadden Sea gaps) nothing else stops the string from cutting straight across the flats the chain avoids
-        var o = builder.Options;
-        if (o.ChannelPreferenceM > 0)
-        {
-            // the channel zone (band next to every buoy chain minus the chains' corridors) likewise: once per version
-            foreach (var z in (await StaticsAsync(version, ct)).Zone.Query(env)) index.Insert(z.EnvelopeInternal, PreparedGeometryFactory.Prepare(z));
-        }
-        Lap("smooth-zone");
         index.Build();
-        var result = new List<Coordinate> { path[0] };
-        var i = 0;
-        while (i < path.Count - 1)
+        Lap("smooth-depth");
+        // the channel zone (water next to a buoy chain, minus the chain's own corridor) blocks where the chart has no depth deep
+        // enough: in the Wadden Sea gaps nothing else stops the string from cutting across the flats the chain avoids. Where the
+        // chart says deep (all depth areas the string crosses inside the zone ≥ draft + margin), a corner next to a chain is cut
+        // like anywhere else (it was an obstacle everywhere and kept the route on the chain: Fehmarnsund, Kiel Förde)
+        var zone = new STRtree<IPreparedGeometry>(); var deep = new STRtree<IPreparedGeometry>();
+        foreach (var z in statics.Zone.Query(env)) zone.Insert(z.EnvelopeInternal, PreparedGeometryFactory.Prepare(z));
+        zone.Build();
+        // depth areas around the route (boxes of ≤ 20 points) where it passes the zone (0.1° ≈ 7–11 km margin: the corners the
+        // pulling cuts; legs through the zone farther from the route stay blocked) or follows a passage (0.01°)
+        var boxes = new List<Envelope>();
+        for (var k = 0; k < path.Count; k += 20)
         {
-            var j = path.Count - 1;
-            for (; j > i + 1; j--)
-            {
-                var seg = Geo.Factory.CreateLineString([path[i], path[j]]);
-                var crosses = false;
-                foreach (var g in index.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) { crosses = true; break; }
-                if (!crosses) break;
-            }
-            result.Add(path[j]);
-            i = j;
+            var box = new Envelope(); var passage = false;
+            for (var q = k; q < Math.Min(path.Count, k + 21); q++) { box.ExpandToInclude(path[q]); passage |= q < fixedSeg.Count && fixedSeg[q]; }
+            var wide = new Envelope(box); wide.ExpandBy(0.1);
+            if (zone.Query(wide).Count > 0) boxes.Add(wide);
+            else if (passage) { box.ExpandBy(0.01); boxes.Add(box); }
         }
+        if (boxes.Count > 0)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            var values = string.Join(", ", boxes.Select(e => string.Create(inv, $"({e.MinX}, {e.MinY}, {e.MaxX}, {e.MaxY})")));
+            var rows = await db.Database.SqlQueryRaw<GeomRow>($$"""
+                SELECT geom AS "Geom" FROM routing_depth WHERE id IN (
+                  SELECT d.id FROM (VALUES {{values}}) b(x1, y1, x2, y2) JOIN routing_depth d ON d.geom && ST_MakeEnvelope(b.x1, b.y1, b.x2, b.y2, 4326) WHERE d.min_depth_m >= {0})
+                """, limit).ToListAsync(ct);
+            foreach (var g in rows) deep.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
+        }
+        deep.Build();
+        // passage geometry keeps its shape where it matters – canals, rivers, channels through shallow or uncharted water; a
+        // passage segment that lies in water charted deep enough all along (a buoyed fairway across the open Kiel Bay) is pulled
+        // like any other leg (fixed, the route rode the Fehmarnsund–Kiel lighthouse chain up to 54.49 N instead of heading for the Förde)
+        for (var k = 0; k < fixedSeg.Count; k++) if (fixedSeg[k] && Charted(path[k], path[k + 1], deep)) fixedSeg[k] = false;
+        (path, fixedSeg) = StringPull.Densify(path, fixedSeg, 1000);
+        Lap("smooth-zone");
+        var tests = 0L;
+        bool Blocked(Coordinate p, Coordinate q)
+        {
+            tests++;
+            var seg = Geo.Factory.CreateLineString([p, q]);
+            foreach (var g in index.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
+            return InUnchartedZone(seg, zone, deep);
+        }
+        var result = StringPull.Pull(path, fixedSeg, Blocked, builder.Options.PassageTrimM);
         Lap("smooth-pull");
+        if (timings is not null) { timings["smooth-points"] = path.Count; timings["smooth-tests"] = tests; }
         // piers, jetties, breakwaters are not in the land: legs that cross one are rerouted round it locally, the blockers above still blocking
         var piers = await PiersAsync();
         if (piers.Count > 0)
         {
-            try
-            {
-                result = PierAvoidance.Apply(result, piers, (p, q) =>
-                {
-                    var seg = Geo.Factory.CreateLineString([p, q]);
-                    foreach (var g in index.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
-                    return false;
-                });
-            }
+            try { result = PierAvoidance.Apply(result, piers, Blocked); }
             catch (Exception ex) when (ex is NetTopologySuite.Geometries.TopologyException or ArgumentException) { logger.LogWarning(ex, "Pier avoidance skipped"); } // a bad OSM pier must never cost the route
         }
         Lap("smooth-piers");
         return result;
     }
 
-    /// <summary>Intermediate points every ≤ stepM along the path (bend candidates for the string pulling).</summary>
-    public static List<Coordinate> Densify(IReadOnlyList<Coordinate> path, double stepM)
+    /// <summary>True when every sample of the leg (every ~100 m) lies in a deep-enough depth area.</summary>
+    private static bool Charted(Coordinate a, Coordinate b, STRtree<IPreparedGeometry> deep)
     {
-        var result = new List<Coordinate> { path[0] };
-        for (var i = 1; i < path.Count; i++)
+        var n = Math.Max(1, (int)Math.Ceiling(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / 100));
+        for (var k = 0; k <= n; k++)
         {
-            var a = path[i - 1]; var b = path[i];
-            var n = (int)Math.Ceiling(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / stepM);
-            for (var k = 1; k < n; k++) result.Add(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n));
-            result.Add(b);
+            var c = new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n);
+            var pt = Geo.Factory.CreatePoint(c);
+            if (!deep.Query(new Envelope(c)).Any(d => d.Contains(pt))) return false;
         }
-        return result;
+        return true;
+    }
+
+    /// <summary>True when a sample of the leg (every ~100 m) lies in the channel zone outside every deep-enough depth area.</summary>
+    private static bool InUnchartedZone(LineString seg, STRtree<IPreparedGeometry> zone, STRtree<IPreparedGeometry> deep)
+    {
+        var hits = zone.Query(seg.EnvelopeInternal);
+        if (hits.Count == 0 || !hits.Any(z => z.Intersects(seg))) return false;
+        var a = seg.GetCoordinateN(0); var b = seg.GetCoordinateN(1);
+        // ponytail: sampled, a no-data pocket narrower than the step slips through; an exact overlay per leg is far slower
+        var n = Math.Max(1, (int)Math.Ceiling(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / 100));
+        for (var k = 0; k <= n; k++)
+        {
+            var c = new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n);
+            var pt = Geo.Factory.CreatePoint(c);
+            if (!hits.Any(z => z.Contains(pt))) continue;
+            if (!deep.Query(new Envelope(c)).Any(d => d.Contains(pt))) return true;
+        }
+        return false;
     }
 
     private async Task<long?> AccessNodeAsync(Guid harbourId, int version, CancellationToken ct) =>
         await db.Database.SqlQueryRaw<long>("SELECT node_id AS \"Value\" FROM routing_harbour_access WHERE graph_version = {0} AND harbour_id = {1}", version, harbourId).FirstOrDefaultAsync(ct) is var id && id != 0 ? id : null;
 
-    /// <summary>Nearest node within 2 km; grid (water-cell) nodes win over passage vertices, which sit on a line and would send the route to the line's end.</summary>
     /// <summary>
     /// Nearest graph node for a map click. On water the grid is coarse offshore (cells up to StartCellM wide), so the search
     /// reaches a whole cell; on land (coast, harbour basins counted as land) only 2 km, so inland clicks stay unroutable.
     /// </summary>
-    private async Task<long?> SnapAsync(Point p, int version, CancellationToken ct)
+    private async Task<(long? Id, double Metres, double MaxM)> SnapAsync(Point p, int version, CancellationToken ct)
     {
         var onLand = await db.Database.SqlQueryRaw<int>("SELECT 1 AS \"Value\" FROM routing_land WHERE graph_version = {0} AND geom && ST_SetSRID(ST_MakePoint({1}, {2}), 4326) AND ST_Intersects(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326))", version, p.X, p.Y).AnyAsync(ct);
         var maxM = onLand ? 2000 : Math.Max(2000, builder.Options.StartCellM);
         var degLat = maxM / WaterGraphTiler.MPerDegLat; var degLng = degLat / Math.Max(0.2, Math.Cos(p.Y * Math.PI / 180));
-        // first choice: a node the point can see (the first leg is drawn straight), then the plain nearest
-        var row = onLand ? null : await db.Database.SqlQueryRaw<SnapRow>("""
-            SELECT n.id AS "Id", ST_DistanceSphere(n.geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
-            FROM routing_node n WHERE n.graph_version = {0} AND n.geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
-              AND NOT EXISTS (SELECT 1 FROM routing_land l WHERE l.graph_version = {0} AND l.geom && ST_MakeLine(ST_SetSRID(ST_MakePoint({1}, {2}), 4326), n.geom) AND ST_Intersects(l.geom, ST_MakeLine(ST_SetSRID(ST_MakePoint({1}, {2}), 4326), n.geom)))
-            ORDER BY EXISTS (SELECT 1 FROM routing_isolated i WHERE i.graph_version = {0} AND i.id = n.id), n.geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
-            """, version, p.X, p.Y, degLng, degLat).FirstOrDefaultAsync(ct);
+        // first choice: a node the point can see (the first leg is drawn straight), then the plain nearest. The sight test runs on
+        // the 64 nearest nodes only, against the land clipped to their box, in memory (in SQL, on all nodes of the 40 km box and
+        // against the whole 146 000-point Dutch land polygon, it took 8 s next to the IJsselmeer)
+        SnapRow? row = null;
+        if (!onLand)
+        {
+            var near = await db.Database.SqlQueryRaw<SnapRow>("""
+                SELECT n.id AS "Id", ST_DistanceSphere(n.geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres", ST_X(n.geom) AS "X", ST_Y(n.geom) AS "Y",
+                       EXISTS (SELECT 1 FROM routing_isolated i WHERE i.graph_version = {0} AND i.id = n.id) AS "Isolated"
+                FROM (SELECT id, geom FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
+                      ORDER BY geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 64) n
+                """, version, p.X, p.Y, degLng, degLat).ToListAsync(ct);
+            if (near.Count > 0)
+            {
+                var box = new Envelope(p.Coordinate); foreach (var n in near) box.ExpandToInclude(n.X, n.Y);
+                var land = await db.Database.SqlQueryRaw<GeomRow>("SELECT ST_ClipByBox2D(geom, ST_MakeEnvelope({1},{2},{3},{4},4326)) AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)",
+                    version, box.MinX, box.MinY, box.MaxX, box.MaxY).ToListAsync(ct);
+                var prepared = land.Where(l => !l.Geom.IsEmpty).Select(l => PreparedGeometryFactory.Prepare(l.Geom)).ToList();
+                row = near.OrderBy(n => n.Isolated).ThenBy(n => n.Metres)
+                    .FirstOrDefault(n => { var leg = Geo.Factory.CreateLineString([p.Coordinate, new Coordinate(n.X, n.Y)]); return !prepared.Any(g => g.Intersects(leg)); });
+            }
+        }
         row ??= await db.Database.SqlQueryRaw<SnapRow>("""
-            SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres"
+            SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres", ST_X(geom) AS "X", ST_Y(geom) AS "Y", false AS "Isolated"
             FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
               AND ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) <= {5} -- the box corners are farther: a grid node there must not beat a passage node next to the point
             ORDER BY EXISTS (SELECT 1 FROM routing_isolated i WHERE i.graph_version = {0} AND i.id = routing_node.id), CASE WHEN id <= (SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes') THEN 0 ELSE 1 END, geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
             """, version, p.X, p.Y, degLng, degLat, maxM).FirstOrDefaultAsync(ct);
-        return row is not null && row.Metres <= maxM ? row.Id : null;
+        return row is not null && row.Metres <= maxM ? (row.Id, row.Metres, maxM) : (null, 0, maxM);
     }
 
     private static Envelope Expand(Point a, Point b, double metres)
@@ -344,8 +465,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     private sealed class MetaRow { public string Key { get; set; } = ""; public string Value { get; set; } = ""; }
-    private sealed class PathRow { public long Seq { get; set; } public long Node { get; set; } public long Edge { get; set; } public long? Source { get; set; } public Geometry? Geom { get; set; } public double X { get; set; } public double Y { get; set; } }
     private sealed class NearbyRow { public Guid HarbourId { get; set; } public double Metres { get; set; } }
-    private sealed class SnapRow { public long Id { get; set; } public double Metres { get; set; } }
+    private sealed class SnapRow { public long Id { get; set; } public double Metres { get; set; } public double X { get; set; } public double Y { get; set; } public bool Isolated { get; set; } }
     private sealed class GeomRow { public Geometry Geom { get; set; } = null!; }
 }

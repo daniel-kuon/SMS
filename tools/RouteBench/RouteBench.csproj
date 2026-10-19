@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Routing benchmark against a running dev database, see Program.cs for the arguments -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\Sms.Infrastructure\Sms.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

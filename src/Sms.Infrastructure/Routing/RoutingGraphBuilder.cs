@@ -25,6 +25,8 @@ public sealed class RoutingOptions
     /// <summary>Start cells per tile side; a tile (plus its neighbours' border cells) is all that is held in memory.</summary>
     public int TileCells { get; set; } = 10;
     public double HarbourAccessM { get; set; } = 3000;
+    /// <summary>Smoothing: a passage stretch (canal, buoy chain, derived channel) may be joined late / left early by up to this distance along it where the shortcut is navigable; its shape beyond is kept.</summary>
+    public double PassageTrimM { get; set; } = 3000;
     public double CoastPenaltyFactor { get; set; } = 0.2;
     /// <summary>Cost multiplier for passage edges (canals, derived fairways): below 1 routes prefer marked channels. Reported distances come from the geometry and are unaffected.</summary>
     public double PassageCostFactor { get; set; } = 1.0; // below 1 makes routes ride cheap passages to their ends (detours); channel preference does the steering
