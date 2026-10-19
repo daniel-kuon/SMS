@@ -55,6 +55,11 @@ html, body { height: 100%; margin: 0; font-family: Roboto, sans-serif; backgroun
 .weather-overlay-panel[hidden] { display: none; }
 .weather-overlay-panel label { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
 .weather-overlay-panel .muted { font-size: 11px; color: #777; }
+.weather-time-ctrl { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 2; width: min(420px, calc(100% - 32px)); box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: rgba(255,255,255,.92); border-radius: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.3); font-size: 12px; }
+.weather-time-ctrl[hidden] { display: none; }
+@media (max-width: 600px) { .weather-time-ctrl { bottom: 104px; } } // above the expanded attribution
+.weather-time-ctrl input { flex: 1; min-width: 0; margin: 0; accent-color: #1565c0; }
+.weather-time-label { white-space: nowrap; min-width: 9.5em; text-align: right; font-variant-numeric: tabular-nums; }
 
 /* forms: spacing, density helpers */
 .form-row { display: flex; flex-wrap: wrap; gap: 16px; }

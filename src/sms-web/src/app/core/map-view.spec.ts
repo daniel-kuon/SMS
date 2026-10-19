@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import type { Map as MlMap } from 'maplibre-gl';
-import { formatView, parseView, syncViewWithUrl, UrlHistory, viewFromUrl } from './map';
+import { FORECAST_STEPS, forecastLabel, forecastTime, formatView, parseView, syncViewWithUrl, UrlHistory, viewFromUrl } from './map';
 
 describe('map view in the URL', () => {
   it('parses and formats ?c=lat,lng,zoom', () => {
@@ -47,5 +47,17 @@ describe('map view in the URL', () => {
 
     stop();
     vi.useRealTimers();
+  });
+});
+
+describe('weather forecast slider', () => {
+  it('maps steps to now or now + h on the full hour, labelled in local time', () => {
+    const now = new Date(2026, 9, 19, 14, 40).getTime();
+    expect(FORECAST_STEPS[0]).toBe(0);
+    expect(forecastTime(0, now).getTime()).toBe(now);
+    expect(forecastTime(6, now)).toEqual(new Date(2026, 9, 19, 21, 0));
+    expect(forecastTime(24, now)).toEqual(new Date(2026, 9, 20, 15, 0));
+    expect(forecastLabel(0, now)).toBe('weather.time.now');
+    expect(forecastLabel(6, now)).toMatch(/21:00 \(\+6 h\)$/);
   });
 });

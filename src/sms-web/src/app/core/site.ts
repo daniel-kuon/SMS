@@ -11,6 +11,8 @@ export interface ShipSite {
   latestLogbook: LogbookEntry[];
   trips: TripSummary[];
 }
+/** ngx-translate for vanilla code without an injector (map controls); set by the app initializer, keys fall back to themselves. */
+export const appI18n = { t: (key: string): string => key, lang: (): string => 'de' };
 export type Site = { mode: 'portal'; host: string | null } | ShipSite;
 
 /**

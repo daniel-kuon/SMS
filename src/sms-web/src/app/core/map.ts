@@ -1,6 +1,7 @@
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MlMap, MapOptions, StyleSpecification } from 'maplibre-gl';
 import { formatPosition, seamarkTypeLabel } from './seamark-icons';
+import { appI18n } from './site';
 import { chartIconExpression, chartTopmarkExpression, chartTopmarkOffset, hazardFilter, lightIconExpression } from './chart-symbols';
 
 /** Public map configuration served by the API (/api/config). */
@@ -52,12 +53,30 @@ export const OVERLAY_GROUPS: OverlayGroup[] = [
   { id: 'temperature', name: 'Temperatur', gl: ['temperatures'], raster: 'temperatures' },
 ];
 const OVERLAY_STORAGE = 'sms.weatherOverlays';
-interface GlController { on(name: string, cb: () => void): void; isReady?: boolean; addWeatherLayer(id: string, overrides?: unknown): unknown; removeWeatherLayer(id: string): void; hasWeatherLayer(id: string): boolean; }
+interface GlTimeline { startDate: Date; endDate: Date; goToDate(d: Date): void; }
+interface GlController { on(name: string, cb: () => void): void; isReady?: boolean; timeline: GlTimeline; addWeatherLayer(id: string, overrides?: unknown): unknown; removeWeatherLayer(id: string): void; hasWeatherLayer(id: string): boolean; }
+/** Single-colour particles: MapsGL's default colours them by speed, the same scale as the wind-speed field beneath, so they vanished in it. */
+const particleStyle = (color: string) => ({ paint: { particle: { size: 2 }, sample: { colorscale: { normalized: true, stops: [0, color, 1, color] } } } });
+const PARTICLE_STYLE: Record<string, unknown> = { 'wind-particles': particleStyle('rgba(255,255,255,0.9)'), 'wave-particles': particleStyle('rgba(13,48,110,0.85)') };
+
+/** Forecast steps of the weather time slider in hours from now (0 = current conditions). */
+export const FORECAST_STEPS = [0, 1, 2, 3, 6, 9, 12, 18, 24, 30, 36, 48, 60, 72];
+/** The time shown for a forecast step: now for 0, otherwise now + h rounded to the full hour (model data is hourly). */
+export function forecastTime(hours: number, now = Date.now()): Date {
+  return hours ? new Date(Math.round((now + hours * 3_600_000) / 3_600_000) * 3_600_000) : new Date(now);
+}
+export function forecastLabel(hours: number, now = Date.now()): string {
+  if (!hours) return appI18n.t('weather.time.now');
+  const at = forecastTime(hours, now).toLocaleString(appI18n.lang() === 'en' ? 'en-GB' : 'de-DE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  return `${at} (+${hours} h)`;
+}
 
 export class WeatherOverlays {
   readonly selected = new Set<string>();
   private gl?: Promise<GlController | null>;
   private readonly glLayers = new Map<string, string[]>();
+  /** Selected forecast offset in hours (0 = now). */
+  hours = 0;
   constructor(private readonly map: MlMap, private readonly layers: OverlayLayer[], private access: { clientId: string; clientSecret: string } | null) {
     try { for (const id of JSON.parse(localStorage.getItem(OVERLAY_STORAGE) ?? '[]') as string[]) if (OVERLAY_GROUPS.some(g => g.id === id)) this.selected.add(id); } catch { /* ignore */ }
   }
@@ -66,10 +85,26 @@ export class WeatherOverlays {
   async apply(): Promise<void> {
     try { localStorage.setItem(OVERLAY_STORAGE, JSON.stringify([...this.selected])); } catch { /* ignore */ }
     const gl = this.access ? await this.controller() : null;
+    if (gl) this.applyTime(gl); // before adding layers: new layers take over the timeline's range
     for (const g of OVERLAY_GROUPS) {
       const on = this.selected.has(g.id);
       if (gl) this.applyGl(gl, g, on); else this.applyRaster(g, on);
     }
+  }
+
+  /** Moves all GL weather layers to now + hours (the raster endpoint only serves current tiles). */
+  async setHours(hours: number): Promise<void> {
+    this.hours = hours;
+    const gl = this.access ? await this.controller() : null;
+    if (gl) this.applyTime(gl);
+  }
+
+  private applyTime(gl: GlController): void {
+    const now = Date.now(), tl = gl.timeline;
+    tl.startDate = new Date(now - 3_600_000); tl.endDate = new Date(now + FORECAST_STEPS.at(-1)! * 3_600_000 + 3_600_000);
+    const at = forecastTime(this.hours, now);
+    // layers added in the same tick still carry their old range and make goToDate throw a RangeError; they sync a tick later
+    try { tl.goToDate(at); } catch { setTimeout(() => { try { tl.goToDate(at); } catch (e) { console.warn('MapsGL time', e); } }, 100); }
   }
 
   private applyRaster(g: OverlayGroup, on: boolean): void {
@@ -87,7 +122,7 @@ export class WeatherOverlays {
     if (on === current.length > 0) return;
     if (!on) { for (const id of current) if (gl.hasWeatherLayer(id)) gl.removeWeatherLayer(id); this.glLayers.delete(g.id); return; }
     const added: string[] = [];
-    const tryAdd = (ids: string[]) => { for (const id of ids) { try { gl.addWeatherLayer(id, id.endsWith('-particles') ? undefined : { paint: { opacity: 0.55 } }); added.push(id); } catch (e) { console.warn('MapsGL layer failed', id, e); } } };
+    const tryAdd = (ids: string[]) => { for (const id of ids) { try { gl.addWeatherLayer(id, PARTICLE_STYLE[id] ?? { paint: { opacity: 0.55 } }); added.push(id); } catch (e) { console.warn('MapsGL layer failed', id, e); } } };
     tryAdd(g.gl);
     if (added.length === 0 && g.glFallback) tryAdd(g.glFallback);
     this.glLayers.set(g.id, added);
@@ -102,8 +137,16 @@ export class WeatherOverlays {
         const m = this.map as unknown as { transform?: unknown; _camera?: { transform?: unknown } };
         if (!('transform' in m)) Object.defineProperty(m, 'transform', { get: () => m._camera?.transform, configurable: true });
         const account = new sdk.Account(this.access!.clientId, this.access!.clientSecret);
-        const c = new sdk.MaplibreMapController(this.map as never, { account, units: { temperature: 'C', speed: 'kts', pressure: 'hPa', distance: 'km', height: 'm' } } as never) as unknown as GlController;
-        await new Promise<void>(res => (c.isReady ? res() : c.on('load', () => res())));
+        // MapsGL initialises at once only if map.isStyleLoaded(), else it waits for the map's 'load' event. Our map fired 'load'
+        // long ago (createMap awaits it), but isStyleLoaded() is false whenever tiles/sources are still loading (panning,
+        // a just-added source), so it waited forever for a second 'load' and no weather layer ever appeared.
+        const ml = this.map as unknown as { isStyleLoaded: () => boolean };
+        const isStyleLoaded = ml.isStyleLoaded;
+        ml.isStyleLoaded = () => true;
+        let c: GlController;
+        try { c = new sdk.MaplibreMapController(this.map as never, { account, units: { temperature: 'C', speed: 'kts', pressure: 'hPa', distance: 'km', height: 'm' } } as never) as unknown as GlController; }
+        finally { ml.isStyleLoaded = isStyleLoaded; }
+        await new Promise<void>((res, rej) => { if (c.isReady) res(); else { c.on('load', () => res()); setTimeout(() => rej(new Error('MapsGL did not get ready within 20 s')), 20_000); } });
         return c;
       } catch (e) { console.warn('MapsGL unavailable, using raster tiles', e); this.access = null; return null; }
     })();
@@ -119,17 +162,29 @@ export function addWeatherOverlayControl(map: MlMap): void {
     const wrap = document.createElement('div'); wrap.className = 'maplibregl-ctrl maplibregl-ctrl-group weather-overlay-ctrl';
     const button = document.createElement('button'); button.type = 'button'; button.className = 'weather-overlay-button'; button.title = 'Wetter-Overlays'; button.setAttribute('aria-label', 'Wetter-Overlays');
     const panel = document.createElement('div'); panel.className = 'weather-overlay-panel'; panel.hidden = true;
-    const refresh = () => { button.textContent = overlays.selected.size ? `☁ ${overlays.selected.size}` : '☁'; button.classList.toggle('active', overlays.selected.size > 0); };
+    // forecast time slider at the bottom of the map, only while a GL overlay is on (the raster tiles are current-only)
+    const time = document.createElement('div'); time.className = 'weather-time-ctrl';
+    const range = document.createElement('input'); range.type = 'range'; range.min = '0'; range.max = String(FORECAST_STEPS.length - 1); range.step = '1'; range.value = '0';
+    range.setAttribute('aria-label', appI18n.t('weather.time.label'));
+    const timeLabel = document.createElement('span'); timeLabel.className = 'weather-time-label';
+    const showTime = () => { timeLabel.textContent = forecastLabel(FORECAST_STEPS[+range.value]); };
+    range.oninput = showTime;
+    range.onchange = () => { showTime(); void overlays.setHours(FORECAST_STEPS[+range.value]); };
+    time.append(range, timeLabel); map.getContainer().appendChild(time);
+    const refresh = () => {
+      button.textContent = overlays.selected.size ? `☁ ${overlays.selected.size}` : '☁'; button.classList.toggle('active', overlays.selected.size > 0);
+      time.hidden = !overlays.selected.size || overlays.mode !== 'gl'; showTime();
+    };
     for (const g of OVERLAY_GROUPS) {
       const label = document.createElement('label'); const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = g.id; cb.checked = overlays.selected.has(g.id);
-      cb.onchange = () => { if (cb.checked) overlays.selected.add(g.id); else overlays.selected.delete(g.id); refresh(); void overlays.apply(); };
+      cb.onchange = () => { if (cb.checked) overlays.selected.add(g.id); else overlays.selected.delete(g.id); refresh(); void overlays.apply().then(refresh); };
       label.append(cb, document.createTextNode(' ' + g.name)); panel.appendChild(label);
     }
     const note = document.createElement('div'); note.className = 'muted'; note.textContent = overlays.mode === 'gl' ? 'Xweather MapsGL' : 'Xweather (Kacheln)'; panel.appendChild(note);
     button.onclick = () => { panel.hidden = !panel.hidden; };
     map.addControl({ onAdd: () => { wrap.append(button, panel); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
     refresh();
-    if (overlays.selected.size) void overlays.apply();
+    if (overlays.selected.size) void overlays.apply().then(refresh);
   }).catch(() => { /* no overlay without the API */ });
 }
 

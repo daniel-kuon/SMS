@@ -14,7 +14,7 @@ import { provideTranslateHttpLoader } from '@ngx-translate/http-loader';
 
 import { routes } from './app.routes';
 import { apiInterceptor, AuthService } from './core/api';
-import { SiteService } from './core/site';
+import { appI18n, SiteService } from './core/site';
 import { initTelemetry } from './core/telemetry';
 import { provideServiceWorker } from '@angular/service-worker';
 
@@ -44,6 +44,7 @@ export const appConfig: ApplicationConfig = {
       const me = await auth.load();
       const lang = me?.language ?? localStorage.getItem('lang') ?? 'de';
       translate.use(lang);
+      Object.assign(appI18n, { t: (k: string) => translate.instant(k) as string, lang: () => translate.getCurrentLang() ?? 'de' });
     }),
     provideServiceWorker('ngsw-worker.js', {
       enabled: !isDevMode(),
