@@ -63,6 +63,8 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
         {
             b.Properties(enumType).HaveConversion(typeof(EnumToStringConverter<>).MakeGenericType(enumType)).HaveMaxLength(32);
         }
+        // Npgsql only writes UTC to timestamptz: an API client sending "2016-07-01T10:00:00+02:00" made SaveChanges throw
+        b.Properties<DateTimeOffset>().HaveConversion<UtcDateTimeOffsetConverter>();
         b.Properties<decimal>().HavePrecision(18, 4);
         b.Properties<string>().HaveMaxLength(4000);
     }
@@ -266,3 +268,6 @@ public class SmsDbContextFactory : IDesignTimeDbContextFactory<SmsDbContext>
         return new SmsDbContext(options);
     }
 }
+
+/// <summary>Stores every DateTimeOffset as UTC (timestamptz accepts only offset 0 in Npgsql).</summary>
+public sealed class UtcDateTimeOffsetConverter() : Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<DateTimeOffset, DateTimeOffset>(v => v.ToUniversalTime(), v => v);
