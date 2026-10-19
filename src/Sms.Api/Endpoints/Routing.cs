@@ -371,8 +371,16 @@ public static class RoutingEndpoints
             var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
             old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge")))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
         }
+        // a waterway chain that crosses the bbox edge was merged from more ways by the neighbouring chunk's import: it is kept
+        // (deleting it and re-adding only this chunk's part cut the Stockholm fairway off from Danvikskanalen and the Hammarby lock),
+        // and a new chain lying along such a kept chain is not added twice
+        var keptPassages = env is null ? [] : old.Where(c => c.Kind == CorrectionKind.Passage && !env.Contains(c.Geometry.EnvelopeInternal)).ToList();
+        old = old.Except(keptPassages).ToList();
+        var keptIndex = new NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Prepared.IPreparedGeometry>();
+        foreach (var k in keptPassages) keptIndex.Insert(k.Geometry.EnvelopeInternal, NetTopologySuite.Geometries.Prepared.PreparedGeometryFactory.Prepare(k.Geometry.Buffer(10 / 111_320.0)));
+        bool AlongKept(Geometry line) => keptIndex.Query(line.EnvelopeInternal).Any(k => k.Covers(line));
         db.RoutingCorrections.RemoveRange(old);
-        foreach (var w in ways)
+        foreach (var w in ways.Where(w => !AlongKept(w.Line)))
             db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = w.Line, Note = w.Name is null ? $"Wasserstraße ({w.Ways} OSM-Wege)" : $"{w.Name} ({w.Ways} OSM-Wege)", Active = true, CreatedById = userId });
         foreach (var ob in obstacles) db.RoutingCorrections.Add(ToCorrection(ob, userId));
         foreach (var a in areas) db.RoutingCorrections.Add(ToCorrection(a, userId));
