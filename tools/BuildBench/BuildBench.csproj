@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Times the area graph build (obstacles → nodes → visibility edges → land check) against the dev database, read-only; see Program.cs -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ServerGarbageCollection>true</ServerGarbageCollection> <!-- as in the API: the parallel visibility pass allocates heavily -->
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\Sms.Infrastructure\Sms.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

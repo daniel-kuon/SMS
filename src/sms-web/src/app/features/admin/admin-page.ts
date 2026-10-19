@@ -8,6 +8,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, errorMessage } from '../../core/api';
@@ -20,10 +21,11 @@ interface AuditParams { sample: number; maxNm: number; neighbours: number; draft
 interface AuditStatus { running: boolean; startedAt: string | null; parameters: AuditParams | null; progress: { phase: string; message: string; at: string }[];
   report: { routes: number; failed: number; unroutable: number; counts: Record<string, number>; seconds: number; parameters: AuditParams; finishedAt: string;
     findings: { check: string; from: string; to: string; lat: number; lng: number; detail: string }[] } | null; }
-interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; waterways: number; building: boolean; progress: { phase: string; message: string; at: string }[]; }
+interface RoutingStatus { method: string; graphVersion: number; builtAt: string | null; region: string | null; nodes: number; edges: number; waterways: number; building: boolean; progress: { phase: string; message: string; at: string }[];
+  percent: number | null; phase: string | null; phaseDone: number | null; phaseTotal: number | null; elapsedSeconds: number | null; remainingSeconds: number | null; }
 
 @Component({
-  imports: [DatePipe, DecimalPipe, MatChipsModule, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, TranslatePipe, RouterLink, RichEditor],
+  imports: [DatePipe, DecimalPipe, MatChipsModule, FormsModule, MatCardModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule, MatProgressSpinnerModule, MatProgressBarModule, TranslatePipe, RouterLink, RichEditor],
   template: `
     <div class="page page-narrow">
       <h1>{{ 'admin.title' | translate }}</h1>
@@ -63,7 +65,11 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
         @if (routing(); as r) {
           <p>{{ 'admin.routingStatus' | translate }}: <b>{{ r.method }}</b> · Version {{ r.graphVersion }} · {{ r.nodes }} {{ 'admin.nodes' | translate }} / {{ r.edges }} {{ 'admin.edges' | translate }} @if (r.builtAt) { · {{ 'admin.builtAt' | translate }} {{ r.builtAt | date:'dd.MM.yyyy HH:mm' }} } @if (r.region) { · Region {{ r.region }} }</p>
           <p class="muted">{{ 'admin.routingHint' | translate }}</p>
-          <div class="row"><button mat-flat-button (click)="rebuild()" [disabled]="r.building">{{ (r.building ? 'admin.routingBuilding' : 'admin.routingRebuild') | translate }}</button>@if (r.building) { <mat-spinner diameter="20" /> }</div>
+          <div class="row"><button mat-flat-button (click)="rebuild()" [disabled]="r.building">{{ (r.building ? 'admin.routingBuilding' : 'admin.routingRebuild') | translate }}</button>@if (r.building && r.percent == null) { <mat-spinner diameter="20" /> }</div>
+          @if (r.building && r.percent != null) {
+            <div class="build-progress"><mat-progress-bar mode="determinate" [value]="r.percent" />
+              <span class="muted">{{ r.phase }}@if (r.phaseTotal) { {{ r.phaseDone | number }}/{{ r.phaseTotal | number }} } · {{ r.percent | number:'1.0-0' }} % · {{ clock(r.elapsedSeconds ?? 0) }} · {{ 'admin.routingRemaining' | translate: { eta: clock(r.remainingSeconds ?? 0) } }}</span></div>
+          }
           <h4>{{ 'admin.waterways' | translate }} <span class="muted">({{ r.waterways }})</span></h4>
           <p class="muted">{{ 'admin.waterwaysHint' | translate }}</p>
           <div class="row"><mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>{{ 'admin.bbox' | translate }}</mat-label><input matInput [(ngModel)]="waterwayBbox" /></mat-form-field>
@@ -117,7 +123,7 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
         <p>SigNoz UI: <a href="http://localhost:3302" target="_blank">http://localhost:3302</a> · Login: admin&#64;localhost.dev / SailingPortal2026!</p>
       </mat-card-content></mat-card>
     </div>`,
-  styles: `.full-width { width: 100%; } .editor { margin-bottom: 12px; } mat-card { margin-bottom: 12px; } .progress { font-size: 12px; list-style: none; padding: 0; } .findings { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; } .findings th, .findings td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #eee; } .report { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 13px; }`,
+  styles: `.full-width { width: 100%; } .editor { margin-bottom: 12px; } mat-card { margin-bottom: 12px; } .progress { font-size: 12px; list-style: none; padding: 0; } .build-progress { margin: 8px 0; font-size: 12px; } .build-progress mat-progress-bar { margin-bottom: 4px; } .findings { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; } .findings th, .findings td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #eee; } .report { padding: 4px 0; border-bottom: 1px solid #eee; font-size: 13px; }`,
 })
 export class AdminPage {
   private api = inject(Api);
@@ -145,7 +151,12 @@ export class AdminPage {
   reports = signal<{ id: string; targetType: string; targetId: string; reporter: string; reason: string; status: string }[]>([]);
   loadReports(): void { this.api.get<typeof this.reports extends () => infer T ? T : never>('/api/admin/reports').subscribe(r => this.reports.set(r)); }
   resolve(r: { id: string }, hide: boolean): void { this.api.post(`/api/admin/reports/${r.id}/resolve`, { hide, resolution: hide ? 'hidden' : 'dismissed' }).subscribe(() => this.loadReports()); }
-  elapsed(from: string, to: string): string { const s = Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+  elapsed(from: string, to: string): string { return this.clock((Date.parse(to) - Date.parse(from)) / 1000); }
+  /** Seconds as m:ss, or h:mm:ss from an hour on. */
+  clock(seconds: number): string {
+    const s = Math.max(0, Math.round(seconds)), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, ss = String(s % 60).padStart(2, '0');
+    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+  }
   loadRouting(): void { this.api.get<RoutingStatus>('/api/routing/status').subscribe(r => this.routing.set(r)); }
   rebuild(): void { this.api.post('/api/admin/routing/rebuild', {}).subscribe({ next: () => setTimeout(() => this.loadRouting(), 500), error: e => this.result.set(errorMessage(e)) }); }
   waterwayBbox = '54.2,9.1,54.5,10.2';

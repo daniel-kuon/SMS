@@ -49,10 +49,28 @@ public class VisibilityGraphTests
         var lattice = VisibilityGraph.Lattice(new Envelope(9.5, 11, 53.5, 55), obstacles, new VisibilityGraph.Options(LatticeM: 20_000, LatticeClearM: 3_000));
         Assert.NotEmpty(lattice);
         Assert.DoesNotContain(lattice, p => island.EnvelopeInternal.Contains(p));
-        var inside = VisibilityGraph.Anchor(new Coordinate(10.01, 54.2), obstacles, polygons);
+        var inside = VisibilityGraph.Anchors([new Coordinate(10.01, 54.2)], polygons)[0];
         Assert.Equal(10.0, inside.X, 4); Assert.Equal(54.2, inside.Y, 4); Assert.True(inside.X < 10.0); // nearest boundary point, west edge, a metre out
         var outside = new Coordinate(10.6, 54.2);
-        Assert.Equal(outside, VisibilityGraph.Anchor(outside, obstacles, polygons));
+        Assert.Equal(outside, VisibilityGraph.Anchors([outside], polygons)[0]);
+    }
+
+    [Fact]
+    public void Obstacle_cache_file_gives_back_the_same_polygons_bit_for_bit()
+    {
+        var withHole = F.CreatePolygon(F.CreateLinearRing([new(10, 54), new(11, 54), new(11, 55), new(10, 55), new(10, 54)]),
+            [F.CreateLinearRing([new(10.123456789012, 54.4), new(10.6, 54.4), new(10.6, 54.6), new(10.4, 54.6), new(10.123456789012, 54.4)])]);
+        var file = Path.GetTempFileName();
+        try
+        {
+            RoutingGraphBuilder.WritePolygonLists(file, [[Box(1, 2, 3, 4), withHole], []]);
+            var lists = RoutingGraphBuilder.ReadPolygonLists(file);
+            Assert.Equal(2, lists.Length);
+            Assert.Equal(2, lists[0].Count); Assert.Empty(lists[1]);
+            Assert.True(lists[0][1].EqualsExact(withHole)); Assert.Equal(1, lists[0][1].NumInteriorRings);
+            Assert.Equal(4326, lists[0][0].SRID);
+        }
+        finally { File.Delete(file); }
     }
 
     [Fact]
@@ -63,8 +81,7 @@ public class VisibilityGraphTests
              F.CreateLinearRing([new(10.6, 54.6), new(10.9, 54.6), new(10.9, 54.9), new(10.6, 54.9), new(10.6, 54.6)])]); // ≈ 650 km² lake
         var filled = VisibilityGraph.FillSmallHoles(land, 3);
         Assert.Equal(1, filled.NumInteriorRings);
-        var obstacles = VisibilityGraph.Index([filled]);
-        var anchor = VisibilityGraph.Anchor(new Coordinate(10.025, 54.055), obstacles, [filled]);
+        var anchor = VisibilityGraph.Anchors([new Coordinate(10.025, 54.055)], [filled])[0];
         Assert.Equal(10.0, anchor.X, 4); Assert.Equal(54.055, anchor.Y, 4); Assert.True(anchor.X < 10.0); // nearest outer coast (a metre into the water), not the basin wall
     }
 

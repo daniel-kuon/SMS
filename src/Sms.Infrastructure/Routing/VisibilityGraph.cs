@@ -111,21 +111,34 @@ public static class VisibilityGraph
         return result;
     }
 
-    /// <summary>A point in water for a harbour or passage end: the point itself when it lies outside every obstacle, else the nearest point on the obstacle boundary.</summary>
-    public static Coordinate Anchor(Coordinate p, STRtree<IPreparedGeometry> obstacles, IReadOnlyList<Polygon> polygons)
+    /// <summary>A point in water for each harbour or passage end: the point itself when it lies outside every obstacle, else the nearest
+    /// point on the boundary of the obstacles containing it, a step into the water. Runs in parallel (prepared geometries per thread, see
+    /// Edges); the nearest boundary point comes from a facet index per polygon (a plain DistanceOp walked every vertex of a coast polygon
+    /// for each of the 700 k passage ends: 4 min in v60).</summary>
+    public static Coordinate[] Anchors(IReadOnlyList<Coordinate> points, IReadOnlyList<Polygon> polygons, Action? tick = null)
     {
-        var pt = Geo.Factory.CreatePoint(p);
-        var inside = obstacles.Query(new Envelope(p)).Where(ob => ob.Contains(pt)).ToList();
-        if (inside.Count == 0) return p;
-        var best = p; var bestD = double.MaxValue;
-        foreach (var poly in polygons)
+        using var perThread = new ThreadLocal<STRtree<IPreparedGeometry>>(() => Index(polygons));
+        var byEnvelope = new STRtree<int>();
+        for (var k = 0; k < polygons.Count; k++) byEnvelope.Insert(polygons[k].EnvelopeInternal, k);
+        byEnvelope.Build();
+        var facets = new ConcurrentDictionary<int, Lazy<IndexedFacetDistance>>();
+        var result = new Coordinate[points.Count];
+        Parallel.For(0, points.Count, i =>
         {
-            if (!poly.EnvelopeInternal.Contains(p)) continue;
-            var near = DistanceOp.NearestPoints(poly.Boundary, pt);
-            var d = near[0].Distance(p);
-            if (d < bestD) { bestD = d; best = near[0]; }
-        }
-        return Offset(best, best.X - p.X, best.Y - p.Y); // a step past the boundary into the water
+            tick?.Invoke();
+            var p = points[i]; var pt = Geo.Factory.CreatePoint(p);
+            if (!perThread.Value!.Query(new Envelope(p)).Any(ob => ob.Contains(pt))) { result[i] = p; return; }
+            var best = p; var bestD = double.MaxValue;
+            foreach (var k in byEnvelope.Query(new Envelope(p)).Order()) // polygon order: on a tie the first polygon wins
+            {
+                if (!polygons[k].EnvelopeInternal.Contains(p)) continue;
+                var near = facets.GetOrAdd(k, k => new Lazy<IndexedFacetDistance>(() => new IndexedFacetDistance(polygons[k].Boundary))).Value.NearestPoints(pt)[0];
+                var d = near.Distance(p);
+                if (d < bestD) { bestD = d; best = near; }
+            }
+            result[i] = Offset(best, best.X - p.X, best.Y - p.Y); // a step past the boundary into the water
+        });
+        return result;
     }
 
     /// <summary>Visibility edges: each node to its nearest visible neighbours within MaxVisibilityM (both directions deduplicated).</summary>
@@ -135,7 +148,7 @@ public static class VisibilityGraph
 
     /// <param name="finePolygons">Land with a small buffer: a short leg that the coast buffer closes (a constriction narrower than twice the buffer)
     /// is still added when it clears these, at ×NarrowLegFactor. Null = off.</param>
-    public static List<GraphEdge> Edges(IReadOnlyList<GraphNode> nodes, IReadOnlyList<Polygon> polygons, IReadOnlyList<Polygon>? finePolygons, Options o)
+    public static List<GraphEdge> Edges(IReadOnlyList<GraphNode> nodes, IReadOnlyList<Polygon> polygons, IReadOnlyList<Polygon>? finePolygons, Options o, Action? tick = null)
     {
         using var perThread = new ThreadLocal<STRtree<IPreparedGeometry>>(() => Index(polygons));
         using var perThreadFine = new ThreadLocal<STRtree<IPreparedGeometry>?>(() => finePolygons is null ? null : Index(finePolygons));
@@ -147,6 +160,7 @@ public static class VisibilityGraph
         var pairs = new ConcurrentBag<(long a, long b, GraphNode na, GraphNode nb)>();
         Parallel.ForEach(nodes, n =>
         {
+            tick?.Invoke();
             var cos = Math.Cos(n.Y * Math.PI / 180);
             var env = new Envelope(n.X - maxDeg / cos, n.X + maxDeg / cos, n.Y - maxDeg, n.Y + maxDeg);
             var candidates = index.Query(env).Where(m => m.Id != n.Id)

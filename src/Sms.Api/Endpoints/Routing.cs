@@ -93,7 +93,10 @@ public static class RoutingEndpoints
         {
             var s = await router.StatusAsync(ct);
             var waterways = await db.RoutingCorrections.CountAsync(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Active, ct);
-            return Results.Ok(new { method = s.ActiveVersion > 0 ? "sea-graph" : "straight-line", graphVersion = s.ActiveVersion, s.BuiltAt, s.Region, s.Nodes, s.Edges, waterways, building = builder.IsRunning, progress = builder.Progress, options = builder.Options });
+            var e = builder.Estimate();
+            return Results.Ok(new { method = s.ActiveVersion > 0 ? "sea-graph" : "straight-line", graphVersion = s.ActiveVersion, s.BuiltAt, s.Region, s.Nodes, s.Edges, waterways, building = builder.IsRunning,
+                percent = e?.Percent, phase = e?.Phase, phaseDone = e?.PhaseDone, phaseTotal = e?.PhaseTotal, elapsedSeconds = e?.ElapsedSeconds, remainingSeconds = e?.RemainingSeconds,
+                progress = builder.Progress, options = builder.Options });
         });
 
         var admin = api.MapGroup("/admin/routing").WithTags("Admin").RequireAuthorization();
