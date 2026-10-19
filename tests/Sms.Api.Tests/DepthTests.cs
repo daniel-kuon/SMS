@@ -1,3 +1,4 @@
+using Sms.Domain;
 using NetTopologySuite.Geometries;
 using Sms.Api;
 using Sms.Infrastructure.Routing;
@@ -9,7 +10,7 @@ public class DepthTests
     [Fact]
     public void Densify_adds_bend_candidates_along_long_edges_only()
     {
-        var d = SeaRouter.Densify([new(10.0, 54.0), new(10.0, 54.09), new(10.001, 54.09)], 1000); // 10 km edge, then 65 m
+        var d = StringPull.Densify([new(10.0, 54.0), new(10.0, 54.09), new(10.001, 54.09)], [false, false], 1000).points; // 10 km edge, then 65 m
         Assert.Equal(13, d.Count); Assert.Equal(new Coordinate(10.0, 54.0), d[0]); Assert.Equal(new Coordinate(10.001, 54.09), d[^1]);
         Assert.Equal(54.0082, d[1].Y, 4); // 10.0 km → 11 steps of 0.00818°
     }

@@ -86,7 +86,7 @@ public static class RoutingEndpoints
                 var line = Geo.Factory.CreateLineString([a.Coordinate, b.Coordinate]);
                 return Results.Ok(new { distanceNm = nm, straightLineNm = nm, geometry = line, graphVersion = 0, method = "straight-line", disclaimer = Disclaimer, attribution = Attribution });
             }
-            return Results.Ok(new { distanceNm = r.DistanceNm, straightLineNm = r.StraightLineNm, geometry = r.Geometry, graphVersion = r.GraphVersion, method = r.Method, disclaimer = Disclaimer, attribution = Attribution, timings = debug == true ? r.Timings : null });
+            return Results.Ok(new { distanceNm = r.DistanceNm, straightLineNm = r.StraightLineNm, geometry = r.Geometry, graphVersion = r.GraphVersion, method = r.Method, warnings = r.Warnings ?? [], disclaimer = Disclaimer, attribution = Attribution, timings = debug == true ? r.Timings : null });
         });
 
         g.MapGet("/status", async (SeaRouter router, RoutingGraphBuilder builder, SmsDbContext db, CancellationToken ct) =>
@@ -264,6 +264,100 @@ public static class RoutingEndpoints
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { landPieces = land.Count, created = lines.Count, removed = old.Count, totalNm = Math.Round(lines.Sum(LengthNm), 1) });
         });
+        // assumed passages: where a ferry line or recommended track crosses the routing land (the coastline closes a strait boats pass,
+        // Baggensstäket) or runs through coast-zone water the graph cannot connect, and buoy gaps (lateral marks on both sides of a
+        // short land strip the graph cannot connect). Replaces the "Annahme" passages of the bbox; the next rebuild uses them
+        admin.MapPost("/derive-assumed-passages", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, RoutingGraphBuilder builder, SeaRouter router, ILogger<SeaRouter> log, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var b = bbox.Split(',').Select(x => double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : double.NaN).ToArray();
+            if (b.Length != 4 || b.Any(double.IsNaN)) return Invalid("bbox", "bbox=south,west,north,east");
+            var tile = new Envelope(b[1], b[3], b[0], b[2]);
+            var version = await router.ActiveVersionAsync(ct);
+            if (version <= 0) return Invalid("graph", "Kein aktiver Routing-Graph – zuerst bauen.");
+            using var doc = await Overpass.QueryAsync(http, cfg, string.Format(Waterways.OverpassGuideQuery, bbox), ct, log);
+            if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
+            var guides = Waterways.ParseGuideLines(doc, Geo.Factory);
+            var o = builder.Options;
+            // the land of the active graph around the bbox (stretches and buoy pairs reach over its edge), indexed for point tests; beyond
+            // the margin a guide line counts as open water (a stretch there would not belong to this chunk anyway)
+            var margin = new Envelope(tile); margin.ExpandBy(0.05);
+            var land = await db.Database.SqlQueryRaw<LandRow>("SELECT ST_CollectionExtract(ST_Intersection(geom, ST_MakeEnvelope({1},{2},{3},{4},4326)), 3) AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", version, margin.MinX, margin.MinY, margin.MaxX, margin.MaxY).Select(r => r.Geom).ToListAsync(ct);
+            var landIndex = new NetTopologySuite.Index.Strtree.STRtree<(IPreparedGeometry prepared, NetTopologySuite.Operation.Distance.IndexedFacetDistance distance)>();
+            foreach (var poly in land.Where(g => g is not null && !g.IsEmpty).SelectMany(g => g is Polygon lp ? [lp] : g is MultiPolygon lmp ? lmp.Geometries.OfType<Polygon>() : []))
+                landIndex.Insert(poly.EnvelopeInternal, (PreparedGeometryFactory.Prepare(poly), new NetTopologySuite.Operation.Distance.IndexedFacetDistance(poly)));
+            landIndex.Build();
+            bool OnLand(Coordinate c) { var pt = Geo.Factory.CreatePoint(c); return landIndex.Query(new Envelope(c)).Any(l => l.prepared.Intersects(pt)); }
+            // the coast zone of the area build: water closer to land than the coast buffer has no visibility legs
+            bool NearLand(Coordinate c)
+            {
+                var deg = o.CoastBufferM / WaterGraphTiler.MPerDegLat / Math.Max(0.2, Math.Cos(c.Y * Math.PI / 180)); // ponytail: planar degrees, generous north-south; the router test filters
+                var env = new Envelope(c); env.ExpandBy(deg);
+                var pt = Geo.Factory.CreatePoint(c);
+                return landIndex.Query(env).Any(l => l.distance.Distance(pt) <= deg);
+            }
+            var extent = Geo.Factory.ToGeometry(tile); extent.SRID = 4326;
+            // a passage belongs to the chunk its centroid lies in: guide lines and buoy pairs crossing a chunk edge are seen by both chunks
+            var old = (await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Annahme") && c.Geometry.Intersects(extent)).ToListAsync(ct))
+                .Where(c => c.Geometry.Centroid.Within(extent)).ToList();
+            db.RoutingCorrections.RemoveRange(old);
+            var created = new List<(LineString line, string note, double? graphM)>();
+            bool Near(Coordinate c, double m) => created.Any(x => x.line.IsWithinDistance(Geo.Factory.CreatePoint(c), m / WaterGraphTiler.MPerDegLat));
+            // 1. guide-line stretches: across land always (unless the graph already connects them nearly as short – a canal or channel
+            //    there), through coast-zone water only where the graph has no route or one more than 3× as long
+            var stretches = 0;
+            foreach (var gl in guides)
+            {
+                var coords = gl.Line.Coordinates;
+                foreach (var st in AssumedPassages.Stretches(coords, OnLand, NearLand))
+                {
+                    var sub = AssumedPassages.SubLine(coords, st.From, st.To);
+                    if (sub.Length < 2) continue;
+                    var line = Geo.Factory.CreateLineString(sub); line.SRID = 4326;
+                    if (!line.Centroid.Within(extent) || Near(AssumedPassages.Midpoint(sub), 100)) continue;
+                    stretches++;
+                    var lengthM = st.To - st.From;
+                    var graphM = await router.GraphDistanceAsync(sub[0], sub[^1], ct);
+                    if (graphM is { } gm && gm <= (st.Land ? 1.5 : 3) * lengthM) continue;
+                    created.Add((line, $"Annahme: {gl.Name ?? "Fährlinie"}", graphM));
+                }
+            }
+            // 2. buoy gaps: lateral marks on both sides of a short land strip; the passage follows a guide line when one passes both marks
+            var sw = SeamarkEndpoints.ToMercator(margin.MinY, margin.MinX); var ne = SeamarkEndpoints.ToMercator(margin.MaxY, margin.MaxX);
+            var markBox = Geo.Factory.ToGeometry(new Envelope(sw.X, ne.X, sw.Y, ne.Y)); markBox.SRID = 3857;
+            var marks = (await db.Seamarks.AsNoTracking().Where(m => (m.Type == "buoy_lateral" || m.Type == "beacon_lateral") && m.Location.Within(markBox)).Select(m => m.Location).ToListAsync(ct))
+                .Select(m => Fairways.FromMercator(m.X, m.Y)).Select(m => new Coordinate(m.lng, m.lat)).ToList();
+            bool HitsLand(Coordinate p, Coordinate q) { var seg = Geo.Factory.CreateLineString([p, q]); return landIndex.Query(seg.EnvelopeInternal).Any(l => l.prepared.Intersects(seg)); }
+            var gaps = AssumedPassages.BuoyGaps(marks, OnLand, hitsLand: HitsLand).Where(g => extent.Contains(Geo.Factory.CreatePoint(g.LandMid))).ToList();
+            foreach (var gap in gaps)
+            {
+                if (Near(gap.LandMid, 200)) continue; // a guide-line stretch already crosses this strip
+                Coordinate a = marks[gap.A], c = marks[gap.B];
+                var graphM = await router.GraphDistanceAsync(a, c, ct);
+                if (graphM is { } gm && gm <= 3 * gap.DistanceM) continue;
+                Coordinate[] coords = [a, c]; var note = "Annahme: Tonnenlücke";
+                var pa = Geo.Factory.CreatePoint(a); var pc = Geo.Factory.CreatePoint(c); var tolDeg = 100 / WaterGraphTiler.MPerDegLat;
+                if (guides.FirstOrDefault(gl => gl.Line.IsWithinDistance(pa, tolDeg) && gl.Line.IsWithinDistance(pc, tolDeg)) is { } guide)
+                {
+                    var lil = new NetTopologySuite.LinearReferencing.LocationIndexedLine(guide.Line);
+                    var la = lil.Project(a); var lc = lil.Project(c);
+                    var along = lil.ExtractLine(la.CompareTo(lc) <= 0 ? la : lc, la.CompareTo(lc) <= 0 ? lc : la).Coordinates;
+                    if (la.CompareTo(lc) > 0) Array.Reverse(along);
+                    Coordinate[] guided = [a, .. along, c];
+                    if (StringPull.Length(guided) <= 3 * gap.DistanceM) { coords = guided.Where((x, i) => i == 0 || !x.Equals2D(guided[i - 1])).ToArray(); note += $" entlang {guide.Name ?? "Fährlinie"}"; }
+                }
+                var line = Geo.Factory.CreateLineString(coords); line.SRID = 4326;
+                created.Add((line, note, graphM));
+            }
+            foreach (var (line, note, _) in created)
+                db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = line, Active = true, CreatedById = current.Id, Note = $"{note} ({LengthNm(line):0.0} sm)" });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new
+            {
+                guideLines = guides.Count, guideStretches = stretches, marks = marks.Count, buoyGaps = gaps.Count, created = created.Count, removed = old.Count,
+                passages = created.Select(x => new { x.note, lat = Math.Round(x.line.Centroid.Y, 5), lng = Math.Round(x.line.Centroid.X, 5), lengthNm = Math.Round(LengthNm(x.line), 2), graphNm = x.graphM is { } g ? Math.Round(g / 1852, 1) : (double?)null }),
+            });
+        });
         // inland water bodies (lakes, IJsselmeer, Randmeren) – the coastline-based land polygons count them as land
         admin.MapPost("/import-water", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
         {
@@ -369,7 +463,7 @@ public static class RoutingEndpoints
         if (replaceExisting && env is not null)
         {
             var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-            old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge")))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
+            old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge") || c.Note.StartsWith("Annahme")))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
         }
         // a waterway chain that crosses the bbox edge was merged from more ways by the neighbouring chunk's import: it is kept
         // (deleting it and re-adding only this chunk's part cut the Stockholm fairway off from Danvikskanalen and the Hammarby lock),

@@ -31,7 +31,11 @@ export interface Trip extends TripSummary {
   description: string | null; timeZone: string; plannedStartHarbourId: string | null; plannedEndHarbourId: string | null; currency: string; costsLockedAt: string | null;
   crew: Crew[]; me: Crew | null; canEdit: boolean; canWriteLogbook: boolean; isCrew: boolean; costsVisible: boolean; trackVisibility: Visibility; publicPositionDelayMinutes: number;
 }
-export interface Leg { id: string; order: number; alternative: number; fromHarbourId: string; fromName: string; toHarbourId: string; toName: string; plannedDate: string | null; distanceNm: number | null; etaHours: number | null; }
+export interface Leg { id: string; order: number; alternative: number; fromHarbourId: string; fromName: string; toHarbourId: string; toName: string; plannedDate: string | null; distanceNm: number | null; etaHours: number | null; warnings?: RouteWarning[]; }
+/** A route assumption the chart data does not show (kind "assumedPassage": a strait the coastline closes, passed along a ferry line or buoy gap). */
+export interface RouteWarning { kind: string; lat: number; lng: number; note: string; }
+/** " · ⚠ <notes>" for a route's warnings, "" without any. */
+export function routeWarningText(warnings?: RouteWarning[] | null): string { return warnings?.length ? ` · ⚠ ${warnings.map(w => w.note).join('; ')}` : ''; }
 
 export interface EntryCrew { crewMemberId: string | null; userId: string | null; name: string; }
 export interface LogbookEntry {

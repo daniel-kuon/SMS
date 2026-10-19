@@ -17,7 +17,7 @@ import { TranslatePipe } from '@ngx-translate/core';
 import type { GeoJSONSource, MapMouseEvent } from 'maplibre-gl';
 import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
-import { Harbour, HarbourMarker, NearbyPort, Wifi } from '../../core/models';
+import { Harbour, HarbourMarker, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
 import { Location } from '@angular/common';
 import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, setPoiFocus, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
@@ -261,11 +261,11 @@ export class HarbourMapPage {
     this.pointPopup?.remove();
     this.pointPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat([lng, lat]).setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie) …`)).addTo(map);
     this.pointPopup.on('close', () => { if (this.pinned) this.hideRoute(true); });
-    this.api.get<{ distanceNm: number; straightLineNm: number; geometry: { coordinates: number[][] }; method: string }>('/api/routing/route', { from: `${h.lat},${h.lng}`, to: `${lat},${lng}`, ...this.shipCtx.routeParams() }).subscribe({
+    this.api.get<{ distanceNm: number; straightLineNm: number; geometry: { coordinates: number[][] }; method: string; warnings?: RouteWarning[] }>('/api/routing/route', { from: `${h.lat},${h.lng}`, to: `${lat},${lng}`, ...this.shipCtx.routeParams() }).subscribe({
       next: r => {
         if (!this.pointPopup?.isOpen()) return;
-        this.pinned = false; this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line'); this.pinned = true;
-        this.pointPopup.setDOMContent(textEl(r.method === 'straight-line' ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${r.straightLineNm} sm`));
+        this.pinned = false; this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line', !!r.warnings?.length); this.pinned = true;
+        this.pointPopup.setDOMContent(textEl(r.method === 'straight-line' ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${r.straightLineNm} sm${routeWarningText(r.warnings)}`));
       },
       error: () => this.pointPopup?.setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie)`)),
     });
@@ -279,14 +279,15 @@ export class HarbourMapPage {
     this.draw([[h.lng, h.lat], [p.lng, p.lat]], p.distanceNm, p.method === 'straight-line');
     if (p.method !== 'straight-line') {
       const params = { ...(h.id ? { fromHarbour: h.id, toHarbour: p.harbourId } : { from: `${h.lat},${h.lng}`, to: `${p.lat},${p.lng}` }), ...this.shipCtx.routeParams() };
-      this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] }; method: string }>('/api/routing/route', params).subscribe(r => {
-        if (this.hovered === p.harbourId) this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line');
+      this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] }; method: string; warnings?: RouteWarning[] }>('/api/routing/route', params).subscribe(r => {
+        if (this.hovered === p.harbourId) this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line', !!r.warnings?.length);
       });
     }
   }
-  private draw(coords: [number, number][], nm: number, dashed: boolean): void {
+  /** warned: the route uses an assumed passage (label "⚠"). */
+  private draw(coords: [number, number][], nm: number, dashed: boolean, warned = false): void {
     const map = this.map; if (!map) return;
-    (map.getSource('route') as GeoJSONSource).setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { label: `${nm} sm`, dashed }, geometry: { type: 'LineString', coordinates: coords } }] });
+    (map.getSource('route') as GeoJSONSource).setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { label: `${nm} sm${warned ? ' ⚠' : ''}`, dashed }, geometry: { type: 'LineString', coordinates: coords } }] });
     // the map stays where it is: hovering/pinning only draws (the view moves only when another harbour is selected)
   }
   hideRoute(force = false): void {

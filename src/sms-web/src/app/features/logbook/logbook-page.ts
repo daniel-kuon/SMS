@@ -14,7 +14,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { drafts, isNetworkError, OfflineQueue } from '../../core/offline';
-import { EntryCrew, LogbookDefaults, LogbookEntry, Paged, Ship } from '../../core/models';
+import { EntryCrew, LogbookDefaults, LogbookEntry, Paged, RouteWarning, routeWarningText, Ship } from '../../core/models';
 import { TranslateService } from '@ngx-translate/core';
 
 interface WeatherSummary { samples: number; windBft: number; windKn: number; windDirection: string | null; gustKn: number | null; weather: string; seaState: string; waveHeightM: number | null; temperatureC: number | null; }
@@ -170,8 +170,8 @@ export class EntryDialog {
     const map = this.data.map; const from = this.m.startHarbourId, to = this.m.endHarbourId;
     if (!map || !from || !to) return;
     this.routeReset = false; this.routeHint.set('…');
-    this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] } }>('/api/routing/route', { fromHarbour: from, toHarbour: to }).subscribe({
-      next: r => { map.showRoute(r.geometry.coordinates); this.routeHint.set(`${r.distanceNm} sm`); this.m.sailedDistanceNm ??= r.distanceNm; },
+    this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] }; warnings?: RouteWarning[] }>('/api/routing/route', { fromHarbour: from, toHarbour: to }).subscribe({
+      next: r => { map.showRoute(r.geometry.coordinates); this.routeHint.set(`${r.distanceNm} sm${routeWarningText(r.warnings)}`); this.m.sailedDistanceNm ??= r.distanceNm; },
       error: err => this.routeHint.set(errorMessage(err)),
     });
   }

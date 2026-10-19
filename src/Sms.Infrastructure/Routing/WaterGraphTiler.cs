@@ -6,7 +6,8 @@ namespace Sms.Infrastructure.Routing;
 
 public sealed record GraphNode(long Id, double X, double Y, bool IsMin);
 /// <summary>MinDepthM: shallowest charted depth area the edge touches (null = no data or a marked passage, which is never depth-limited).</summary>
-public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null);
+/// <param name="Assumed">An assumed passage (AssumedPassages): routes over it carry a warning.</param>
+public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null, bool Assumed = false);
 public sealed record GraphTile(Envelope Envelope, double StartDegLng, double StartDegLat);
 
 /// <summary>

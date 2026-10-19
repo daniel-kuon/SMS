@@ -52,6 +52,9 @@ public sealed class RoutingOptions
     public double NarrowBufferM { get; set; } = 40;
     public double NarrowLegFactor { get; set; } = 1.5;
     public double MaxRouteNm { get; set; } = 500;
+    /// <summary>Assumed passages (ferry lines and buoy gaps across the coastline land, notes "Annahme…"): routes may use them and then
+    /// carry a warning. Off closes them at query time (the graph keeps them, no rebuild needed).</summary>
+    public bool AssumedPassages { get; set; } = true;
     /// <summary>Draft assumed when a route is asked for without a ship (a typical cruising yacht): charted shallows below it are avoided by default.</summary>
     public double DefaultDraftM { get; set; } = 1.5;
     /// <summary>"areas": visibility graph over open water (corners of the buffered coast, open-sea lattice, anchors); "grid": the adaptive quadtree.</summary>
@@ -264,13 +267,16 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             var passage = pc.Geometry;
             if (passage is not LineString ls) continue;
             var isChannel = pc.Note != null && pc.Note.StartsWith("Enge");
+            // an assumed passage (ferry line / buoy gap across land) is a guide, not a marked channel: cost ×1, flagged for the warning
+            var assumed = pc.Note != null && pc.Note.StartsWith(AssumedPassages.NotePrefix);
+            var factor = assumed ? 1 : o.PassageCostFactor;
             var firstEdge = extraEdges.Count;
             long? prev = null; var sinceLink = 0.0;
             for (var i = 0; i < ls.NumPoints; i++)
             {
                 var p = ls.GetCoordinateN(i);
                 var id = NodeAt(p);
-                if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); var segM = Haversine(q.Y, q.X, p.Y, p.X); sinceLink += segM; extraEdges.Add(new GraphEdge(pv, id, segM * o.PassageCostFactor, Geo.Factory.CreateLineString([q, p]))); }
+                if (prev is { } pv && pv != id) { var q = ls.GetCoordinateN(i - 1); var segM = Haversine(q.Y, q.X, p.Y, p.X); sinceLink += segM; extraEdges.Add(new GraphEdge(pv, id, segM * factor, Geo.Factory.CreateLineString([q, p]), Assumed: assumed)); }
                 // ends always hook into the water graph; inner vertices every ~1 km (derived channels have a vertex every few metres)
                 var isEnd = i == 0 || i == ls.NumPoints - 1;
                 if (isEnd) passageEndIds.Add((id, p));
@@ -431,7 +437,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     private static async Task WriteEdgesAsync(NpgsqlConnection conn, int version, IReadOnlyList<GraphEdge> edges, CancellationToken ct)
     {
         if (edges.Count == 0) return;
-        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m) FROM STDIN (FORMAT BINARY)", ct);
+        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed) FROM STDIN (FORMAT BINARY)", ct);
         foreach (var e in edges)
         {
             await w.StartRowAsync(ct);
@@ -442,6 +448,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.WriteAsync(e.Geom, NpgsqlDbType.Geometry, ct);
             if (e.ClearanceM is { } cl) await w.WriteAsync(cl, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
             if (e.MinDepthM is { } md) await w.WriteAsync(md, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
+            await w.WriteAsync(e.Assumed, NpgsqlDbType.Boolean, ct);
         }
         await w.CompleteAsync(ct);
     }

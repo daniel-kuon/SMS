@@ -12,6 +12,7 @@ namespace Sms.Domain;
 /// points), where they cost ×ShallowFactor. Route ends snap either to a node or onto a passage edge, which is then split
 /// virtually at the projected point (an end on a canal follows the canal instead of jumping to the nearest junction).
 /// Edges between two passage vertices (ids ≥ firstPassageNode) are "fixed": their geometry is kept by the smoothing.
+/// Assumed edges (AssumedPassages: a ferry line or buoy gap across the coastline land) are reported per path, or closed by the limits.
 /// </summary>
 public sealed class SeaGraph
 {
@@ -24,6 +25,7 @@ public sealed class SeaGraph
     private readonly int[] _adjStart, _adj;
     private readonly int _firstPassage;
     private readonly bool[]? _isolated;
+    private readonly bool[]? _assumed;
     private readonly STRtree<int> _passages = new();
 
     /// <summary>Lower bound of cost per metre over all edges (the heuristic's scale).</summary>
@@ -38,9 +40,10 @@ public sealed class SeaGraph
     /// <param name="geomStart">EdgeCount + 1 offsets into geom (in points): the interior points of edge e are geomStart[e] .. geomStart[e+1]-1.</param>
     /// <param name="geom">Interior points as x,y pairs, oriented from source to target.</param>
     /// <param name="snapMinM">Passage edges at least this long are indexed for snapping route ends onto them.</param>
-    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000)
+    /// <param name="assumed">Per edge: an assumed passage (null = none).</param>
+    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null)
     {
-        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated;
+        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed;
         int n = x.Length, m = src.Length;
         _adjStart = new int[n + 1];
         for (var e = 0; e < m; e++) { _adjStart[src[e] + 1]++; _adjStart[tgt[e] + 1]++; }
@@ -73,6 +76,7 @@ public sealed class SeaGraph
     public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
 
     public bool IsPassage(int e) => _src[e] >= _firstPassage && _tgt[e] >= _firstPassage;
+    public bool IsAssumed(int e) => _assumed is not null && _assumed[e];
     public Coordinate Node(int id) => new(_x[id], _y[id]);
 
     /// <summary>The edge's geometry from source to target.</summary>
@@ -86,13 +90,15 @@ public sealed class SeaGraph
         return cs;
     }
 
-    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0);
+    /// <param name="NoAssumed">Assumed passages closed (Routing:AssumedPassages off, or the derive endpoint testing what the graph connects without them).</param>
+    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false);
     /// <summary>A route end projected onto a passage edge: on segment Segment of its geometry, at Fraction of its length.</summary>
     public sealed record Snap(int Edge, int Segment, double Fraction, Coordinate Point, double DistanceM);
     /// <summary>A route end: the clicked point and either a node or a snap onto an edge.</summary>
     public sealed record End(Coordinate Point, int Node = -1, Snap? OnEdge = null);
-    /// <summary>The route: points from the start point to the end point; Fixed[i] says whether the segment Points[i] → Points[i+1] is passage geometry.</summary>
-    public sealed record Path(List<Coordinate> Points, List<bool> Fixed, double Cost, int Settled);
+    /// <summary>The route: points from the start point to the end point; Fixed[i] says whether the segment Points[i] → Points[i+1] is passage geometry.
+    /// Assumed: the midpoint of every assumed passage edge the route uses (where to warn).</summary>
+    public sealed record Path(List<Coordinate> Points, List<bool> Fixed, double Cost, int Settled, List<Coordinate>? Assumed = null);
 
     /// <summary>Nearest point on an indexed passage edge within maxM (local metric frame), or null.</summary>
     public Snap? SnapToPassage(Coordinate p, double maxM)
@@ -139,6 +145,7 @@ public sealed class SeaGraph
     /// <summary>Cost of an edge under the limits, +∞ when closed.</summary>
     private double EdgeCost(int e, Limits l, End from, End to)
     {
+        if (l.NoAssumed && IsAssumed(e)) return double.PositiveInfinity;
         var cl = _clear[e];
         if (l.AirDraftM is { } ad && !float.IsNaN(cl) && cl < ad) return double.PositiveInfinity;
         double c = _cost[e]; var d = _depth[e];
@@ -237,7 +244,7 @@ public sealed class SeaGraph
                 if (s1.Fraction <= s2.Fraction) for (var k = s1.Segment + 1; k <= s2.Segment; k++) Add(cs[k], true);
                 else for (var k = s1.Segment; k > s2.Segment; k--) Add(cs[k], true);
                 Add(s2.Point, true); Add(to.Point, false);
-                return new Path(pts, fx, c, settled);
+                return new Path(pts, fx, c, settled, AssumedMidpoints([s1.Edge]));
             }
         }
         if (bestNode < 0) return null;
@@ -260,8 +267,13 @@ public sealed class SeaGraph
         var goal = goals[bestGoal];
         for (var k = goal.Leg.Length - 1; k >= 0; k--) Push(goal.Leg[k], k < goal.Leg.Length - 1);
         Push(to.Point, false);
-        return new Path(points, fixedSeg, best, settled);
+        var used = new List<int>(edges);
+        if (from.OnEdge is { } fs) used.Add(fs.Edge);
+        if (to.OnEdge is { } ts) used.Add(ts.Edge);
+        return new Path(points, fixedSeg, best, settled, AssumedMidpoints(used));
     }
+
+    private List<Coordinate> AssumedMidpoints(IEnumerable<int> edges) => edges.Distinct().Where(IsAssumed).Select(e => AssumedPassages.Midpoint(Coords(e))).ToList();
 
     public static double Haversine(double lat1, double lng1, double lat2, double lng2)
     {

@@ -11,7 +11,9 @@ using Sms.Domain;
 
 namespace Sms.Infrastructure.Routing;
 
-public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, LineString Geometry, int GraphVersion, string Method, IReadOnlyDictionary<string, long>? Timings = null);
+public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, LineString Geometry, int GraphVersion, string Method, IReadOnlyDictionary<string, long>? Timings = null, IReadOnlyList<RouteWarning>? Warnings = null);
+/// <summary>Something the route assumes that the chart data does not show; Kind "assumedPassage": a passage through a strait the coastline closes.</summary>
+public sealed record RouteWarning(string Kind, double Lat, double Lng, string Note);
 public sealed record NearbyResult(Guid HarbourId, decimal DistanceNm, decimal StraightLineNm);
 public sealed record GraphStatus(int ActiveVersion, string? BuiltAt, string? Region, long Nodes, long Edges);
 
@@ -38,19 +40,21 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var version = await ActiveVersionAsync(ct);
         if (version == 0) return null;
         // the cache holds unrestricted routes only; an air draft may close bridges and a draft shallow areas, so those are computed every time
-        var cached = airDraftM is null && draftM is null ? await db.RouteCaches.AsNoTracking().FirstOrDefaultAsync(r => r.FromHarbourId == from && r.ToHarbourId == to && r.GraphVersion == version, ct) : null;
+        // with assumed passages switched off the cached routes (which may use them) are bypassed
+        var useCache = airDraftM is null && draftM is null && builder.Options.AssumedPassages;
+        var cached = useCache ? await db.RouteCaches.AsNoTracking().FirstOrDefaultAsync(r => r.FromHarbourId == from && r.ToHarbourId == to && r.GraphVersion == version, ct) : null;
         var a = await db.Harbours.AsNoTracking().Where(h => h.Id == from).Select(h => h.Location).FirstOrDefaultAsync(ct);
         var b = await db.Harbours.AsNoTracking().Where(h => h.Id == to).Select(h => h.Location).FirstOrDefaultAsync(ct);
         if (a is null || b is null) return null;
         var straight = Math.Round((decimal)(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / Nm), 1);
-        if (cached is not null) return new RouteResult(cached.DistanceNm, straight, cached.Geometry, version, "sea-graph");
+        if (cached is not null) return new RouteResult(cached.DistanceNm, straight, cached.Geometry, version, "sea-graph", Warnings: (await WarningsAlongAsync([cached.Geometry], ct))[0]);
         var start = await AccessNodeAsync(from, version, ct);
         var end = await AccessNodeAsync(to, version, ct);
         if (start is null || end is null) return null;
         var graph = await GraphAsync(version);
         var result = await RouteEndsAsync(graph, new SeaGraph.End(a.Coordinate, (int)start.Value), new SeaGraph.End(b.Coordinate, (int)end.Value), version, ct, airDraftM, draftM);
         if (result is null) return null;
-        if (airDraftM is not null || draftM is not null) return result;
+        if (!useCache) return result;
         db.RouteCaches.Add(new RouteCache { FromHarbourId = from, ToHarbourId = to, GraphVersion = version, DistanceNm = result.DistanceNm, Geometry = result.Geometry });
         db.RouteCaches.Add(new RouteCache { FromHarbourId = to, ToHarbourId = from, GraphVersion = version, DistanceNm = result.DistanceNm, Geometry = (LineString)result.Geometry.Reverse() });
         try { await db.SaveChangesAsync(ct); } catch (DbUpdateException) { db.ChangeTracker.Clear(); } // concurrent insert of the same pair
@@ -134,10 +138,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             await using var r = await c.ExecuteReaderAsync();
             while (await r.ReadAsync()) { var id = (int)r.GetInt64(0); x[id] = r.GetDouble(1); y[id] = r.GetDouble(2); }
         }
-        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount];
+        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount];
         var geomStart = new int[edgeCount + 1]; var geom = new List<double>();
         var m = 0;
-        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
+        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
         {
             c.Parameters.AddWithValue("v", version);
             await using var r = await c.ExecuteReaderAsync();
@@ -148,11 +152,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 clear[m] = r.IsDBNull(4) ? float.NaN : (float)r.GetDouble(4);
                 geomStart[m] = geom.Count / 2;
                 if (!r.IsDBNull(5)) AppendInterior(r.GetFieldValue<byte[]>(5), geom);
+                assumed[m] = r.GetBoolean(6);
                 m++;
             }
         }
         geomStart[m] = geom.Count / 2;
-        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref geomStart, m + 1); }
+        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref geomStart, m + 1); }
         var isolated = new bool[maxNode + 1];
         await using (var c = new NpgsqlCommand("SELECT id FROM routing_isolated WHERE graph_version = @v", conn))
         {
@@ -161,7 +166,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             while (await r.ReadAsync()) { var id = r.GetInt64(0); if (id <= maxNode) isolated[id] = true; }
         }
         var loaded = sw.ElapsedMilliseconds;
-        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated);
+        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed);
         logger.LogInformation("Routing graph v{Version} in memory: {Nodes} node slots, {Edges} edges, {Snap} passage edges for snapping, heuristic x{Factor:F6}, ~{Mb} MB (GC +{GcMb} MB); read {Read} ms, indexed {Index} ms",
             version, graph.NodeSlots, graph.EdgeCount, graph.SnapEdgeCount, graph.HeuristicFactor, graph.ApproxBytes >> 20, (GC.GetTotalMemory(false) - before) >> 20, loaded, sw.ElapsedMilliseconds - loaded);
         return graph;
@@ -189,10 +194,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var rows = await db.Database.SqlQueryRaw<NearbyRow>("""
             SELECT a.harbour_id AS "HarbourId", (d.agg_cost + a.distance_m) AS "Metres"
             FROM pgr_drivingDistance(
-                'SELECT id, source, target, cost, reverse_cost FROM routing_edge WHERE graph_version = ' || {0} || ' AND geom && ST_MakeEnvelope(' || {1} || ',' || {2} || ',' || {3} || ',' || {4} || ', 4326)',
+                'SELECT id, source, target, cost, reverse_cost FROM routing_edge WHERE graph_version = ' || {0} || ' AND geom && ST_MakeEnvelope(' || {1} || ',' || {2} || ',' || {3} || ',' || {4} || ', 4326)' || {7},
                 {5}::bigint, {6}::double precision, directed := false) d
             JOIN routing_harbour_access a ON a.node_id = d.node AND a.graph_version = {0}
-            """, version, env.MinX, env.MinY, env.MaxX, env.MaxY, start.Value, radiusM).ToListAsync(ct);
+            """, version, env.MinX, env.MinY, env.MaxX, env.MaxY, start.Value, radiusM, builder.Options.AssumedPassages ? "" : " AND NOT assumed").ToListAsync(ct);
         var ids = rows.Select(r => r.HarbourId).Where(id => id != harbourId).ToList();
         var locations = await db.Harbours.AsNoTracking().Where(x => ids.Contains(x.Id)).Select(x => new { x.Id, x.Location }).ToDictionaryAsync(x => x.Id, x => x.Location, ct);
         return rows.Where(r => r.HarbourId != harbourId && locations.ContainsKey(r.HarbourId))
@@ -230,7 +235,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         if (straightM > builder.Options.MaxRouteNm * Nm) return null;
         timings ??= []; var clock = Stopwatch.StartNew();
         var o = builder.Options;
-        var limits = new SeaGraph.Limits(airDraftM, draftM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat);
+        var limits = new SeaGraph.Limits(airDraftM, draftM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat, NoAssumed: !o.AssumedPassages);
         var path = graph.Route(from, to, limits);
         timings["astar"] = clock.ElapsedMilliseconds; clock.Restart();
         if (path is null) { logger.LogInformation("No sea route between {From} and {To}", from, to); return null; }
@@ -241,7 +246,59 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         for (var i = 1; i < smoothed.Count; i++) metres += RoutingGraphBuilder.Haversine(smoothed[i - 1].Y, smoothed[i - 1].X, smoothed[i].Y, smoothed[i].X);
         var line = Geo.Factory.CreateLineString(smoothed.ToArray());
         span?.SetTag("routing.distance_nm", metres / Nm);
-        return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph", timings);
+        return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph", timings, await WarningsAtAsync(path.Assumed ?? [], ct));
+    }
+
+    /// <summary>Warnings for the assumed edges a path used (their midpoints), each with the note of the nearest "Annahme" correction.</summary>
+    private async Task<List<RouteWarning>> WarningsAtAsync(IReadOnlyList<Coordinate> points, CancellationToken ct)
+    {
+        var result = new List<RouteWarning>();
+        foreach (var c in points)
+        {
+            var pt = Geo.Factory.CreatePoint(c); pt.SRID = 4326;
+            var note = await db.RoutingCorrections.AsNoTracking().Where(x => x.Kind == CorrectionKind.Passage && x.Note != null && x.Note.StartsWith(AssumedPassages.NotePrefix) && x.Geometry.IsWithinDistance(pt, 200 / WaterGraphTiler.MPerDegLat))
+                .OrderBy(x => x.Geometry.Distance(pt)).Select(x => x.Note).FirstOrDefaultAsync(ct);
+            result.Add(Warning(c, note));
+        }
+        return result;
+    }
+
+    private static RouteWarning Warning(Coordinate at, string? note) =>
+        new("assumedPassage", Math.Round(at.Y, 5), Math.Round(at.X, 5), $"Durchfahrt angenommen ({(note is null ? "Fährlinie oder Tonnenlücke" : note[AssumedPassages.NotePrefix.Length..].TrimStart(':', ' '))}) – nicht in den Kartendaten, vor Ort prüfen");
+
+    /// <summary>
+    /// Warnings for stored routes (route cache, planned legs) that carry no graph flags: every active "Annahme" passage a route runs
+    /// along (<see cref="AssumedPassages.Follows"/>). One list per route; empty lists while Routing:AssumedPassages is off.
+    /// </summary>
+    public async Task<List<RouteWarning>[]> WarningsAlongAsync(IReadOnlyList<LineString?> routes, CancellationToken ct)
+    {
+        var result = routes.Select(_ => new List<RouteWarning>()).ToArray();
+        if (!builder.Options.AssumedPassages || routes.All(r => r is null)) return result;
+        var env = new Envelope(); foreach (var r in routes) if (r is not null) env.ExpandToInclude(r.EnvelopeInternal);
+        var box = Geo.Factory.ToGeometry(env); box.SRID = 4326;
+        var passages = await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Note != null && c.Note.StartsWith(AssumedPassages.NotePrefix) && c.Geometry.Intersects(box))
+            .Select(c => new { c.Geometry, c.Note }).ToListAsync(ct);
+        for (var i = 0; i < routes.Count; i++)
+            if (routes[i] is { } route)
+                foreach (var p in passages)
+                    if (AssumedPassages.Follows(route, p.Geometry.Coordinates)) result[i].Add(Warning(AssumedPassages.Midpoint(p.Geometry.Coordinates), p.Note));
+        return result;
+    }
+
+    /// <summary>
+    /// Length (metres, unsmoothed) of the graph route between two points with assumed passages closed, null when there is none: the
+    /// derive endpoint asks whether the graph already connects two buoys or the ends of a guide-line stretch.
+    /// </summary>
+    public async Task<double?> GraphDistanceAsync(Coordinate a, Coordinate b, CancellationToken ct)
+    {
+        var version = await ActiveVersionAsync(ct);
+        if (version == 0) return null;
+        var graph = await GraphAsync(version);
+        var from = await EndAsync(Geo.Point(a.Y, a.X), version, graph, ct);
+        var to = await EndAsync(Geo.Point(b.Y, b.X), version, graph, ct);
+        if (from is null || to is null) return null;
+        var path = graph.Route(from, to, new SeaGraph.Limits(NoAssumed: true));
+        return path is null ? null : StringPull.Length(path.Points);
     }
 
     /// <summary>

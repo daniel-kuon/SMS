@@ -18,7 +18,7 @@ public record TripDto(Guid Id, Guid ShipId, string ShipName, string Name, string
     IReadOnlyList<CrewDto> Crew, CrewDto? Me, bool CanEdit, bool CanWriteLogbook, bool IsCrew, bool CostsVisible, Visibility TrackVisibility, int PublicPositionDelayMinutes);
 /// <summary>Order null = position in the list (single line, no alternatives).</summary>
 public record LegUpsert(Guid FromHarbourId, Guid ToHarbourId, DateOnly? PlannedDate, int? Order = null, int Alternative = 0);
-public record LegDto(Guid Id, int Order, int Alternative, Guid FromHarbourId, string FromName, Guid ToHarbourId, string ToName, DateOnly? PlannedDate, decimal? DistanceNm, decimal? EtaHours);
+public record LegDto(Guid Id, int Order, int Alternative, Guid FromHarbourId, string FromName, Guid ToHarbourId, string ToName, DateOnly? PlannedDate, decimal? DistanceNm, decimal? EtaHours, IReadOnlyList<RouteWarning> Warnings);
 public record TripInviteRequest(string? Email, CrewRole Role = CrewRole.Crew);
 public record DayDto(DateOnly Date, IReadOnlyList<LogbookEntryDto> Logbook, IReadOnlyList<PostDto> Posts, IReadOnlyList<MediaDto> Photos);
 
@@ -209,12 +209,12 @@ public static class TripEndpoints
         }).RequireAuthorization().WithTags("Trips");
 
         // --- planner legs (spec 07 C3)
-        g.MapGet("/{id:guid}/legs", async (Guid id, SmsDbContext db, CurrentUser current, Access access, CancellationToken ct) =>
+        g.MapGet("/{id:guid}/legs", async (Guid id, SmsDbContext db, CurrentUser current, Access access, SeaRouter router, CancellationToken ct) =>
         {
             var viewer = await Viewer.ForAsync(current, access, ct);
             var trip = await db.Trips.AsNoTracking().Include(t => t.Ship).Where(viewer.Trips()).FirstOrDefaultAsync(t => t.Id == id, ct);
             if (trip is null) return Results.NotFound();
-            return Results.Ok(await LegDtos(trip, db, ct));
+            return Results.Ok(await LegDtos(trip, db, router, ct));
         });
 
         g.MapPut("/{id:guid}/legs", async (Guid id, List<LegUpsert> legs, SmsDbContext db, Access access, SeaRouter router, CancellationToken ct) =>
@@ -241,7 +241,7 @@ public static class TripEndpoints
                 db.PlannedLegs.Add(leg);
             }
             await db.SaveChangesAsync(ct);
-            return Results.Ok(await LegDtos(trip, db, ct));
+            return Results.Ok(await LegDtos(trip, db, router, ct));
         }).RequireAuthorization();
 
         // --- day timeline (spec 07 E2)
@@ -380,13 +380,14 @@ public static class TripEndpoints
     internal static CrewDto ToCrewDto(CrewMember c, Dictionary<Guid, string> names) =>
         new(c.Id, c.UserId, c.UserId is { } u ? names.GetValueOrDefault(u, "?") : c.GuestName ?? "Gast", c.Role, c.Role == CrewRole.Skipper || c.CanWriteLogbook, c.Status, c.FromDate, c.ToDate, c.UserId is null);
 
-    private static async Task<List<LegDto>> LegDtos(Trip trip, SmsDbContext db, CancellationToken ct)
+    private static async Task<List<LegDto>> LegDtos(Trip trip, SmsDbContext db, SeaRouter router, CancellationToken ct)
     {
         var legs = await db.PlannedLegs.AsNoTracking().Where(l => l.TripId == trip.Id).OrderBy(l => l.Order).ThenBy(l => l.Alternative).ToListAsync(ct);
         var ids = legs.SelectMany(l => new[] { l.FromHarbourId, l.ToHarbourId }).Distinct().ToList();
         var names = await db.Harbours.AsNoTracking().Where(h => ids.Contains(h.Id)).ToDictionaryAsync(h => h.Id, h => h.Name, ct);
-        return legs.Select(l => new LegDto(l.Id, l.Order, l.Alternative, l.FromHarbourId, names.GetValueOrDefault(l.FromHarbourId, "?"), l.ToHarbourId, names.GetValueOrDefault(l.ToHarbourId, "?"), l.PlannedDate, l.DistanceNm,
-            l.DistanceNm is { } nm && trip.Ship.CruisingSpeedKn > 0 ? Math.Round(nm / trip.Ship.CruisingSpeedKn, 1) : null)).ToList();
+        var warnings = await router.WarningsAlongAsync(legs.Select(l => l.RouteGeometry).ToList(), ct); // assumed passages the stored route runs through
+        return legs.Select((l, i) => new LegDto(l.Id, l.Order, l.Alternative, l.FromHarbourId, names.GetValueOrDefault(l.FromHarbourId, "?"), l.ToHarbourId, names.GetValueOrDefault(l.ToHarbourId, "?"), l.PlannedDate, l.DistanceNm,
+            l.DistanceNm is { } nm && trip.Ship.CruisingSpeedKn > 0 ? Math.Round(nm / trip.Ship.CruisingSpeedKn, 1) : null, warnings[i])).ToList();
     }
 
     private static async Task<TripDto> ToDto(Trip t, SmsDbContext db, CurrentUser current, CancellationToken ct)

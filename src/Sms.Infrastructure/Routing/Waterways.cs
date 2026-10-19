@@ -107,6 +107,35 @@ public static class Waterways
     /// the land polygons do not know them; the router steers round them after smoothing (PierAvoidance).</summary>
     public const string OverpassPierQuery = """[out:json][timeout:300];way["man_made"~"^(pier|breakwater|groyne)$"]({0});out geom;""";
 
+    /// <summary>Guide lines for assumed passages: ferry ways (route=ferry, also the member ways of ferry relations, which carry the
+    /// route name) and recommended tracks. The relations come last, without geometry, for the names.</summary>
+    public const string OverpassGuideQuery = """[out:json][timeout:180];relation["route"="ferry"]({0})->.r;(way["route"="ferry"]({0});way(r.r)({0});way["seamark:type"="recommended_track"]({0}););out geom;.r out body;""";
+
+    /// <summary>Ferry lines and recommended tracks, merged end to end per kind, labelled "Fährlinie Strömma kanalturen till Sandhamn" /
+    /// "Empfohlener Kurs …" (the way's name, else its ferry relation's).</summary>
+    public static List<Waterway> ParseGuideLines(JsonDocument doc, GeometryFactory f)
+    {
+        var relationName = new Dictionary<long, string>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (el.GetProperty("type").GetString() != "relation" || !el.TryGetProperty("tags", out var t) || !t.TryGetProperty("name", out var n) || !el.TryGetProperty("members", out var members)) continue;
+            foreach (var m in members.EnumerateArray())
+                if (m.GetProperty("type").GetString() == "way") relationName.TryAdd(m.GetProperty("ref").GetInt64(), n.GetString() ?? "");
+        }
+        var ferries = new List<(LineString, string?)>(); var tracks = new List<(LineString, string?)>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (el.GetProperty("type").GetString() != "way" || !el.TryGetProperty("geometry", out var geom)) continue;
+            var tags = el.TryGetProperty("tags", out var t) ? t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "") : new Dictionary<string, string>();
+            var coords = geom.EnumerateArray().Select(c => new Coordinate(c.GetProperty("lon").GetDouble(), c.GetProperty("lat").GetDouble())).ToArray();
+            if (coords.Length < 2) continue;
+            var name = tags.GetValueOrDefault("name") ?? relationName.GetValueOrDefault(el.GetProperty("id").GetInt64()) ?? tags.GetValueOrDefault("seamark:name");
+            var track = tags.GetValueOrDefault("seamark:type") == "recommended_track" && tags.GetValueOrDefault("route") != "ferry";
+            (track ? tracks : ferries).Add((f.CreateLineString(coords), $"{(track ? "Empfohlener Kurs" : "Fährlinie")}{(string.IsNullOrEmpty(name) ? "" : " " + name)}"));
+        }
+        return [.. Merge(ferries, f), .. Merge(tracks, f)];
+    }
+
     public static bool IsPier(IReadOnlyDictionary<string, string> tags) => tags.GetValueOrDefault("man_made") is "pier" or "breakwater" or "groyne";
 
     /// <summary>Pier ways as lines, closed ways as polygons (pier/breakwater areas).</summary>

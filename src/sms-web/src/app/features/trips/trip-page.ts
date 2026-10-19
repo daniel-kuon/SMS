@@ -15,7 +15,7 @@ import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
 import { TrackPath } from '../../core/track-playback';
 import { fmtObservation, WeatherDialog, WeatherObservation } from '../../core/weather';
 import { Api, AuthService, errorMessage } from '../../core/api';
-import { Day, Harbour, HarbourMarker, Leg, LogbookEntry, Media, Ship, Trip } from '../../core/models';
+import { Day, Harbour, HarbourMarker, Leg, LogbookEntry, Media, RouteWarning, Ship, Trip } from '../../core/models';
 import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, UploadZone } from '../../shared/shared';
 import { CrewDialog, TripEditDialog } from './trip-dialogs';
 import { TaskList } from './task-list';
@@ -148,6 +148,7 @@ type PickMode = { kind: 'next' } | { kind: 'alt'; step: number } | { kind: 'end'
                 @for (l of stepLegs()[k]; track l.id) {
                   <div class="leg" [attr.data-sel]="'leg:' + l.id" [class.sel]="selected() === 'leg:' + l.id" (click)="selectItem('leg', l.id)">
                     <span class="line" [style.border-color]="altColor(l.alternative)"></span>{{ l.fromName }} → {{ l.toName }} · {{ l.distanceNm ?? '–' }} sm @if (l.etaHours) { · ETA {{ l.etaHours }} h } @if (l.plannedDate) { · {{ fmt(l.plannedDate) }} }
+                    @for (w of l.warnings ?? []; track $index) { <div class="route-warning">⚠ {{ w.note }}</div> }
                   </div>
                 }
               </div>
@@ -177,7 +178,7 @@ type PickMode = { kind: 'next' } | { kind: 'alt'; step: number } | { kind: 'end'
     .photo-strip { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; } .photo-strip img { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; cursor: pointer; border: 2px solid transparent; } .photo-strip img.sel { border-color: #e65100; }
     .plan .origin { margin: 8px 0; } .step { border-left: 3px solid #e3eef9; padding: 4px 0 4px 10px; margin: 8px 0; }
     .cand { display: inline-flex; align-items: center; gap: 4px; padding: 0 0 0 8px; border-radius: 14px; background: #f1f5f9; cursor: pointer; }
-    .small-btn { transform: scale(.75); } .leg { cursor: pointer; padding: 3px 4px; font-size: 13px; border-radius: 4px; } .leg .line { display: inline-block; width: 18px; border-top: 3px dashed; vertical-align: middle; margin-right: 6px; }
+    .small-btn { transform: scale(.75); } .leg { cursor: pointer; padding: 3px 4px; font-size: 13px; border-radius: 4px; } .leg .route-warning { color: var(--mat-sys-error, #b3261e); font-size: 12px; margin-left: 24px; } .leg .line { display: inline-block; width: 18px; border-top: 3px dashed; vertical-align: middle; margin-right: 6px; }
     .stats { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0; } .stats div { display: flex; flex-direction: column; } .stats b { font-size: 20px; } .stats span { font-size: 11px; color: #666; }
     .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; } .import { margin: 8px 0; font-size: 13px; } .suggestion { font-size: 13px; padding: 4px 0; border-bottom: 1px solid #eee; }
     .playback { display: flex; align-items: center; gap: 6px; margin: 4px 0; } .playback input[type=range] { flex: 1; min-width: 80px; } .playback .speed { min-width: 48px; padding: 0 6px; } .small { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 45%; }
@@ -407,7 +408,7 @@ export class TripPage {
     const from = m?.kind === 'next' ? lastStop(p) : m?.kind === 'alt' ? (p.steps[m.step - 1]?.[0] ?? p.origin) : m?.kind === 'end' ? m.from : null;
     if (!from || from === h.id) return Promise.resolve(null);
     const key = `${from}>${h.id}`;
-    if (!this.routeCache.has(key)) this.routeCache.set(key, firstValueFrom(this.api.get<{ distanceNm: number }>('/api/routing/route', { fromHarbour: from, toHarbour: h.id })).then(r => `${r.distanceNm} sm`, () => null));
+    if (!this.routeCache.has(key)) this.routeCache.set(key, firstValueFrom(this.api.get<{ distanceNm: number; warnings?: RouteWarning[] }>('/api/routing/route', { fromHarbour: from, toHarbour: h.id })).then(r => `${r.distanceNm} sm${r.warnings?.length ? ' ⚠' : ''}`, () => null));
     return this.routeCache.get(key)!;
   }
   private savePlan(p: Plan): void {
