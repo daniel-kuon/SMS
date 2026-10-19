@@ -29,12 +29,31 @@ app.MapGet("/tiles/depth/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int 
             WITH b AS (SELECT ST_TileEnvelope(@z, @x, @y) AS geom, ST_Transform(ST_TileEnvelope(@z, @x, @y), 4326) AS geom4326),
             -- the depth areas come per z12 source tile with overlapping margins: unioned per depth step so no seams or double fills show;
             -- made valid and unioned on a grid (simplified rings self-intersected: GEOS TopologyException, tile 500)
-            q AS (
+            d AS (
                 SELECT d.min_depth_m AS min_depth, d.max_depth_m AS max_depth,
-                       ST_AsMVTGeom(ST_Transform(ST_Union(ST_MakeValid(ST_SimplifyPreserveTopology(d.geom, @tol)), @tol / 8), 3857), b.geom, 4096, 32, true) AS geom
+                       ST_Union(ST_MakeValid(ST_SimplifyPreserveTopology(d.geom, @tol)), @tol / 8) AS geom
                 FROM routing_depth d, b WHERE d.geom && ST_Expand(b.geom4326, (ST_XMax(b.geom4326) - ST_XMin(b.geom4326)) / 32)
                   AND (@z >= 10 OR d.max_depth_m <= 10)
-                GROUP BY d.min_depth_m, d.max_depth_m, b.geom
+                GROUP BY d.min_depth_m, d.max_depth_m
+            ),
+            -- the depth raster stops short of the coast (and has no band above 6 ft): the water within ~300 m of the active land that no depth area
+            -- covers is added as the shallowest step (0 - 1.83 m, unknown = 1), so the shallow colour reaches the land; only from z10 (sub-pixel below)
+            land AS (
+                SELECT ST_Union(ST_MakeValid(ST_SimplifyPreserveTopology(r.geom, @tol))) AS geom
+                FROM routing_land r, b
+                WHERE @z >= 10 AND r.graph_version = (SELECT value::int FROM routing_meta WHERE key = 'active_version')
+                  AND r.geom && ST_Expand(b.geom4326, GREATEST((ST_XMax(b.geom4326) - ST_XMin(b.geom4326)) / 32, 0.006))
+            ),
+            coast AS (
+                SELECT 0.0::float8 AS min_depth, 1.8288::float8 AS max_depth, 1 AS unknown,
+                       ST_Difference(ST_Buffer(ST_Transform(l.geom, 3857), 300 / cos(radians(ST_Y(ST_Centroid(b.geom4326))))),
+                                     ST_Union(ST_Transform(l.geom, 3857), COALESCE((SELECT ST_Transform(ST_Union(d.geom), 3857) FROM d), 'GEOMETRYCOLLECTION EMPTY'::geometry))) AS geom
+                FROM land l, b WHERE l.geom IS NOT NULL
+            ),
+            q AS (
+                SELECT min_depth, max_depth, 0 AS unknown, ST_AsMVTGeom(ST_Transform(d.geom, 3857), b.geom, 4096, 32, true) AS geom FROM d, b
+                UNION ALL
+                SELECT min_depth, max_depth, unknown, ST_AsMVTGeom(coast.geom, b.geom, 4096, 32, true) FROM coast, b
             )
             SELECT COALESCE(ST_AsMVT(q, 'depth', 4096, 'geom'), ''::bytea) FROM q WHERE geom IS NOT NULL
             """);

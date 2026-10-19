@@ -216,11 +216,23 @@ async function poiBadge(kind: string, cls: string, inverted = false): Promise<Im
 
 /** Shops, restaurants, services near harbours (own tile layer from Sms.Tiles, z ≥ 13); a click shows the OSM details. */
 const DEPTH_STORAGE = 'sms.depthOverlay';
-/** Depth shading: a draft of null shows plain chart steps, a draft colours what is too shallow for the ship (draft + 0.5 m) red. */
+/**
+ * Depth shading as one blue ramp (the shallower the darker; drying a greenish grey like paper charts; from 18 m clear). A ship draft adds two
+ * violet warning steps for what is too shallow (draft + 0.5 m) - fully (max depth below) darker, partly lighter - and a red hatch layer on the first.
+ * Water with no charted depth next to the coast comes from the tiles as the shallowest step (min_depth 0).
+ */
 function depthFillColour(draftM: number | null): unknown {
   const limit = draftM == null ? null : draftM + 0.5;
-  const steps = ['step', ['get', 'min_depth'], '#a5d6a7', 0, '#64b5f6', 2, '#90caf9', 5, '#bbdefb', 10, 'rgba(0,0,0,0)'];
-  return limit == null ? steps : ['case', ['<', ['get', 'max_depth'], limit], '#ef9a9a', ['<', ['get', 'min_depth'], limit], '#ffcc80', steps];
+  const steps = ['step', ['get', 'min_depth'], '#9fb98a', 0, '#1d4f9c', 1.8, '#3274c4', 3.6, '#5b9bdc', 5.4, '#8dbbea', 9, '#bdd8f4', 18, 'rgba(0,0,0,0)'];
+  return limit == null ? steps : ['case', ['<', ['get', 'max_depth'], limit], '#34357a', ['<', ['get', 'min_depth'], limit], '#7a78c8', steps];
+}
+const depthHatchFilter = (draftM: number | null): unknown => draftM == null ? ['<', ['get', 'max_depth'], -1e9] : ['<', ['get', 'max_depth'], draftM + 0.5];
+/** Diagonal red stripes for the "too shallow for the ship" hatch. */
+function depthHatchImage(): ImageData {
+  const size = 16, c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d')!; g.strokeStyle = 'rgba(229,57,53,0.85)'; g.lineWidth = 2;
+  for (const o of [-size, 0, size]) { g.beginPath(); g.moveTo(o, size); g.lineTo(o + size, 0); g.stroke(); }
+  return g.getImageData(0, 0, size, size);
 }
 /** Charted depth areas as a toggleable overlay below the sea marks; the toggle is remembered per browser. */
 export function addDepthOverlay(map: MlMap, tilesUrl: string): void {
@@ -230,17 +242,21 @@ export function addDepthOverlay(map: MlMap, tilesUrl: string): void {
   let on = false; try { on = localStorage.getItem(DEPTH_STORAGE) === '1'; } catch { /* ignore */ }
   const before = ['seamark-sectors-fill', 'seamark-lines', 'seamark-icons', 'seamark-points'].find(id => map.getLayer(id));
   map.addLayer({ id: 'depth-fill', type: 'fill', source: 'depth', 'source-layer': 'depth', minzoom: 7, layout: { visibility: on ? 'visible' : 'none' },
-    paint: { 'fill-color': depthFillColour(null) as never, 'fill-opacity': 0.45, 'fill-antialias': false } }, before);
+    paint: { 'fill-color': depthFillColour(null) as never, 'fill-opacity': 0.55, 'fill-antialias': false } }, before);
+  if (!map.hasImage('depth-hatch')) map.addImage('depth-hatch', depthHatchImage(), { pixelRatio: 2 });
+  map.addLayer({ id: 'depth-hatch', type: 'fill', source: 'depth', 'source-layer': 'depth', minzoom: 7, layout: { visibility: on ? 'visible' : 'none' }, filter: depthHatchFilter(null) as never,
+    paint: { 'fill-pattern': 'depth-hatch', 'fill-antialias': false } }, before);
   const wrap = document.createElement('div'); wrap.className = 'maplibregl-ctrl maplibregl-ctrl-group depth-overlay-ctrl';
   const button = document.createElement('button'); button.type = 'button'; button.className = 'depth-overlay-button'; button.title = 'Tiefen anzeigen'; button.setAttribute('aria-label', 'Tiefen anzeigen');
   const refresh = () => { button.textContent = '≈'; button.classList.toggle('active', on); };
-  button.onclick = () => { on = !on; map.setLayoutProperty('depth-fill', 'visibility', on ? 'visible' : 'none'); try { localStorage.setItem(DEPTH_STORAGE, on ? '1' : '0'); } catch { /* ignore */ } refresh(); };
+  button.onclick = () => { on = !on; for (const id of ['depth-fill', 'depth-hatch']) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); try { localStorage.setItem(DEPTH_STORAGE, on ? '1' : '0'); } catch { /* ignore */ } refresh(); };
   map.addControl({ onAdd: () => { wrap.append(button); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
   refresh();
 }
 /** Recolours the depth overlay for the ship's draft (null = chart steps only). */
 export function applyDepthShading(map: MlMap, draftM: number | null): void {
   if (map.getLayer('depth-fill')) map.setPaintProperty('depth-fill', 'fill-color', depthFillColour(draftM) as never);
+  if (map.getLayer('depth-hatch')) map.setFilter('depth-hatch', depthHatchFilter(draftM) as never);
 }
 
 export function addPoiOverlay(map: MlMap, tilesUrl: string): void {
