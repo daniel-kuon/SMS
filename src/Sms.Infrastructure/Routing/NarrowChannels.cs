@@ -63,9 +63,25 @@ public static class NarrowChannels
             builder.SetSites(sites);
             var env = new Envelope(piece.EnvelopeInternal); env.ExpandBy(Deg(50));
             builder.ClipEnvelope = env;
-            GeometryCollection diagram;
+            GeometryCollection? diagram = null;
             try { diagram = (GeometryCollection)builder.GetDiagram(f); }
-            catch (TopologyException) { builder.ClipEnvelope = null; diagram = (GeometryCollection)builder.GetDiagram(f); }
+            catch (TopologyException)
+            {
+                // unclipped, then with sites snapped to ~10 cm; a piece whose diagram still fails is skipped rather than failing the
+                // whole tile (Stockholm and Oslo tiles returned 500 and got no channels at all)
+                try { builder.ClipEnvelope = null; diagram = (GeometryCollection)builder.GetDiagram(f); }
+                catch (TopologyException)
+                {
+                    try
+                    {
+                        var snapped = new VoronoiDiagramBuilder { Tolerance = 1e-7, ClipEnvelope = env };
+                        snapped.SetSites(sites.Select(c => new Coordinate(Math.Round(c.X, 6), Math.Round(c.Y, 6))).Distinct().ToList());
+                        diagram = (GeometryCollection)snapped.GetDiagram(f);
+                    }
+                    catch (TopologyException) { }
+                }
+            }
+            if (diagram is null) continue;
             var seen = new HashSet<(long, long, long, long)>();
             var lines = new List<LineString>();
             foreach (var cell in Polygons(diagram))
