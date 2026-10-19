@@ -73,9 +73,9 @@ test.describe.serial('skipper journey', () => {
     await page.goto(`/trips/${tripId}/logbook`);
     await page.getByRole('button', { name: /Neuer Eintrag|New entry/ }).click();
     const dialog = page.locator('mat-dialog-container');
-    await dialog.getByLabel(/Starthafen|Start harbour/).fill('Kiel');
+    await dialog.getByRole('combobox', { name: /Starthafen|Start harbour/ }).fill('Kiel');
     await page.getByRole('option', { name: /Kiel/ }).first().click();
-    await dialog.getByLabel(/Zielhafen|Destination/).fill('Laboe');
+    await dialog.getByRole('combobox', { name: /Zielhafen|Destination/ }).fill('Laboe');
     await page.getByRole('option', { name: /Laboe/ }).first().click();
     await dialog.getByLabel(/Abgelegt|Departed/).fill('2026-07-02T09:00');
     await dialog.getByLabel(/Angelegt|Arrived/).fill('2026-07-02T13:30');
