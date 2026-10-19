@@ -29,6 +29,8 @@ import { UploadZone } from '../../shared/shared';
 import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
 import { ShipContextService } from '../../core/ship-context';
 import { applyDepthShading, applyHazardFilter } from '../../core/map';
+/** Show only the places up to this distance when there are any; otherwise the ones up to the 5 km that the API returns. */
+const NEAR_RADIUS_M = 3000;
 
 /** Service glyphs not covered by the POI icons (Material Symbols). */
 const SERVICE_ICON: Record<string, string> = { power_supply: 'electrical_services', sanitary_dump_station: 'plumbing', waste_disposal: 'delete', internet_access: 'wifi', bus_station: 'directions_bus', chandlery: 'sailing', slipway: 'rowing' };
@@ -70,6 +72,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
               <span class="chip svc" role="button" tabindex="0" [class.active]="activeService() === s.kind" (click)="toggleService(s)" (keydown.enter)="toggleService(s)" [title]="('harbour.svc.' + s.kind | translate) + (s.name ? ': ' + s.name : '')"><mat-icon inline>{{ serviceIcon(s.kind) }}</mat-icon> {{ distance(s.distanceM) }}</span>
             }</div>
             @if (places().length) {
+              <h4 class="places-head"><mat-icon inline>{{ serviceIcon(activeService() ?? '') }}</mat-icon> {{ placesHead() }}</h4>
               <ul class="places">@for (p of places(); track p.id; let i = $index) {
                 <li [id]="'svc-place-' + i" [class.sel]="selected() === i" (mouseenter)="focusPlace(i)" (mouseleave)="focusPlace(null)" (click)="selectPlace(i)">
                   <div><b>{{ p.name }}</b> <span class="muted">· {{ p.dist }}</span></div>
@@ -134,6 +137,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     .ship-ctx input { width: 44px; } .ship-ctx select { max-width: 140px; } .ship-ctx .small { font-size: 11px; }
     .full-width { width: 100%; }
     .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; } .svc.active { outline: 2px solid #e65100; }
+    .places-head { margin: 8px 0 4px; font-size: 14px; font-weight: 600; } .places-head mat-icon { vertical-align: middle; }
     .places { list-style: none; margin: 0 0 8px; padding: 0; max-height: 40vh; overflow-y: auto; font-size: 13px; } .places li { padding: 6px 8px; border-bottom: 1px solid #e0e0e0; cursor: pointer; } .places li:hover, .places li.sel { background: #fff3e0; } .places li.sel { border-left: 3px solid #d50000; } .places .row { white-space: pre-line; } .places .badge { font-weight: 600; white-space: nowrap; color: #c62828; } .places .badge.open { color: #2e7d32; } .places a mat-icon { font-size: 14px; vertical-align: middle; } .svc mat-icon { font-size: 16px; }
     @media (max-width: 800px) { .layout { flex-direction: column; height: auto; } .map { height: 60vh; flex: none; } .panel.open { width: 100%; } }
   `,
@@ -164,6 +168,8 @@ export class HarbourMapPage {
   /** The places of the active service, nearest first, as the side-panel list shows them. */
   places = signal<{ id: number; name: string; dist: string; rows: PlaceRow[]; route: string }[]>([]);
   placesEmpty = signal(false);
+  /** "Restaurants – 7 within 3 km": the selected service, how many places are shown and the radius that applied. */
+  placesHead = signal('');
   selected = signal<number | null>(null);
   /** Highlights where the service is around the harbour (the nearest 50 POIs of that kind within 5 km as bigger POI icons, other POIs dimmed, map fitted to all of them) and lists them; again = off. A facility flag without a POI is the harbour itself. */
   toggleService(s: HarbourService): void {
@@ -178,9 +184,11 @@ export class HarbourMapPage {
       if (this.activeService() !== s.kind || this.harbour() !== h || !this.map) return;
       const lang = appI18n.lang(), t = (k: string) => this.translate.instant('harbour.' + k) as string;
       const labels = { hours: t('openingHours'), cuisine: t('cuisine'), website: t('website'), phone: t('phone'), address: t('address') };
-      const view = r.map(p => ({ p, name: p.name ?? label, dist: this.distance(p.distanceM), rows: placeRows(p, lang, labels), route: googleRouteUrl(h, p) }));
+      const within3 = r.filter(p => p.distanceM <= NEAR_RADIUS_M), shown = within3.length ? within3 : r;   // places within 3 km if there are any, else up to 5 km
+      this.placesHead.set(this.translate.instant('harbour.placesHeading', { label, count: shown.length, km: within3.length ? NEAR_RADIUS_M / 1000 : 5 }) as string);
+      const view = shown.map(p => ({ p, name: p.name ?? label, dist: this.distance(p.distanceM), rows: placeRows(p, lang, labels), route: googleRouteUrl(h, p) }));
       this.places.set(view.map(v => ({ id: v.p.id, name: v.name, dist: v.dist, rows: v.rows, route: v.route })));
-      this.placesEmpty.set(!r.length);
+      this.placesEmpty.set(!shown.length);
       setServiceHighlight(this.map, view.map((v): ServiceSpot => ({
         lat: v.p.lat, lng: v.p.lng, icon: `poi|${v.p.poiClass ?? 'amenity'}|${v.p.poiKind ?? s.kind}`,
         popup: () => {

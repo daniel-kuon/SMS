@@ -200,14 +200,15 @@ export const POI_ICON: Record<string, string> = {
 };
 const POI_COLOUR: Record<string, string> = { amenity: '#6d4c41', shop: '#1565c0', tourism: '#2e7d32', leisure: '#00838f', craft: '#4e342e', office: '#546e7a', healthcare: '#c62828' };
 
-/** 26 px round badge with a Material Symbols glyph, drawn once per kind. */
-async function poiBadge(kind: string, cls: string): Promise<ImageData> {
+/** 26 px round badge with a Material Symbols glyph, drawn once per kind; inverted = filled in the POI's colour with a white glyph (highlighted places). */
+async function poiBadge(kind: string, cls: string, inverted = false): Promise<ImageData> {
   const size = 52, c = document.createElement('canvas'); c.width = c.height = size;
   const g = c.getContext('2d')!;
   try { await document.fonts.load('26px "Material Symbols Outlined"'); } catch { /* fallback glyph box */ }
-  g.fillStyle = '#ffffff'; g.beginPath(); g.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2); g.fill();
-  g.lineWidth = 3; g.strokeStyle = POI_COLOUR[cls] ?? '#616161'; g.stroke();
-  g.fillStyle = POI_COLOUR[cls] ?? '#616161'; g.font = '30px "Material Symbols Outlined"'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  const colour = POI_COLOUR[cls] ?? '#616161';
+  g.fillStyle = inverted ? colour : '#ffffff'; g.beginPath(); g.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2); g.fill();
+  g.lineWidth = 3; g.strokeStyle = inverted ? '#ffffff' : colour; g.stroke();
+  g.fillStyle = inverted ? '#ffffff' : colour; g.font = '30px "Material Symbols Outlined"'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillText(POI_ICON[kind] ?? (cls === 'shop' ? 'storefront' : cls === 'tourism' ? 'attractions' : 'place'), size / 2, size / 2 + 1);
   return g.getImageData(0, 0, size, size);
 }
@@ -247,11 +248,11 @@ export function addPoiOverlay(map: MlMap, tilesUrl: string): void {
   map.addSource('poi', { type: 'vector', tiles: [abs], minzoom: 13, maxzoom: 16 });
   const pending = new Set<string>();
   map.on('styleimagemissing', async e => {
-    if (!e.id.startsWith('poi|') || pending.has(e.id)) return;
+    if (!/^(poi|inv)\|/.test(e.id) || pending.has(e.id)) return;
     pending.add(e.id);
     if (!map.hasImage(e.id)) map.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) });
-    const [, cls, kind] = e.id.split('|');
-    try { const img = await poiBadge(kind, cls); if (map.hasImage(e.id)) map.removeImage(e.id); map.addImage(e.id, img, { pixelRatio: 2 }); } catch { /* keep placeholder */ } finally { pending.delete(e.id); }
+    const [prefix, cls, kind] = e.id.split('|');
+    try { const img = await poiBadge(kind, cls, prefix === 'inv'); if (map.hasImage(e.id)) map.removeImage(e.id); map.addImage(e.id, img, { pixelRatio: 2 }); } catch { /* keep placeholder */ } finally { pending.delete(e.id); }
   });
   // everywhere from z16; from z13 only around the selected harbour (setPoiFocus). Our icons sit above the basemap, so the
   // basemap's label for the same restaurant loses the collision and is hidden.
@@ -290,23 +291,30 @@ export function setPoiFocus(map: MlMap, at: { lat: number; lng: number } | null)
   map.setFilter('poi-icons-near', ['within', { type: 'Polygon', coordinates: [ring] }] as never);
 }
 
-/** A highlighted service place: drawn with the same icon image as our POI tiles (poi|class|kind), bigger and on top, even where the tiles do not have it at this zoom. */
+/** A highlighted service place: drawn with the inverted variant (inv|class|kind) of the icon image of our POI tiles (poi|class|kind), bigger and on top, even where the tiles do not have it at this zoom. */
 export interface ServiceSpot { lat: number; lng: number; icon: string; popup?: () => HTMLElement; }
 let hlSpots: ServiceSpot[] = [], hlPick: ((i: number) => void) | undefined, hlPopup: maplibregl.Popup | undefined;
 const HL_LAYERS = ['service-hl-icons', 'service-hl-icons-active'];
 const hlAt = (map: MlMap, point: maplibregl.PointLike) => HL_LAYERS.every(id => map.getLayer(id)) && map.queryRenderedFeatures(point, { layers: HL_LAYERS }).length > 0;
 const dimmed = new Map<string, unknown>();
-/** While a service is selected all other POIs (ours and the basemap's labels) are half transparent. */
+/** Harbour facility / marina / anchorage chart symbols (the coloured circles with a white glyph) and the unselected harbour markers; buoys, lights and the selected harbour stay. */
+const FACILITY_TYPES = ['small_craft_facility', 'harbour', 'anchorage', 'anchor_berth'];
+const dimFacilities = ['case', ['in', ['get', 'type'], ['literal', FACILITY_TYPES]], 0.5, 1];
+const dimUnselected = ['case', ['boolean', ['get', 'selected'], false], 1, 0.5];
+/** While a service is selected all other POIs (ours, the basemap's labels, the harbour facility symbols and other harbours) are half transparent. */
 function dimOtherPois(map: MlMap, on: boolean): void {
-  const ids = ['poi-icons', 'poi-icons-near', ...map.getStyle().layers.filter(l => 'source-layer' in l && l['source-layer'] === 'poi' && l.type === 'symbol').map(l => l.id)];
-  for (const id of ids) for (const prop of ['icon-opacity', 'text-opacity'] as const) {
+  const targets: [string, string, unknown][] = [];
+  for (const id of ['poi-icons', 'poi-icons-near', ...map.getStyle().layers.filter(l => 'source-layer' in l && l['source-layer'] === 'poi' && l.type === 'symbol').map(l => l.id)])
+    for (const prop of ['icon-opacity', 'text-opacity']) targets.push([id, prop, undefined]);   // undefined = half of the original
+  targets.push(['seamark-icons', 'icon-opacity', dimFacilities], ['harbour-points', 'circle-opacity', dimUnselected], ['harbour-points', 'circle-stroke-opacity', dimUnselected]);
+  for (const [id, prop, expr] of targets) {
     if (!map.getLayer(id)) continue;
     const key = `${id}|${prop}`;
     if (on) {
-      if (!dimmed.has(key)) dimmed.set(key, map.getPaintProperty(id, prop));
+      if (!dimmed.has(key)) dimmed.set(key, map.getPaintProperty(id, prop as 'icon-opacity'));
       const o = dimmed.get(key);
-      map.setPaintProperty(id, prop, typeof o === 'number' || o == null ? 0.5 * (o as number ?? 1) : 0.5);   // ponytail: a zoom-dependent original opacity becomes a flat 0.5
-    } else if (dimmed.has(key)) { map.setPaintProperty(id, prop, (dimmed.get(key) ?? null) as never); dimmed.delete(key); }
+      map.setPaintProperty(id, prop as 'icon-opacity', (expr ?? (typeof o === 'number' || o == null ? 0.5 * (o as number ?? 1) : 0.5)) as never);   // ponytail: a zoom-dependent original opacity becomes a flat 0.5
+    } else if (dimmed.has(key)) { map.setPaintProperty(id, prop as 'icon-opacity', (dimmed.get(key) ?? null) as never); dimmed.delete(key); }
   }
 }
 /** Highlights the places (empty = clear): bigger POI icons on top, all other POIs dimmed, the map fitted to the places and the harbour. A click on an icon opens its popup and reports its index to onPick. */
@@ -329,7 +337,7 @@ export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: {
     });
   }
   (map.getSource('service-hl') as GeoJSONSource).setData({ type: 'FeatureCollection', features: spots.flatMap((s, i) => [
-    { type: 'Feature' as const, properties: { i, icon: s.icon }, geometry: { type: 'Point' as const, coordinates: [s.lng, s.lat] } },
+    { type: 'Feature' as const, properties: { i, icon: s.icon.replace(/^poi\|/, 'inv|') }, geometry: { type: 'Point' as const, coordinates: [s.lng, s.lat] } },
     ...(harbour && (s.lat !== harbour.lat || s.lng !== harbour.lng) ? [{ type: 'Feature' as const, properties: { i }, geometry: { type: 'LineString' as const, coordinates: [[harbour.lng, harbour.lat], [s.lng, s.lat]] } }] : []),
   ]) });
   setServiceActive(map, null);
@@ -338,7 +346,10 @@ export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: {
   const pts = [...spots, ...(harbour ? [harbour] : [])];
   const b = new maplibregl.LngLatBounds([pts[0].lng, pts[0].lat], [pts[0].lng, pts[0].lat]);
   for (const p of pts) b.extend([p.lng, p.lat]);
-  if (b.getWest() !== b.getEast() || b.getSouth() !== b.getNorth()) map.fitBounds(b, { padding: 70, maxZoom: 17, duration: 800 });
+  // eased, slow camera move; a single point (no extent) still gets a gentle zoom/centre change instead of nothing
+  const easing = (t: number) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2, duration = 1400;
+  if (b.getWest() !== b.getEast() || b.getSouth() !== b.getNorth()) map.fitBounds(b, { padding: 70, maxZoom: 17, duration, easing, essential: true });
+  else map.easeTo({ center: b.getCenter(), zoom: Math.min(17, Math.max(map.getZoom() + 0.5, 15)), duration, easing, essential: true });
 }
 /** Emphasises one place (null = none): its icon grows and the line from the harbour is drawn, e.g. for the hovered list item. */
 export function setServiceActive(map: MlMap, i: number | null): void {
