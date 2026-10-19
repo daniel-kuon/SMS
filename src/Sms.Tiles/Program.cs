@@ -27,10 +27,11 @@ app.MapGet("/tiles/depth/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int 
         entry.SlidingExpiration = TimeSpan.FromMinutes(30);
         await using var cmd = db.CreateCommand("""
             WITH b AS (SELECT ST_TileEnvelope(@z, @x, @y) AS geom, ST_Transform(ST_TileEnvelope(@z, @x, @y), 4326) AS geom4326),
-            -- the depth areas come per z12 source tile with overlapping margins: unioned per depth step so no seams or double fills show
+            -- the depth areas come per z12 source tile with overlapping margins: unioned per depth step so no seams or double fills show;
+            -- made valid and unioned on a grid (simplified rings self-intersected: GEOS TopologyException, tile 500)
             q AS (
                 SELECT d.min_depth_m AS min_depth, d.max_depth_m AS max_depth,
-                       ST_AsMVTGeom(ST_Transform(ST_Union(ST_SimplifyPreserveTopology(d.geom, @tol)), 3857), b.geom, 4096, 32, true) AS geom
+                       ST_AsMVTGeom(ST_Transform(ST_Union(ST_MakeValid(ST_SimplifyPreserveTopology(d.geom, @tol)), @tol / 8), 3857), b.geom, 4096, 32, true) AS geom
                 FROM routing_depth d, b WHERE d.geom && ST_Expand(b.geom4326, (ST_XMax(b.geom4326) - ST_XMin(b.geom4326)) / 32)
                   AND (@z >= 10 OR d.max_depth_m <= 10)
                 GROUP BY d.min_depth_m, d.max_depth_m, b.geom

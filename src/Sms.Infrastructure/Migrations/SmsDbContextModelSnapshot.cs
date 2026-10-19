@@ -764,8 +764,8 @@ namespace Sms.Infrastructure.Migrations
                         .HasColumnType("numeric(18,4)");
 
                     b.Property<string>("Notes")
-                        .HasMaxLength(4000)
-                        .HasColumnType("character varying(4000)");
+                        .HasMaxLength(100000)
+                        .HasColumnType("character varying(100000)");
 
                     b.Property<LineString>("RouteGeometry")
                         .HasColumnType("geography (linestring, 4326)");

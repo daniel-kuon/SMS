@@ -117,6 +117,7 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
 
         m.Entity<LogbookEntry>(e =>
         {
+            e.Property(p => p.Notes).HasMaxLength(100_000); // rich text (HTML); the old portal's notes ran past 4000 characters
             e.HasIndex(l => new { l.ShipId, l.DepartedAt });
             e.HasIndex(l => l.TripId);
             e.HasOne(l => l.StartHarbour).WithMany().HasForeignKey(l => l.StartHarbourId).OnDelete(DeleteBehavior.Restrict);
