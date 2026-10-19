@@ -27,7 +27,7 @@ var basemap = builder.AddContainer("basemap", "ghcr.io/maplibre/martin", "latest
 var api = builder.AddProject<Projects.Sms_Api>("api")
     .WithReference(db).WaitFor(db)
     .WithEnvironment("SMTP_ENDPOINT", mailpit.GetEndpoint("smtp"))
-    .WithEnvironment("Map__BaseTilesUrl", "http://localhost:5161/basemap")
+    .WithEnvironment("Map__BaseTilesUrl", "/basemap") // relative: the web dev server proxies /basemap to Martin (works from LAN devices too)
     .WithEnvironment("SIGNOZ_OTLP_ENDPOINT", signoz.OtlpGrpc)
     .WithEnvironment("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=development")
     .WithHttpHealthCheck("/health")

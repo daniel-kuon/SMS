@@ -58,7 +58,10 @@ public static class MapStyleEndpoints
                 await File.WriteAllTextAsync(cached, upstream, ct);
             }
             // glyphs and sprites go through our cache proxy, so after a first visit the map works without OpenFreeMap
-            var style = Rewrite(await File.ReadAllTextAsync(cached, ct), cfg["Map:BaseTilesUrl"]!, cfg.GetValue("Map:KeepRemoteRaster", true), AssetsBase(httpRequest, cfg) + "/api/map", DetailAvailable(cfg, env) ? cfg["Map:BaseTilesUrl"] + "-detail" : null);
+            // a relative base-tiles URL ("/basemap", proxied by the dev server to Martin) is made absolute with the page origin, so the
+            // map also works when the dev server is opened from a phone on the LAN
+            var baseTiles = cfg["Map:BaseTilesUrl"]!.StartsWith('/') ? AssetsBase(httpRequest, cfg) + cfg["Map:BaseTilesUrl"] : cfg["Map:BaseTilesUrl"]!;
+            var style = Rewrite(await File.ReadAllTextAsync(cached, ct), baseTiles, cfg.GetValue("Map:KeepRemoteRaster", true), AssetsBase(httpRequest, cfg) + "/api/map", DetailAvailable(cfg, env) ? baseTiles + "-detail" : null);
             return Results.Content(style, "application/json");
         }).WithTags("Map");
 
@@ -75,7 +78,9 @@ public static class MapStyleEndpoints
 
     /// <summary>Public origin the browser reaches us on: Origin header, Web:BaseUrl, the first allowed origin (dev: the Vite server), else the request host.</summary>
     private static string AssetsBase(HttpRequest req, IConfiguration cfg) =>
-        req.Headers.Origin.FirstOrDefault() ?? cfg["Web:BaseUrl"]?.TrimEnd('/') ?? cfg.GetSection("Web:AllowedOrigins").Get<string[]>()?.FirstOrDefault()?.TrimEnd('/') ?? $"{req.Scheme}://{req.Host}";
+        req.Headers.Origin.FirstOrDefault()
+        ?? (req.Headers["X-Forwarded-Host"].FirstOrDefault() is { Length: > 0 } fh ? $"{req.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? "http"}://{fh}" : null) // dev proxy (xfwd)
+        ?? cfg["Web:BaseUrl"]?.TrimEnd('/') ?? cfg.GetSection("Web:AllowedOrigins").Get<string[]>()?.FirstOrDefault()?.TrimEnd('/') ?? $"{req.Scheme}://{req.Host}";
 
     /// <summary>Serves an upstream asset from media/cache/map, fetching it once; a failed fetch is not cached.</summary>
     private static async Task<IResult> ProxyAsync(string upstreamPath, string cachePath, string contentType, IConfiguration cfg, IWebHostEnvironment env, IHttpClientFactory http, CancellationToken ct)
