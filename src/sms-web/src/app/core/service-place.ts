@@ -31,7 +31,14 @@ export function placeRows(p: ServicePlace, lang: string, labels: { hours: string
   if (p.openingHours) rows.push({ label: labels.hours, value: p.openingHours });
   if (p.cuisine) rows.push({ label: labels.cuisine, value: cuisineText(p.cuisine, lang) });
   if (p.address) rows.push({ label: labels.address, value: p.address });
-  if (p.phone) rows.push({ label: labels.phone, value: p.phone, href: `tel:${p.phone.replace(/\s+/g, '')}` });
-  if (p.website) rows.push({ label: labels.website, value: p.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''), href: p.website });
+  // OSM tags are user data: links only for http(s) and plain phone numbers (a "javascript:" website tag must not become a link)
+  const tel = p.phone?.replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
+  if (p.phone) rows.push({ label: labels.phone, value: p.phone, href: tel ? `tel:${tel}` : undefined });
+  if (p.website) rows.push({ label: labels.website, value: p.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''), href: safeHttpUrl(p.website) });
   return rows;
+}
+
+/** The URL when it is http(s) (a bare "example.org" gets https://), otherwise undefined. */
+export function safeHttpUrl(u: string): string | undefined {
+  try { const x = new URL(/^[a-z][a-z0-9+.-]*:/i.test(u) ? u : `https://${u}`); return x.protocol === 'http:' || x.protocol === 'https:' ? x.href : undefined; } catch { return undefined; }
 }

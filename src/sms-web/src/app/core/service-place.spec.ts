@@ -15,3 +15,14 @@ describe('service-place', () => {
     expect(placeRows(p, 'de', l)).toEqual([{ label: 'H', value: 'Mo-Su 10:00-22:00' }, { label: 'P', value: '+49 431 123', href: 'tel:+49431123' }, { label: 'W', value: 'example.com', href: 'https://www.example.com/' }]);
   });
 });
+
+describe('safeHttpUrl', () => {
+  it('keeps http(s), adds https to bare hosts, drops other schemes', async () => {
+    const { safeHttpUrl } = await import('./service-place');
+    expect(safeHttpUrl('https://a.de/x')).toBe('https://a.de/x');
+    expect(safeHttpUrl('www.a.de')).toBe('https://www.a.de/');
+    expect(safeHttpUrl('javascript:alert(1)')).toBeUndefined();
+    expect(safeHttpUrl('data:text/html,x')).toBeUndefined();
+  });
+});
+
