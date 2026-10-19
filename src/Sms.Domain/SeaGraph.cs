@@ -77,6 +77,45 @@ public sealed class SeaGraph
 
     public bool IsPassage(int e) => _src[e] >= _firstPassage && _tgt[e] >= _firstPassage;
     public bool IsAssumed(int e) => _assumed is not null && _assumed[e];
+    /// <summary>A straight link between a passage vertex and a water node (the builder lets these cross up to 50 m of land, a mole or pier).</summary>
+    public bool IsLink(int e) => (_src[e] >= _firstPassage) != (_tgt[e] >= _firstPassage) && _geomStart[e] == _geomStart[e + 1];
+    public int Source(int e) => _src[e];
+    public int Target(int e) => _tgt[e];
+    /// <summary>The edges at a node.</summary>
+    public IEnumerable<int> EdgesAt(int node) { for (var i = _adjStart[node]; i < _adjStart[node + 1]; i++) yield return _adj[i]; }
+    public bool IsIsolated(int node) => _isolated is not null && node < _isolated.Length && _isolated[node];
+
+    /// <summary>The nodes connected to <paramref name="start"/> (breadth first), null when there are more than <paramref name="max"/>.</summary>
+    public List<int>? Component(int start, int max)
+    {
+        var seen = new HashSet<int> { start }; var queue = new Queue<int>(); queue.Enqueue(start);
+        while (queue.TryDequeue(out var u))
+            for (var i = _adjStart[u]; i < _adjStart[u + 1]; i++)
+            {
+                var e = _adj[i]; var v = _src[e] == u ? _tgt[e] : _src[e];
+                if (!seen.Add(v)) continue;
+                if (seen.Count > max) return null;
+                queue.Enqueue(v);
+            }
+        return seen.ToList();
+    }
+
+    /// <summary>
+    /// True when the straight leg a→b crosses land with water on both sides of it (a mole, a spit), sampled every stepM: land at the
+    /// start or end only (a passage end on the shore, a harbour basin the coastline counts as land) does not count.
+    /// </summary>
+    public static bool CrossesInteriorLand(Coordinate a, Coordinate b, Func<Coordinate, bool> onLand, double stepM = 5)
+    {
+        var n = Math.Max(2, (int)Math.Ceiling(Haversine(a.Y, a.X, b.Y, b.X) / stepM));
+        var water = false; var landAfterWater = false;
+        for (var k = 0; k <= n; k++)
+        {
+            var land = onLand(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n));
+            if (!land) { if (landAfterWater) return true; water = true; }
+            else if (water) landAfterWater = true;
+        }
+        return false;
+    }
     public Coordinate Node(int id) => new(_x[id], _y[id]);
 
     /// <summary>The edge's geometry from source to target.</summary>
@@ -91,14 +130,16 @@ public sealed class SeaGraph
     }
 
     /// <param name="NoAssumed">Assumed passages closed (Routing:AssumedPassages off, or the derive endpoint testing what the graph connects without them).</param>
-    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false);
+    /// <param name="Penalized">Edges that cost PenaltyM extra: links found crossing a mole, used only where nothing else leads on.</param>
+    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000);
     /// <summary>A route end projected onto a passage edge: on segment Segment of its geometry, at Fraction of its length.</summary>
     public sealed record Snap(int Edge, int Segment, double Fraction, Coordinate Point, double DistanceM);
     /// <summary>A route end: the clicked point and either a node or a snap onto an edge.</summary>
-    public sealed record End(Coordinate Point, int Node = -1, Snap? OnEdge = null);
+    /// <param name="OnLand">The clicked point when it lay on land and the end moved to the nearest navigable water (Point).</param>
+    public sealed record End(Coordinate Point, int Node = -1, Snap? OnEdge = null, Coordinate? OnLand = null);
     /// <summary>The route: points from the start point to the end point; Fixed[i] says whether the segment Points[i] → Points[i+1] is passage geometry.
     /// Assumed: the midpoint of every assumed passage edge the route uses (where to warn).</summary>
-    public sealed record Path(List<Coordinate> Points, List<bool> Fixed, double Cost, int Settled, List<Coordinate>? Assumed = null);
+    public sealed record Path(List<Coordinate> Points, List<bool> Fixed, double Cost, int Settled, List<Coordinate>? Assumed = null, List<int>? Edges = null);
 
     /// <summary>Nearest point on an indexed passage edge within maxM (local metric frame), or null.</summary>
     public Snap? SnapToPassage(Coordinate p, double maxM)
@@ -149,6 +190,7 @@ public sealed class SeaGraph
         var cl = _clear[e];
         if (l.AirDraftM is { } ad && !float.IsNaN(cl) && cl < ad) return double.PositiveInfinity;
         double c = _cost[e]; var d = _depth[e];
+        if (l.Penalized is { } pen && pen.Contains(e)) c += l.PenaltyM;
         if (l.DepthLimitM is { } lim && !float.IsNaN(d) && d < lim)
         {
             if (!Exempt(e, l, from, to)) return double.PositiveInfinity;
@@ -165,6 +207,7 @@ public sealed class SeaGraph
             if (end.OnEdge?.Edge == e) return true;
             var s = end.OnEdge is { } sn ? _src[sn.Edge] : end.Node; var t = end.OnEdge is { } tn ? _tgt[tn.Edge] : end.Node;
             if (_src[e] == s || _src[e] == t || _tgt[e] == s || _tgt[e] == t) return true;
+            if (end.Node >= 0 && (_src[e] == end.Node || _tgt[e] == end.Node)) return true;
         }
         if (l.ExemptDeg <= 0) return false;
         var cs = Coords(e);
@@ -181,17 +224,20 @@ public sealed class SeaGraph
         return Math.Sqrt(qx * qx + qy * qy);
     }
 
-    private readonly record struct Anchor(int Node, double Cost, Coordinate[] Leg); // Leg: from the end's projected point to the node
+    private readonly record struct Anchor(int Node, double Cost, Coordinate[] Leg, bool OnEdge = false); // Leg: from the end's projected point to the node
 
     private Anchor[] Anchors(End end, Limits l, End from, End to)
     {
         if (end.OnEdge is not { } s) return end.Node >= 0 ? [new Anchor(end.Node, 0, [Node(end.Node)])] : [];
+        // an end on a passage edge with a node in sight as well (End.Node): both, the node at the cost of its straight leg – a click on
+        // a fairway is reached across open water when the edge's own ends lie far off (Neustadt: the edge's south end 2.6 km away gave a V)
+        var node = end.Node >= 0 ? [new Anchor(end.Node, Haversine(end.Point.Y, end.Point.X, _y[end.Node], _x[end.Node]), [Node(end.Node)])] : Array.Empty<Anchor>();
         var c = EdgeCost(s.Edge, l, from, to);
-        if (double.IsPositiveInfinity(c)) return [];
+        if (double.IsPositiveInfinity(c)) return node;
         var cs = Coords(s.Edge);
         var back = new List<Coordinate> { s.Point }; for (var k = s.Segment; k >= 0; k--) back.Add(cs[k]);
         var fwd = new List<Coordinate> { s.Point }; for (var k = s.Segment + 1; k < cs.Length; k++) fwd.Add(cs[k]);
-        return [new Anchor(_src[s.Edge], s.Fraction * c, back.ToArray()), new Anchor(_tgt[s.Edge], (1 - s.Fraction) * c, fwd.ToArray())];
+        return [new Anchor(_src[s.Edge], s.Fraction * c, back.ToArray(), true), new Anchor(_tgt[s.Edge], (1 - s.Fraction) * c, fwd.ToArray(), true), .. node];
     }
 
     /// <summary>Cheapest route between two ends, or null when none exists under the limits.</summary>
@@ -244,7 +290,7 @@ public sealed class SeaGraph
                 if (s1.Fraction <= s2.Fraction) for (var k = s1.Segment + 1; k <= s2.Segment; k++) Add(cs[k], true);
                 else for (var k = s1.Segment; k > s2.Segment; k--) Add(cs[k], true);
                 Add(s2.Point, true); Add(to.Point, false);
-                return new Path(pts, fx, c, settled, AssumedMidpoints([s1.Edge]));
+                return new Path(pts, fx, c, settled, AssumedMidpoints([s1.Edge]), [s1.Edge]);
             }
         }
         if (bestNode < 0) return null;
@@ -268,9 +314,9 @@ public sealed class SeaGraph
         for (var k = goal.Leg.Length - 1; k >= 0; k--) Push(goal.Leg[k], k < goal.Leg.Length - 1);
         Push(to.Point, false);
         var used = new List<int>(edges);
-        if (from.OnEdge is { } fs) used.Add(fs.Edge);
-        if (to.OnEdge is { } ts) used.Add(ts.Edge);
-        return new Path(points, fixedSeg, best, settled, AssumedMidpoints(used));
+        if (from.OnEdge is { } fs && start.OnEdge) used.Add(fs.Edge);
+        if (to.OnEdge is { } ts && goal.OnEdge) used.Add(ts.Edge);
+        return new Path(points, fixedSeg, best, settled, AssumedMidpoints(used), used);
     }
 
     private List<Coordinate> AssumedMidpoints(IEnumerable<int> edges) => edges.Distinct().Where(IsAssumed).Select(e => AssumedPassages.Midpoint(Coords(e))).ToList();
@@ -319,10 +365,59 @@ public static class StringPull
     }
 
     /// <param name="maxTests">Blocked tests per point at most (the cheapest allowed candidates): bounds the work along a winding coast.</param>
-    public static List<Coordinate> Pull(IReadOnlyList<Coordinate> p, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, double trimM = 3000, double maxLegM = 30_000, int maxTests = 64)
+    public static List<Coordinate> Pull(IReadOnlyList<Coordinate> p, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, double trimM = 3000, double maxLegM = 30_000, int maxTests = 64) =>
+        PullFlags(p, fixedSeg, blocked, trimM, maxLegM, maxTests).points;
+
+    /// <summary>
+    /// Corner cutting after the pull: the pull can only bend at the path's own points, so where the graph path swung wide (a long
+    /// visibility edge out to a channel's outer end, Neustadt) the pulled route keeps a V whose apex lies far off the obstacle it goes
+    /// round. Each free corner u→v→w is replaced by the chamfer a→b (a on v→u, b on v→w at the same fraction, the largest fraction
+    /// whose leg a→b is not blocked, binary search) – both remaining pieces are parts of the old legs, so the route stays valid and
+    /// never gets longer. A leg u→w that is free drops v outright. Repeated passes tighten the chamfers round the obstacle. Corners at
+    /// passage geometry (fixed segments) stay.
+    /// </summary>
+    /// <param name="minGainM">A chamfer that saves less than this is not made (the corner is tight enough).</param>
+    /// <param name="clearM">A chamfer keeps this far off what blocks it: the same leg shifted by clearM away from v must be free too (a leg
+    /// found by bisection would touch the coast).</param>
+    public static (List<Coordinate> points, List<bool> fixedSeg) Tighten(IReadOnlyList<Coordinate> points, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, int passes = 4, double minGainM = 10, double clearM = 20)
+    {
+        var p = points.ToList(); var fx = fixedSeg.ToList();
+        static double D(Coordinate a, Coordinate b) => SeaGraph.Haversine(a.Y, a.X, b.Y, b.X);
+        static Coordinate Lerp(Coordinate a, Coordinate b, double t) => new(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+        for (var pass = 0; pass < passes; pass++)
+        {
+            var changed = false;
+            for (var i = 1; i < p.Count - 1; i++)
+            {
+                if (fx[i - 1] || fx[i]) continue;
+                Coordinate u = p[i - 1], v = p[i], w = p[i + 1];
+                if (D(u, v) + D(v, w) - D(u, w) < minGainM) continue;
+                if (!blocked(u, w)) { p.RemoveAt(i); fx.RemoveAt(i); i--; changed = true; continue; }
+                // the unit normal of u→w pointing away from v (local metric frame), as a shift in degrees
+                var cos = Math.Cos(v.Y * Math.PI / 180);
+                double nx = -(w.Y - u.Y), ny = (w.X - u.X) * cos; var nl = Math.Sqrt(nx * nx + ny * ny);
+                if (nl == 0) continue;
+                nx /= nl; ny /= nl;
+                if (nx * (v.X - u.X) * cos + ny * (v.Y - u.Y) > 0) { nx = -nx; ny = -ny; }
+                double sx = nx * clearM / (SeaGraph.MPerDeg * cos), sy = ny * clearM / SeaGraph.MPerDeg;
+                bool Free(Coordinate a, Coordinate b) => !blocked(a, b) && !blocked(new Coordinate(a.X + sx, a.Y + sy), new Coordinate(b.X + sx, b.Y + sy));
+                double lo = 0, hi = 1;
+                for (var k = 0; k < 12; k++) { var mid = (lo + hi) / 2; if (Free(Lerp(v, u, mid), Lerp(v, w, mid))) lo = mid; else hi = mid; }
+                var a = Lerp(v, u, lo); var b = Lerp(v, w, lo);
+                if (D(a, v) + D(v, b) - D(a, b) < minGainM) continue;
+                p[i] = a; p.Insert(i + 1, b); fx.Insert(i, false);
+                i++; changed = true;
+            }
+            if (!changed) break;
+        }
+        return (p, fx);
+    }
+
+    /// <summary>Pull, also returning per result segment whether it is passage geometry (a kept segment of a fixed run; a leg that skips points is free).</summary>
+    public static (List<Coordinate> points, List<bool> fixedSeg) PullFlags(IReadOnlyList<Coordinate> p, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, double trimM = 3000, double maxLegM = 30_000, int maxTests = 64)
     {
         var n = p.Count;
-        if (n < 3) return p.ToList();
+        if (n < 3) return (p.ToList(), fixedSeg.ToList());
         // runs of fixed segments: first and last point per run, run id per point (a run's end points belong to it)
         var run = new int[n]; var runS = new List<int>(); var runE = new List<int>();
         Array.Fill(run, -1);
@@ -366,10 +461,10 @@ public static class StringPull
                 if (++tests >= maxTests) break;
             }
         }
-        var result = new List<Coordinate>();
-        for (var k = n - 1; k > 0; k = prev[k]) result.Add(p[k]);
+        var result = new List<Coordinate>(); var fx = new List<bool>();
+        for (var k = n - 1; k > 0; k = prev[k]) { result.Add(p[k]); fx.Add(prev[k] == k - 1 && fixedSeg[k - 1]); }
         result.Add(p[0]);
-        result.Reverse();
-        return result;
+        result.Reverse(); fx.Reverse();
+        return (result, fx);
     }
 }

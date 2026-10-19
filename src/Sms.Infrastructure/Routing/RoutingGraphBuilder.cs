@@ -780,14 +780,17 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             // Two shapes of land crossing are fine: up to 50 m anywhere (a mole or pier), or a leading stretch of up to 1.5 km (the harbour's
             // own basin or creek, which the coastline polygons count as land, plus its mole or dike). Land after water on the way is a field
             // or a spit (150 m let the Schleimünde links cross the Lotseninsel, so routes cut through the island instead of using the mole gap).
-            var steps = (int)Math.Ceiling(lenM / 25); var onLand = 0; var leading = 0; var water = false;
+            var steps = (int)Math.Ceiling(lenM / 25); var onLand = 0; var leading = 0; var trailing = 0; var water = false; var middle = false;
             for (var k = 1; k < steps; k++)
             {
                 var q = Geo.Factory.CreatePoint(new Coordinate(p.X + (n.X - p.X) * k / steps, p.Y + (n.Y - p.Y) * k / steps));
-                if (hits.Any(l => l.Contains(q))) { onLand++; if (!water) leading++; } else water = true;
-                if (onLand > 2 && onLand > leading) break; // scattered land beyond 50 m: no need to look further
+                if (hits.Any(l => l.Contains(q))) { onLand++; trailing++; if (!water) leading++; } else { water = true; if (trailing > 0 && onLand > leading) middle = true; trailing = 0; }
+                if (middle || (onLand > 2 && onLand > leading + trailing)) break; // land between water: a mole or spit
             }
-            if (onLand <= 2 || (onLand == leading && leading * 25 <= 1500)) return n; // a Siel harbour sits behind its dike, 1 km from the river (Schülperneuensiel on the Eider)
+            // land between water on both sides is a mole, breakwater or spit: never linked across (Großenbrode: channel ends in the
+            // marina were linked across the mole to the water outside). Land at the start (a harbour on its pier, a Siel behind its
+            // dike up to 1.5 km) or up to 50 m at the far end (a node on the shore) is fine.
+            if (!middle && onLand - leading <= 2 && leading * 25 <= 1500) return n;
         }
         return null;
     }

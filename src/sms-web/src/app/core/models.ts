@@ -32,8 +32,9 @@ export interface Trip extends TripSummary {
   crew: Crew[]; me: Crew | null; canEdit: boolean; canWriteLogbook: boolean; isCrew: boolean; costsVisible: boolean; trackVisibility: Visibility; publicPositionDelayMinutes: number;
 }
 export interface Leg { id: string; order: number; alternative: number; fromHarbourId: string; fromName: string; toHarbourId: string; toName: string; plannedDate: string | null; distanceNm: number | null; etaHours: number | null; warnings?: RouteWarning[]; }
-/** A route assumption the chart data does not show (kind "assumedPassage": a strait the coastline closes, passed along a ferry line or buoy gap). */
-export interface RouteWarning { kind: string; lat: number; lng: number; note: string; }
+/** A route assumption the chart data does not show (kind "assumedPassage": a strait the coastline closes, passed along a ferry line or buoy gap).
+ *  Kind "startOnLand"/"endOnLand": the clicked point (lat/lng) lies on land, the route starts/ends at the nearest navigable water (snapped*, distanceM away). */
+export interface RouteWarning { kind: string; lat: number; lng: number; note: string; snappedLat?: number | null; snappedLng?: number | null; distanceM?: number | null; }
 /** " · ⚠ <notes>" for a route's warnings, "" without any. */
 export function routeWarningText(warnings?: RouteWarning[] | null): string { return warnings?.length ? ` · ⚠ ${warnings.map(w => w.note).join('; ')}` : ''; }
 

@@ -248,7 +248,8 @@ export class HarbourMapPage {
     map.addLayer({ id: 'harbour-points', type: 'circle', source: 'harbours', filter: ['!', ['has', 'point_count']], paint: { 'circle-color': ['case', ['boolean', ['get', 'selected'], false], '#e65100', '#1976d2'], 'circle-radius': 7, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } });
     map.addLayer({ id: 'harbour-labels', type: 'symbol', source: 'harbours', filter: ['!', ['has', 'point_count']], layout: { 'text-field': ['get', 'name'], 'text-size': 11, 'text-anchor': 'left', 'text-offset': [0.9, 0], 'text-font': ['Noto Sans Regular'], 'text-optional': true }, paint: { 'text-color': '#1b4d7a', 'text-halo-color': 'rgba(255,255,255,.9)', 'text-halo-width': 1.5 } });
     map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    map.addLayer({ id: 'route-line', type: 'line', source: 'route', paint: { 'line-color': '#1e88e5', 'line-width': 4 } });
+    map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['!=', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 4 } });
+    map.addLayer({ id: 'route-on-land', type: 'line', source: 'route', filter: ['==', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 1.5, 'line-dasharray': [1, 2] } });
     map.addLayer({ id: 'route-line-dashed', type: 'line', source: 'route', filter: ['==', ['get', 'dashed'], true], paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-dasharray': [2, 2] } });
     map.addLayer({ id: 'route-label', type: 'symbol', source: 'route', layout: { 'symbol-placement': 'line-center', 'text-field': ['get', 'label'], 'text-size': 12, 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#0d47a1', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
 
@@ -334,7 +335,7 @@ export class HarbourMapPage {
     this.api.get<{ distanceNm: number; straightLineNm: number; geometry: { coordinates: number[][] }; method: string; warnings?: RouteWarning[] }>('/api/routing/route', { from: `${h.lat},${h.lng}`, to: `${lat},${lng}`, ...this.shipCtx.routeParams() }).subscribe({
       next: r => {
         if (!this.pointPopup?.isOpen()) return;
-        this.pinned = false; this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line', !!r.warnings?.length); this.pinned = true;
+        this.pinned = false; this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line', !!r.warnings?.length, r.warnings); this.pinned = true;
         this.pointPopup.setDOMContent(textEl(r.method === 'straight-line' ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${r.straightLineNm} sm${routeWarningText(r.warnings)}`));
       },
       error: () => this.pointPopup?.setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie)`)),
@@ -354,10 +355,12 @@ export class HarbourMapPage {
       });
     }
   }
-  /** warned: the route uses an assumed passage (label "⚠"). */
-  private draw(coords: [number, number][], nm: number, dashed: boolean, warned = false): void {
+  /** warned: the route uses an assumed passage (label "⚠"); a start/end on land gets a thin dotted line to the water the route starts/ends at. */
+  private draw(coords: [number, number][], nm: number, dashed: boolean, warned = false, warnings?: RouteWarning[]): void {
     const map = this.map; if (!map) return;
-    (map.getSource('route') as GeoJSONSource).setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { label: `${nm} sm${warned ? ' ⚠' : ''}`, dashed }, geometry: { type: 'LineString', coordinates: coords } }] });
+    const onLand = (warnings ?? []).filter(w => (w.kind === 'startOnLand' || w.kind === 'endOnLand') && w.snappedLat != null && w.snappedLng != null)
+      .map(w => ({ type: 'Feature' as const, properties: { onLand: true }, geometry: { type: 'LineString' as const, coordinates: [[w.snappedLng!, w.snappedLat!], [w.lng, w.lat]] } }));
+    (map.getSource('route') as GeoJSONSource).setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { label: `${nm} sm${warned ? ' ⚠' : ''}`, dashed }, geometry: { type: 'LineString', coordinates: coords } }, ...onLand] });
     // the map stays where it is: hovering/pinning only draws (the view moves only when another harbour is selected)
   }
   hideRoute(force = false): void {

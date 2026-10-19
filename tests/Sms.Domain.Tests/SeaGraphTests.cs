@@ -162,6 +162,69 @@ public class SeaGraphTests
         var (_, graph, _, _, _) = Canal();
         Assert.Null(graph.SnapToPassage(new Coordinate(10 - 1 * D, 54), 300)); // next to the sea link only
     }
+
+    [Fact]
+    public void End_on_a_passage_edge_also_takes_the_node_in_sight_when_that_is_cheaper()
+    {
+        // the canal's ends are far round the bend; a water node next to the click, reached straight from the west sea, is the shorter way in
+        var g = new G();
+        int seaW = g.Node(-2, 0), seaE = g.Node(12, 4), w = g.Node(0, 0), e = g.Node(10, 4), near = g.Node(6, 2);
+        g.Edge(seaW, w); g.Edge(e, seaE); g.Edge(seaW, near);
+        g.Edge(w, e, interior: [(5, 0), (5, 4)]);
+        var graph = g.Build(firstPassage: 2);
+        var p = new Coordinate(10 + 5.0002 * D, 54 + 2 * D);
+        var snap = graph.SnapToPassage(p, 500)!;
+        var viaEdge = graph.Route(new(g.C(seaW), seaW), new(p, OnEdge: snap), new())!;
+        Assert.Contains(new Coordinate(10 + 5 * D, 54), viaEdge.Points); // round the canal's bend
+        var both = graph.Route(new(g.C(seaW), seaW), new(p, near, snap), new())!;
+        Assert.Equal([g.C(seaW), g.C(near), p], both.Points);
+        Assert.True(both.Cost < viaEdge.Cost);
+    }
+
+    [Fact]
+    public void Penalized_link_is_avoided_but_still_used_when_nothing_else_leads_on()
+    {
+        // a short link straight across a mole (a → b) and the long way round its head (a → head → b)
+        var g = new G();
+        int a = g.Node(0, 0), b = g.Node(1, 0), head = g.Node(0.5, -3);
+        var link = g.Edge(a, b); g.Edge(a, head); g.Edge(head, b);
+        var graph = g.Build();
+        Assert.DoesNotContain(g.C(head), graph.Route(new(g.C(a), a), new(g.C(b), b), new())!.Points);
+        var limits = new SeaGraph.Limits(Penalized: new HashSet<int> { link });
+        var round = graph.Route(new(g.C(a), a), new(g.C(b), b), limits)!;
+        Assert.Contains(g.C(head), round.Points);
+        Assert.DoesNotContain(link, round.Edges!);
+        // without the way round the link stays usable (a harbour reached only that way keeps its route)
+        var g2 = new G();
+        int a2 = g2.Node(0, 0), b2 = g2.Node(1, 0);
+        var only = g2.Edge(a2, b2);
+        Assert.NotNull(g2.Build().Route(new(g2.C(a2), a2), new(g2.C(b2), b2), new SeaGraph.Limits(Penalized: new HashSet<int> { only })));
+    }
+
+    [Fact]
+    public void Interior_land_is_a_mole_leading_or_trailing_land_is_a_shore()
+    {
+        // land as x-ranges along a leg from x = 0 to x = 1 (≈ 650 m at 54° N)
+        Func<Coordinate, bool> Land(params (double from, double to)[] r) => c => r.Any(x => (c.X - 10) / D >= x.from && (c.X - 10) / D <= x.to);
+        Coordinate a = new(10, 54), b = new(10 + D, 54);
+        Assert.True(SeaGraph.CrossesInteriorLand(a, b, Land((0.5, 0.54)))); // a 25 m mole in the middle
+        Assert.False(SeaGraph.CrossesInteriorLand(a, b, Land((0, 0.3)))); // a passage end on the shore
+        Assert.False(SeaGraph.CrossesInteriorLand(a, b, Land((0.8, 1)))); // the far end in a basin charted as land
+        Assert.False(SeaGraph.CrossesInteriorLand(a, b, Land()));
+        Assert.True(SeaGraph.CrossesInteriorLand(a, b, Land((0, 0.2), (0.6, 0.62)))); // shore, water, then a mole
+    }
+
+    [Fact]
+    public void Component_is_bounded()
+    {
+        var g = new G();
+        int a = g.Node(0, 0), b = g.Node(1, 0), c = g.Node(2, 0), lone = g.Node(5, 5);
+        g.Edge(a, b); g.Edge(b, c);
+        var graph = g.Build();
+        Assert.Equal([a, b, c], graph.Component(a, 10)!.Order());
+        Assert.Null(graph.Component(a, 2));
+        Assert.Equal([lone], graph.Component(lone, 10));
+    }
 }
 
 public class StringPullTests
@@ -227,6 +290,42 @@ public class StringPullTests
         var p = Line((0, 0), (1, 1), (2, 1), (3, 0));
         var pulled = StringPull.Pull(p, [false, true, false], Open, trimM: 50_000);
         Assert.Equal(p, pulled);
+    }
+
+    [Fact]
+    public void PullFlags_marks_kept_passage_segments_only()
+    {
+        var p = Line((0, 0), (1, 1), (2, 1), (3, 1), (4, 0));
+        var (pts, fx) = StringPull.PullFlags(p, [false, true, true, false], Open, trimM: 0);
+        Assert.Equal(p, pts); // a short run is never skipped
+        Assert.Equal([false, true, true, false], fx);
+        var (free, ffx) = StringPull.PullFlags(p, [false, false, false, false], Open);
+        Assert.Equal([p[0], p[^1]], free); Assert.Equal([false], ffx);
+    }
+
+    // a square island round (5, 0), 2 × 2 grid units
+    private static readonly Polygon Island = new GeometryFactory().CreatePolygon(Line((4, -1), (6, -1), (6, 1), (4, 1), (4, -1)).ToArray());
+    private static bool HitsIsland(Coordinate a, Coordinate b) => new GeometryFactory().CreateLineString([a, b]).Intersects(Island);
+
+    [Fact]
+    public void Tighten_pulls_a_wide_V_in_round_the_obstacle()
+    {
+        var p = Line((0, 0), (5, -6), (10, 0)); // the graph path swung far south of the island
+        var (t, fx) = StringPull.Tighten(p, [false, false], HitsIsland);
+        Assert.Equal(p[0], t[0]); Assert.Equal(p[^1], t[^1]);
+        for (var i = 1; i < t.Count; i++) Assert.False(HitsIsland(t[i - 1], t[i]));
+        Assert.True(StringPull.Length(t) < StringPull.Length(p) - 1000);
+        Assert.True(t.Min(c => c.Y) > 54 - 0.03); // close to the island's south side (y = -1), not out at -6
+        Assert.Equal(t.Count - 1, fx.Count);
+        // a corner the way is free across is dropped
+        Assert.Equal([p[0], p[^1]], StringPull.Tighten(p, [false, false], Open).points);
+    }
+
+    [Fact]
+    public void Tighten_leaves_corners_at_passage_geometry()
+    {
+        var p = Line((0, 0), (5, -6), (10, 0));
+        Assert.Equal(p, StringPull.Tighten(p, [true, false], HitsIsland).points);
     }
 
     [Fact]

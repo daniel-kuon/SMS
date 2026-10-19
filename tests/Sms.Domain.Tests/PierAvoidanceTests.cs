@@ -48,6 +48,20 @@ public class PierAvoidanceTests
     }
 
     [Fact]
+    public void Repull_drops_the_out_and_back_to_a_point_behind_a_jetty()
+    {
+        // the start lies east of the jetty, the graph's access node just west of it, the route then runs south-east (Großenbrode):
+        // the detour round the head reaches the access node and comes back – the second pull, piers blocking, leaves it out
+        Coordinate start = new(10.0055, 54.0), access = new(10.0045, 54.0), next = new(10.006, 53.99);
+        var (avoided, fx) = PierAvoidance.Apply([start, access, next], [false, false], Index(Jetty), (_, _) => false);
+        Assert.True(avoided.Count > 3); // round the head and back
+        var crosses = PierAvoidance.Crossing(Index(Jetty));
+        var final = StringPull.Pull(avoided, fx, crosses);
+        Assert.Equal([start, next], final);
+        Assert.False(Crosses(final, Jetty));
+    }
+
+    [Fact]
     public void Harbour_between_two_jetties_is_entered_through_the_gap()
     {
         var east = Line((10.0056, 53.999), (10.0056, 54.0005)); // ~40 m east of Jetty

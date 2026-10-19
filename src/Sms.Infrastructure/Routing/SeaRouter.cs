@@ -12,8 +12,9 @@ using Sms.Domain;
 namespace Sms.Infrastructure.Routing;
 
 public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, LineString Geometry, int GraphVersion, string Method, IReadOnlyDictionary<string, long>? Timings = null, IReadOnlyList<RouteWarning>? Warnings = null);
-/// <summary>Something the route assumes that the chart data does not show; Kind "assumedPassage": a passage through a strait the coastline closes.</summary>
-public sealed record RouteWarning(string Kind, double Lat, double Lng, string Note);
+/// <summary>Something the route assumes that the chart data does not show; Kind "assumedPassage": a passage through a strait the coastline closes.
+/// Kind "startOnLand"/"endOnLand": the clicked point (Lat/Lng) lay on land, the route starts/ends at the nearest navigable water (Snapped*, DistanceM away).</summary>
+public sealed record RouteWarning(string Kind, double Lat, double Lng, string Note, double? SnappedLat = null, double? SnappedLng = null, double? DistanceM = null);
 public sealed record NearbyResult(Guid HarbourId, decimal DistanceNm, decimal StraightLineNm);
 public sealed record GraphStatus(int ActiveVersion, string? BuiltAt, string? Region, long Nodes, long Edges);
 
@@ -85,7 +86,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// the nearest node (SnapAsync), unless a passage edge is closer – a contracted canal stretch has no node inside, so the
     /// end is projected onto it and the edge split there (the leg to the projection must not cross land while a node is at hand).
     /// </summary>
-    private async Task<SeaGraph.End?> EndAsync(Point p, int version, SeaGraph graph, CancellationToken ct)
+    private async Task<SeaGraph.End?> EndAsync(Point p, int version, SeaGraph graph, CancellationToken ct, bool toWater = true)
     {
         var access = await db.Database.SqlQueryRaw<long>("""
             SELECT a.node_id AS "Value" FROM "Harbours" h JOIN routing_harbour_access a ON a.harbour_id = h."Id" AND a.graph_version = {0}
@@ -93,10 +94,90 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             ORDER BY ST_Distance(h."Location", ST_SetSRID(ST_MakePoint({1}, {2}), 4326)::geography) LIMIT 1
             """, version, p.X, p.Y, HarbourSnapM).ToListAsync(ct);
         if (access.Count > 0) return new SeaGraph.End(p.Coordinate, (int)access[0]);
-        var (node, metres, maxM) = await SnapAsync(p, version, ct);
+        var (node, metres, maxM, onLand, visible) = await SnapAsync(p, version, ct);
         var onEdge = graph.SnapToPassage(p.Coordinate, node is null ? maxM : metres);
-        if (onEdge is not null && (node is null || !await CrossesLandAsync(p.Coordinate, onEdge.Point, version, ct))) return new SeaGraph.End(p.Coordinate, OnEdge: onEdge);
-        return node is { } n ? new SeaGraph.End(p.Coordinate, (int)n) : null;
+        // on the edge, the node in sight stays a second way in (SeaGraph.Anchors): the search takes the cheaper
+        var end = onEdge is not null && (node is null || !await CrossesLandAsync(p.Coordinate, onEdge.Point, version, ct)) ? new SeaGraph.End(p.Coordinate, visible && node is { } vn ? (int)vn : -1, onEdge)
+            : node is { } n ? new SeaGraph.End(p.Coordinate, (int)n) : null;
+        return onLand && toWater ? await LandEndAsync(p, end, version, graph, ct) : end;
+    }
+
+    /// <summary>A click on land keeps the snap above when its leg crosses at most this much land (a harbour basin or canal the coastline counts as land).</summary>
+    private const double ShortLandM = 300;
+    /// <summary>How far from a click on land the nearest navigable water is looked for.</summary>
+    private const double WaterSearchM = 2000;
+
+    /// <summary>
+    /// A map click on land: the snap (node or passage edge) stays when its first leg crosses no more than ShortLandM of land; otherwise
+    /// the route ends at the nearest point of navigable water - water with a node of the main component in it, or of a component that
+    /// holds a harbour's access node (a lake with a harbour; an isolated pond is skipped) - and the click is kept as End.OnLand, so the
+    /// route draws no line across land and the response says how far the click lies from the water. Null when no such water is within WaterSearchM.
+    /// </summary>
+    private async Task<SeaGraph.End?> LandEndAsync(Point p, SeaGraph.End? snapped, int version, SeaGraph graph, CancellationToken ct)
+    {
+        var c = p.Coordinate; var cos = Math.Max(0.2, Math.Cos(c.Y * Math.PI / 180));
+        var dLat = WaterSearchM / WaterGraphTiler.MPerDegLat; var dLng = dLat / cos;
+        var box = new Envelope(c.X - dLng, c.X + dLng, c.Y - dLat, c.Y + dLat);
+        var rows = await db.Database.SqlQueryRaw<GeomRow>("SELECT ST_ClipByBox2D(geom, ST_MakeEnvelope({1},{2},{3},{4},4326)) AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)",
+            version, box.MinX, box.MinY, box.MaxX, box.MaxY).ToListAsync(ct);
+        var pieces = rows.Select(r => r.Geom).Where(g => !g.IsEmpty).ToList();
+        Geometry land;
+        try { land = NetTopologySuite.Operation.Union.UnaryUnionOp.Union(pieces); }
+        catch (TopologyException) { land = NetTopologySuite.Operation.Union.UnaryUnionOp.Union(pieces.Select(g => g.Buffer(0)).ToList()); }
+        if (land is null || land.IsEmpty) return snapped;
+        var landPrepared = PreparedGeometryFactory.Prepare(land);
+        bool OnLand(Coordinate q) => landPrepared.Contains(Geo.Factory.CreatePoint(q));
+        if (snapped is not null)
+        {
+            var target = snapped.OnEdge?.Point ?? graph.Node(snapped.Node);
+            var legM = RoutingGraphBuilder.Haversine(c.Y, c.X, target.Y, target.X);
+            var steps = Math.Max(1, (int)Math.Ceiling(legM / 10));
+            var landM = 0.0;
+            for (var k = 1; k <= steps; k++) if (OnLand(new Coordinate(c.X + (target.X - c.X) * k / steps, c.Y + (target.Y - c.Y) * k / steps))) landM += legM / steps;
+            if (landM <= ShortLandM) return snapped;
+        }
+        var water = Geo.Factory.ToGeometry(box).Difference(land);
+        var nodes = await db.Database.SqlQueryRaw<SnapRow>("""
+            SELECT id AS "Id", 0::float8 AS "Metres", ST_X(geom) AS "X", ST_Y(geom) AS "Y", false AS "Isolated" FROM routing_node
+            WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)
+            """, version, box.MinX, box.MinY, box.MaxX, box.MaxY).ToListAsync(ct);
+        var nodeIndex = new STRtree<SnapRow>(); foreach (var n in nodes) nodeIndex.Insert(new Envelope(n.X, n.X, n.Y, n.Y), n);
+        nodeIndex.Build();
+        // nearest points in a metric frame (longitude scaled by cos φ): in plain degrees a point east or west looks 1.7 times farther than it is
+        var toM = NetTopologySuite.Geometries.Utilities.AffineTransformation.ScaleInstance(cos, 1);
+        var pt = toM.Transform(Geo.Factory.CreatePoint(c));
+        var candidates = Enumerable.Range(0, water.NumGeometries).Select(i => water.GetGeometryN(i)).Where(g => g is Polygon && !g.IsEmpty)
+            .Select(g => (g, near: NetTopologySuite.Operation.Distance.DistanceOp.NearestPoints(toM.Transform(g), pt)[0]))
+            .Select(x => (x.g, near: new Coordinate(x.near.X / cos, x.near.Y)))
+            .Select(x => (x.g, x.near, m: RoutingGraphBuilder.Haversine(c.Y, c.X, x.near.Y, x.near.X))).OrderBy(x => x.m).ToList();
+        var components = new Dictionary<int, bool>(); // node → its isolated component holds a harbour access node
+        foreach (var (g, near, m) in candidates)
+        {
+            if (m > WaterSearchM) break;
+            var prepared = PreparedGeometryFactory.Prepare(g);
+            var inside = nodeIndex.Query(g.EnvelopeInternal).Where(n => prepared.Contains(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)))).Select(n => (int)n.Id).ToList();
+            var navigable = inside.Any(id => !graph.IsIsolated(id));
+            foreach (var id in inside.Take(5)) // isolated water: navigable when a harbour hooks into its component
+            {
+                if (navigable) break;
+                if (!components.TryGetValue(id, out var ok))
+                {
+                    var comp = graph.Component(id, 200_000);
+                    ok = comp is null || await db.Database.SqlQueryRaw<int>("SELECT 1 AS \"Value\" FROM routing_harbour_access WHERE graph_version = {0} AND node_id = ANY({1})", version, comp.Select(x => (long)x).ToArray()).AnyAsync(ct);
+                    foreach (var x in comp ?? [id]) components[x] = ok;
+                }
+                navigable = ok;
+            }
+            if (!navigable) continue;
+            // a step past the shore into the water, so the water end does not lie on the land boundary itself
+            var dx = (near.X - c.X) * cos; var dy = near.Y - c.Y; var len = Math.Sqrt(dx * dx + dy * dy);
+            var step = 2 / WaterGraphTiler.MPerDegLat;
+            var w = len > 0 ? new Coordinate(near.X + dx / len * step / cos, near.Y + dy / len * step) : near;
+            if (OnLand(w)) w = near;
+            var end = await EndAsync(Geo.Point(w.Y, w.X), version, graph, ct, toWater: false);
+            if (end is not null) return end with { OnLand = c };
+        }
+        return null;
     }
 
     private async Task<bool> CrossesLandAsync(Coordinate a, Coordinate b, int version, CancellationToken ct) =>
@@ -236,17 +317,58 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         timings ??= []; var clock = Stopwatch.StartNew();
         var o = builder.Options;
         var limits = new SeaGraph.Limits(airDraftM, draftM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat, NoAssumed: !o.AssumedPassages);
-        var path = graph.Route(from, to, limits);
-        timings["astar"] = clock.ElapsedMilliseconds; clock.Restart();
+        // the builder lets a passage end's link into the water graph cross up to 50 m of land (a harbour point on its pier): from a marina
+        // channel that is a link straight across the mole (Großenbrode). Links on the path that cross land with water on both sides
+        // cost Limits.PenaltyM (20 km) extra and the search runs again: they stay usable where nothing else leads on, as before
+        var penalized = new HashSet<int>(); var checkedLinks = new HashSet<int>(); var rounds = 0;
+        SeaGraph.Path? path;
+        while (true)
+        {
+            path = graph.Route(from, to, limits with { Penalized = penalized });
+            if (path?.Edges is null || rounds++ == 8) break;
+            var bad = await LandLinksAsync(graph, path.Edges.Where(e => graph.IsLink(e) && checkedLinks.Add(e)).ToList(), version, ct);
+            if (bad.Count == 0) break;
+            // the other links at both ends of a bad one go with it: a water node beyond a mole collects the links of a whole marina
+            var near = bad.SelectMany(e => graph.EdgesAt(graph.Source(e)).Concat(graph.EdgesAt(graph.Target(e)))).Where(e => graph.IsLink(e) && checkedLinks.Add(e)).ToList();
+            bad.AddRange(await LandLinksAsync(graph, near, version, ct));
+            penalized.UnionWith(bad);
+        }
+        timings["astar"] = clock.ElapsedMilliseconds; timings["astar-rounds"] = rounds; timings["penalized-links"] = penalized.Count; clock.Restart();
         if (path is null) { logger.LogInformation("No sea route between {From} and {To}", from, to); return null; }
         span?.SetTag("routing.settled", path.Settled);
+        Stage("astar", path.Points);
         var smoothed = await SmoothAsync(path.Points, path.Fixed, version, ct, airDraftM, draftM, timings);
         timings["smooth"] = clock.ElapsedMilliseconds;
         var metres = 0.0;
         for (var i = 1; i < smoothed.Count; i++) metres += RoutingGraphBuilder.Haversine(smoothed[i - 1].Y, smoothed[i - 1].X, smoothed[i].Y, smoothed[i].X);
         var line = Geo.Factory.CreateLineString(smoothed.ToArray());
         span?.SetTag("routing.distance_nm", metres / Nm);
-        return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph", timings, await WarningsAtAsync(path.Assumed ?? [], ct));
+        var warnings = await WarningsAtAsync(path.Assumed ?? [], ct);
+        if (from.OnLand is { } fl) warnings.Insert(0, LandWarning("startOnLand", fl, a, "Start liegt an Land – Route beginnt am nächsten Wasser"));
+        if (to.OnLand is { } tl) warnings.Add(LandWarning("endOnLand", tl, b, "Ziel liegt an Land – Route endet am nächsten Wasser"));
+        return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph", timings, warnings);
+    }
+
+    /// <summary>The link edges among these that cross land with water on both sides (SeaGraph.CrossesInteriorLand), against the land clipped around each.</summary>
+    private async Task<List<int>> LandLinksAsync(SeaGraph graph, List<int> links, int version, CancellationToken ct)
+    {
+        var bad = new List<int>();
+        // links close together (the neighbours of a bad one) share one land query; links far apart (both ends of a long route) get their own
+        var all = new Envelope(); foreach (var e in links) { var cs = graph.Coords(e); all.ExpandToInclude(cs[0]); all.ExpandToInclude(cs[^1]); }
+        var groups = all.IsNull ? [] : all.Width < 0.1 && all.Height < 0.1 ? [links] : links.Select(e => new List<int> { e }).ToList();
+        foreach (var group in groups)
+        {
+            var env = new Envelope(); foreach (var e in group) { var cs = graph.Coords(e); env.ExpandToInclude(cs[0]); env.ExpandToInclude(cs[^1]); }
+            env.ExpandBy(0.0005);
+            var land = await db.Database.SqlQueryRaw<GeomRow>("SELECT ST_ClipByBox2D(geom, ST_MakeEnvelope({1},{2},{3},{4},4326)) AS \"Geom\" FROM routing_land WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)",
+                version, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
+            var index = new STRtree<IPreparedGeometry>();
+            foreach (var l in land) if (!l.Geom.IsEmpty) index.Insert(l.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(l.Geom));
+            if (index.Count == 0) continue;
+            bool OnLand(Coordinate c) { var pt = Geo.Factory.CreatePoint(c); return index.Query(new Envelope(c)).Any(g => g.Contains(pt)); }
+            foreach (var e in group) { var cs = graph.Coords(e); if (SeaGraph.CrossesInteriorLand(cs[0], cs[^1], OnLand)) bad.Add(e); }
+        }
+        return bad;
     }
 
     /// <summary>Warnings for the assumed edges a path used (their midpoints), each with the note of the nearest "Annahme" correction.</summary>
@@ -261,6 +383,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             result.Add(Warning(c, note));
         }
         return result;
+    }
+
+    private static RouteWarning LandWarning(string kind, Coordinate land, Coordinate water, string text)
+    {
+        var m = Math.Round(RoutingGraphBuilder.Haversine(land.Y, land.X, water.Y, water.X));
+        return new RouteWarning(kind, Math.Round(land.Y, 6), Math.Round(land.X, 6), $"{text} ({m:0} m)", Math.Round(water.Y, 6), Math.Round(water.X, 6), m);
     }
 
     private static RouteWarning Warning(Coordinate at, string? note) =>
@@ -439,18 +567,45 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             foreach (var g in index.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
             return InUnchartedZone(seg, zone, deep);
         }
-        var result = StringPull.Pull(path, fixedSeg, Blocked, builder.Options.PassageTrimM);
+        var (result, resultFixed) = StringPull.PullFlags(path, fixedSeg, Blocked, builder.Options.PassageTrimM);
         Lap("smooth-pull");
-        if (timings is not null) { timings["smooth-points"] = path.Count; timings["smooth-tests"] = tests; }
+        if (timings is not null) { timings["smooth-points"] = path.Count; timings["smooth-tests"] = tests; timings["pulled-points"] = result.Count; }
+        Stage("pulled", result);
         // piers, jetties, breakwaters are not in the land: legs that cross one are rerouted round it locally, the blockers above still blocking
         var piers = await PiersAsync();
+        Func<Coordinate, Coordinate, bool> finalBlocked = Blocked;
         if (piers.Count > 0)
         {
-            try { result = PierAvoidance.Apply(result, piers, Blocked); }
+            try
+            {
+                var (avoided, avoidedFixed) = PierAvoidance.Apply(result, resultFixed, piers, Blocked);
+                Stage("piers", avoided);
+                Lap("smooth-piers");
+                // the detours are local: a detour round a pier head can make the next route point an out-and-back (the harbour access
+                // node behind a jetty, a grid node beyond a mole's head – Großenbrode). A second pull over the finished points, piers
+                // blocking now too, drops every point the route can do without (it never gets longer, passage shapes stay)
+                var crossesPier = PierAvoidance.Crossing(piers);
+                finalBlocked = (p, q) => crossesPier(p, q) || Blocked(p, q);
+                (result, resultFixed) = StringPull.PullFlags(avoided, avoidedFixed, finalBlocked, builder.Options.PassageTrimM);
+                if (timings is not null) { timings["pier-points"] = avoided.Count; timings["repulled-points"] = result.Count; }
+                Stage("repulled", result);
+            }
             catch (Exception ex) when (ex is NetTopologySuite.Geometries.TopologyException or ArgumentException) { logger.LogWarning(ex, "Pier avoidance skipped"); } // a bad OSM pier must never cost the route
         }
-        Lap("smooth-piers");
+        Lap("smooth-repull");
+        // corners the pull could not cut because the path has no point near the obstacle (StringPull.Tighten)
+        (result, _) = StringPull.Tighten(result, resultFixed, finalBlocked);
+        if (timings is not null) timings["final-points"] = result.Count;
+        Stage("tightened", result);
+        Lap("smooth-tighten");
         return result;
+    }
+
+    // SMS_ROUTE_STAGES=1 logs the polyline after each smoothing stage (RouteBench, debugging)
+    private static readonly bool LogStages = Environment.GetEnvironmentVariable("SMS_ROUTE_STAGES") == "1";
+    private void Stage(string name, List<Coordinate> points)
+    {
+        if (LogStages) logger.LogInformation("stage {Stage} ({Count}): {Points}", name, points.Count, string.Join(" ", points.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
     }
 
     /// <summary>True when every sample of the leg (every ~100 m) lies in a deep-enough depth area.</summary>
@@ -491,7 +646,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// Nearest graph node for a map click. On water the grid is coarse offshore (cells up to StartCellM wide), so the search
     /// reaches a whole cell; on land (coast, harbour basins counted as land) only 2 km, so inland clicks stay unroutable.
     /// </summary>
-    private async Task<(long? Id, double Metres, double MaxM)> SnapAsync(Point p, int version, CancellationToken ct)
+    private async Task<(long? Id, double Metres, double MaxM, bool OnLand, bool Visible)> SnapAsync(Point p, int version, CancellationToken ct)
     {
         var onLand = await db.Database.SqlQueryRaw<int>("SELECT 1 AS \"Value\" FROM routing_land WHERE graph_version = {0} AND geom && ST_SetSRID(ST_MakePoint({1}, {2}), 4326) AND ST_Intersects(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326))", version, p.X, p.Y).AnyAsync(ct);
         var maxM = onLand ? 2000 : Math.Max(2000, builder.Options.StartCellM);
@@ -518,13 +673,14 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                     .FirstOrDefault(n => { var leg = Geo.Factory.CreateLineString([p.Coordinate, new Coordinate(n.X, n.Y)]); return !prepared.Any(g => g.Intersects(leg)); });
             }
         }
+        var visible = row is not null;
         row ??= await db.Database.SqlQueryRaw<SnapRow>("""
             SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres", ST_X(geom) AS "X", ST_Y(geom) AS "Y", false AS "Isolated"
             FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
               AND ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) <= {5} -- the box corners are farther: a grid node there must not beat a passage node next to the point
             ORDER BY EXISTS (SELECT 1 FROM routing_isolated i WHERE i.graph_version = {0} AND i.id = routing_node.id), CASE WHEN id <= (SELECT COALESCE(MAX(value::bigint), 0) FROM routing_meta WHERE key = 'grid_nodes') THEN 0 ELSE 1 END, geom <-> ST_SetSRID(ST_MakePoint({1}, {2}), 4326) LIMIT 1
             """, version, p.X, p.Y, degLng, degLat, maxM).FirstOrDefaultAsync(ct);
-        return row is not null && row.Metres <= maxM ? (row.Id, row.Metres, maxM) : (null, 0, maxM);
+        return row is not null && row.Metres <= maxM ? (row.Id, row.Metres, maxM, onLand, visible) : (null, 0, maxM, onLand, false);
     }
 
     private static Envelope Expand(Point a, Point b, double metres)

@@ -28,8 +28,12 @@ await using var sp = services.BuildServiceProvider();
     ("2 Grömitz → Jade (Block area)", 54.13532689555557, 10.947591658888884, 53.604536351699096, 8.212714462108408, 2),
     ("3 Grömitz → Kiel Canal", 54.13532689555557, 10.947591658888884, 54.370083589266216, 10.084013717414763, 1.5),
 ];
+// further arguments replace the list: "lat1,lng1,lat2,lng2,draft" each (one run, geometry printed)
+var custom = args.Skip(2).Select(a => a.Split(',').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray()).ToList();
+if (custom.Count > 0) routes = custom.Select((v, i) => ($"{i + 1} custom", v[0], v[1], v[2], v[3], v[4])).ToArray();
+var runs = custom.Count > 0 ? 1 : 3;
 var before = GC.GetTotalMemory(true);
-for (var run = 0; run < 3; run++)
+for (var run = 0; run < runs; run++)
     foreach (var r in routes)
     {
         using var scope = sp.CreateScope();
@@ -38,6 +42,7 @@ for (var run = 0; run < 3; run++)
         var res = await router.RouteAsync(Geo.Point(r.lat1, r.lng1), Geo.Point(r.lat2, r.lng2), default, null, r.draft);
         var t = sw.ElapsedMilliseconds;
         Console.WriteLine($"run {run} {r.name}: {t} ms, {(res is null ? "no route (straight line)" : $"{res.DistanceNm} nm, {res.Geometry.NumPoints} pts, {string.Join(' ', res.Timings!.Select(kv => $"{kv.Key}={kv.Value}"))}")}");
+        if (custom.Count > 0 && res is not null) Console.WriteLine("  " + string.Join(" ", res.Geometry.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))) + string.Concat((res.Warnings ?? []).Select(w => $"  [{w.Kind}: {w.Note}]")));
         if (run == 1 && res is not null && outDir is not null)
             await File.WriteAllTextAsync(Path.Combine(outDir, $"route{r.name[0]}.json"), "[" + string.Join(",", res.Geometry.Coordinates.Select(c => FormattableString.Invariant($"[{c.X:F6},{c.Y:F6}]"))) + "]");
     }
