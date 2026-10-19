@@ -5,9 +5,14 @@
 #
 #   tools/build-basemap.sh schleswig-holstein            # full detail (z0–14) for one Geofabrik area, ≈ 3 min → basemap.pmtiles
 #   tools/build-basemap.sh europe                        # full detail for Europe: hours, ≈ 25 GB, ≈ 60 GB temp, 32+ GB RAM → basemap-europe.pmtiles
-#   tools/build-basemap.sh lean europe                   # z0–12 without buildings/POIs/house numbers → basemap-lean-europe.pmtiles (≈ 3–4 GB)
+#   tools/build-basemap.sh lean region                   # z0–12, only water/waterway/water_name/place/transportation(_name)/boundary → basemap-lean-region.pmtiles
 #   tools/build-basemap.sh detail europe harbours.poly   # z12–14 full detail only inside the polygon (3 km around every harbour,
 #                                                        #   GET /api/admin/map/harbour-areas.poly) → basemap-detail.pmtiles
+#
+# Area "region" is the routing region cut out of the Europe PBF (4.5–19.5 E, 52–60 N, docs/15):
+#   osmium extract -b 4.5,52,19.5,60 --strategy=simple -o media/cache/osm/region.osm.pbf media/cache/osm/europe-latest.osm.pbf
+# Env: OUT_NAME=<file> overrides the output name (e.g. basemap-detail.pmtiles.new, which Martin does not serve),
+#      JAVA_XMX (heap), DOCKER_MEM (container cap, default 40g), THREADS (Planetiler threads, default 12).
 #
 # Only the single-area full build writes basemap.pmtiles itself. Every other build writes its own file, because Martin
 # serves media/tiles live and a --force build would pull the file from under the running server; activate a result with
@@ -25,22 +30,25 @@ HOST="$(pwd -W 2>/dev/null || pwd)"
 EXTRA=()
 case "$MODE" in
   full)   if [ "$AREA" = "schleswig-holstein" ]; then OUT="basemap.pmtiles"; else OUT="basemap-$AREA.pmtiles"; fi;;
-  lean)   OUT="basemap-lean-$AREA.pmtiles"; EXTRA+=(--maxzoom=12 --exclude_layers=building,housenumber,poi,aerodrome_label,park);;
+  lean)   OUT="basemap-lean-$AREA.pmtiles"; EXTRA+=(--maxzoom=12 --only_layers=water,waterway,water_name,place,transportation,transportation_name,boundary);;
   detail) OUT="basemap-detail.pmtiles"
           [ -f "$POLY" ] || { echo "detail mode needs a .poly file (GET /api/admin/map/harbour-areas.poly > media/cache/harbours.poly)"; exit 1; }
           cp "$POLY" media/cache/planetiler-tmp/area.poly; EXTRA+=(--polygon=/poly/area.poly --minzoom=12);;
 esac
-PBF="media/cache/osm/${AREA}-latest.osm.pbf"
-if [ -f "$PBF" ]; then SRC=(--osm_path="/osm/${AREA}-latest.osm.pbf" --download); else SRC=(--download); fi
+OUT="${OUT_NAME:-$OUT}"
+PBFNAME="${AREA}-latest.osm.pbf"; [ "$AREA" = "region" ] && PBFNAME="region.osm.pbf"
+if [ -f "media/cache/osm/$PBFNAME" ]; then SRC=(--osm_path="/osm/$PBFNAME" --download); else SRC=(--download); fi
 # RAM: Europe wants ≥ 32 GB heap plus page cache for the memory-mapped temp files; small areas are fine with 4 GB
 XMX="${JAVA_XMX:-4g}"; STORAGE=()
+# the osmium cut has no bbox in its header, and without bounds Planetiler would fill the whole world with ocean tiles
+if [ "$AREA" = "region" ]; then XMX="${JAVA_XMX:-12g}"; EXTRA+=(--bounds=4.5,52,19.5,60); fi
 # Europe: the in-memory node map (array/ram) needs > 100 GB; the memory-mapped sparse map runs in ~ 30 GB heap, slower but safe
 if [ "$AREA" = "europe" ]; then XMX="${JAVA_XMX:-32g}"; STORAGE=(--storage=mmap --nodemap_type=sparsearray --nodemap_storage=mmap); fi
-# Planetiler writes into the volume; the file reaches media/tiles only when complete (a stub left by a killed run makes Martin refuse to start)
-MSYS_NO_PATHCONV=1 docker run --rm -e JAVA_TOOL_OPTIONS="-Xmx$XMX" \
+# Planetiler (format is taken from the file extension, hence build.pmtiles) writes into the volume; the file reaches media/tiles only when complete (a stub left by a killed run makes Martin refuse to start)
+MSYS_NO_PATHCONV=1 docker run --rm --memory="${DOCKER_MEM:-40g}" --cpus="${THREADS:-12}" -e JAVA_TOOL_OPTIONS="-Xmx$XMX" \
   -v "$HOST/media/tiles:/data" -v "$HOST/media/cache/osm:/osm" -v "$HOST/media/cache/planetiler-tmp:/poly" -v sms-planetiler-tmp:/tmp-data ghcr.io/onthegomap/planetiler:latest \
-  "${SRC[@]}" --area="$AREA" --output="/tmp-data/$OUT.part" --force --tmpdir=/tmp-data/tmp "${STORAGE[@]}" "${EXTRA[@]}"
-MSYS_NO_PATHCONV=1 docker run --rm -v sms-planetiler-tmp:/tmp-data -v "$HOST/media/tiles:/data" alpine sh -c "mv /tmp-data/$OUT.part /data/$OUT"
+  "${SRC[@]}" --area="$AREA" --output="/tmp-data/build.pmtiles" --force --tmpdir=/tmp-data/tmp --threads="${THREADS:-12}" "${STORAGE[@]}" "${EXTRA[@]}"
+MSYS_NO_PATHCONV=1 docker run --rm -v sms-planetiler-tmp:/tmp-data -v "$HOST/media/tiles:/data" alpine sh -c "mv /tmp-data/build.pmtiles /data/$OUT"
 rm -f media/cache/planetiler-tmp/area.poly
 docker run --rm -v sms-planetiler-tmp:/tmp-data alpine sh -c "rm -rf /tmp-data/tmp" >/dev/null 2>&1 || true
 ls -la "media/tiles/$OUT"
