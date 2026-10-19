@@ -41,8 +41,10 @@ public sealed class RoutingOptions
     /// <summary>Interior passage vertices link to a water node this close, so fairways and canals can be joined along their length (ends use HarbourAccessM).</summary>
     public double PassageLinkM { get; set; } = 600;
     public double ChannelPenaltyFactor { get; set; } = 3;
-    /// <summary>Edges inside an Avoid correction (warning area, firing range) cost ×this, by the length inside.</summary>
-    public double AvoidPenaltyFactor { get; set; } = 3;
+    /// <summary>Edges inside an Avoid correction (warning area, firing range) cost ×this, by the length inside. Firing ranges are
+    /// active on announced days only and yachts cross them otherwise: ×3 sent Marstal→Lippe (between Todendorf and Putlos) 6.6 nm
+    /// round, the logged track runs straight through; ×1.3 keeps a slight preference for going round.</summary>
+    public double AvoidPenaltyFactor { get; set; } = 1.3;
     /// <summary>A derived channel through water charted shallower than the default yacht (not drying) costs ×this: the depth areas are coarse in narrow sounds.</summary>
     public double ShallowChannelFactor { get; set; } = 1.5;
     /// <summary>A leg up to this length that the coast buffer closes is still added when it clears the land buffered by NarrowBufferM, at ×NarrowLegFactor (sound entrances, harbour mouths narrower than 2 × CoastBufferM). 0 = off.</summary>
