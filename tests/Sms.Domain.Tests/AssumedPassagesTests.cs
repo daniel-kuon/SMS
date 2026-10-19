@@ -26,6 +26,15 @@ public class AssumedPassagesTests
     }
 
     [Fact]
+    public void A_long_coast_zone_run_from_the_line_end_is_kept()
+    {
+        // the line starts in a narrow sound: 1.6 km in the coast zone from the terminal on
+        var s = Assert.Single(AssumedPassages.Stretches(Line, Land(), Land((9.9, 10.025))));
+        Assert.False(s.Land);
+        Assert.Equal(0, s.From);
+    }
+
+    [Fact]
     public void Close_crossings_are_joined_far_ones_kept_apart_long_ones_dropped()
     {
         // 10.045 → 10.06 ≈ 980 m apart: within 2 × margin + join

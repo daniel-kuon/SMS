@@ -350,7 +350,7 @@ public static class RoutingEndpoints
                 created.Add((line, note, graphM));
             }
             foreach (var (line, note, _) in created)
-                db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = line, Active = true, CreatedById = current.Id, Note = $"{note} ({LengthNm(line):0.0} sm)" });
+                db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = Srid(Geo.Factory.CreateLineString(line.Coordinates.Select(c => new Coordinate(c.X, c.Y)).ToArray())), Active = true, CreatedById = current.Id, Note = $"{note} ({LengthNm(line):0.0} sm)" }); // 2D: interpolated points carried Z (NaN), the column is XY
             await db.SaveChangesAsync(ct);
             return Results.Ok(new
             {

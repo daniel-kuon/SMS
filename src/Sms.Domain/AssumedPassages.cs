@@ -24,7 +24,7 @@ public static class AssumedPassages
     /// maxLandM of land dropped (a line drawn across an island), widened by marginM each way and merged when they come within joinM.
     /// </summary>
     public static List<Stretch> Stretches(IReadOnlyList<Coordinate> line, Func<Coordinate, bool> onLand, Func<Coordinate, bool>? nearLand = null,
-        double stepM = 25, double marginM = 500, double joinM = 500, double maxLandM = 2000)
+        double stepM = 25, double marginM = 500, double joinM = 500, double maxLandM = 2000, double quayM = 400)
     {
         var (pts, along) = Samples(line, stepM);
         var state = pts.Select(p => onLand(p) ? 2 : nearLand?.Invoke(p) == true ? 1 : 0).ToArray();
@@ -36,7 +36,10 @@ public static class AssumedPassages
             var j = i; var landM = 0.0;
             while (j + 1 < state.Length && state[j + 1] != 0) j++;
             for (var k = i; k <= j; k++) if (state[k] == 2) landM += k + 1 < along.Length ? along[k + 1] - along[k] : 0;
-            if (i > 0 && j < state.Length - 1 && landM <= maxLandM)
+            // a run at a line end is the ferry's quay – unless it is long: in a narrow sound the line lies in the coast zone from the
+            // terminal on (Skurusundet–Lännerstasundet–Baggensstäket, 59.30 N 18.22–18.29 E, merged ferry ways ending in the sound)
+            var atEnd = i == 0 || j == state.Length - 1;
+            if ((!atEnd || along[j] - along[i] > quayM) && landM <= maxLandM)
                 runs.Add(new Stretch(Math.Max(0, along[i] - marginM), Math.Min(total, along[j] + marginM), landM > 0));
             i = j;
         }
