@@ -19,9 +19,10 @@ import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, HarbourService, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
 import { Location } from '@angular/common';
-import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, ServiceSpot, setPoiFocus, setServiceHighlight, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
+import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, ServiceSpot, setPoiFocus, setServiceActive, setServiceHighlight, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
 import { formatServiceDistance } from '../../core/service-distance';
+import { googleRouteUrl, PlaceRow, placeRows, ServicePlace } from '../../core/service-place';
 import { appI18n } from '../../core/site';
 import { TranslateService } from '@ngx-translate/core';
 import { UploadZone } from '../../shared/shared';
@@ -68,6 +69,14 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
             <div class="services" [attr.aria-label]="'harbour.services' | translate">@for (s of services(); track s.kind) {
               <span class="chip svc" role="button" tabindex="0" [class.active]="activeService() === s.kind" (click)="toggleService(s)" (keydown.enter)="toggleService(s)" [title]="('harbour.svc.' + s.kind | translate) + (s.name ? ': ' + s.name : '')"><mat-icon inline>{{ serviceIcon(s.kind) }}</mat-icon> {{ distance(s.distanceM) }}</span>
             }</div>
+            @if (places().length) {
+              <ul class="places">@for (p of places(); track p.id; let i = $index) {
+                <li [id]="'svc-place-' + i" [class.sel]="selected() === i" (mouseenter)="focusPlace(i)" (mouseleave)="focusPlace(null)" (click)="selectPlace(i)">
+                  <div><b>{{ p.name }}</b> <span class="muted">· {{ p.dist }}</span></div>
+                  @for (r of p.rows; track r.label) { <div class="muted">{{ r.label }}: @if (r.href) { <a [href]="r.href" target="_blank" rel="noopener" (click)="$event.stopPropagation()">{{ r.value }}</a> } @else { {{ r.value }} }</div> }
+                  <a [href]="p.route" target="_blank" rel="noopener" (click)="$event.stopPropagation()"><mat-icon inline>directions_walk</mat-icon> {{ 'harbour.googleRoute' | translate }}</a>
+                </li> }</ul>
+            } @else if (placesEmpty()) { <p class="muted">{{ 'harbour.noPlaces' | translate }}</p> }
           }
           @if (h.photoUrls.length) { <div class="photo-grid">@for (p of h.photoUrls; track p) { <img [src]="p" /> }</div> }
           @if (auth.me() && h.id) { <app-upload [url]="'/api/harbours/' + h.id + '/photos'" (uploaded)="load(h.id)" /> }
@@ -124,7 +133,8 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     .ship-ctx { position: absolute; left: 50px; top: 10px; background: rgba(255,255,255,.95); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.3); padding: 4px 8px; display: flex; gap: 8px; align-items: center; font-size: 12px; z-index: 2; }
     .ship-ctx input { width: 44px; } .ship-ctx select { max-width: 140px; } .ship-ctx .small { font-size: 11px; }
     .full-width { width: 100%; }
-    .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; } .svc.active { outline: 2px solid #e65100; } .svc mat-icon { font-size: 16px; }
+    .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; } .svc.active { outline: 2px solid #e65100; }
+    .places { list-style: none; margin: 0 0 8px; padding: 0; max-height: 40vh; overflow-y: auto; font-size: 13px; } .places li { padding: 6px 8px; border-bottom: 1px solid #e0e0e0; cursor: pointer; } .places li:hover, .places li.sel { background: #fff3e0; } .places li.sel { border-left: 3px solid #d50000; } .places a mat-icon { font-size: 14px; vertical-align: middle; } .svc mat-icon { font-size: 16px; }
     @media (max-width: 800px) { .layout { flex-direction: column; } .panel.open { width: 100%; } }
   `,
 })
@@ -151,20 +161,52 @@ export class HarbourMapPage {
   private translate = inject(TranslateService);
   distance = (m: number) => formatServiceDistance(m, appI18n.lang(), this.translate.instant('harbour.onSite') as string);
   activeService = signal<string | null>(null);
-  /** Highlights where the service is around the harbour (all POIs of that kind within 1.5 km, nearest emphasised); again = off. A facility flag without a POI is the harbour itself. */
+  /** The places of the active service, nearest first, as the side-panel list shows them. */
+  places = signal<{ id: number; name: string; dist: string; rows: PlaceRow[]; route: string }[]>([]);
+  placesEmpty = signal(false);
+  selected = signal<number | null>(null);
+  /** Highlights where the service is around the harbour (the nearest 50 POIs of that kind within 5 km with a line from the harbour, nearest emphasised) and lists them; again = off. A facility flag without a POI is the harbour itself. */
   toggleService(s: HarbourService): void {
     const h = this.harbour(), map = this.map;
     if (!h || !map) return;
     if (this.activeService() === s.kind) { this.clearService(); return; }
+    this.clearService();
     this.activeService.set(s.kind);
     const label = this.translate.instant('harbour.svc.' + s.kind) as string;
     if (!s.poiId) { setServiceHighlight(map, [{ lat: h.lat, lng: h.lng, text: `${label}: ${this.distance(0)}`, nearest: true }], h); return; }
-    this.api.get<{ name: string | null; lat: number; lng: number; distanceM: number }[]>('/api/pois/near', { lat: h.lat, lng: h.lng, kind: s.kind, radiusM: 1500 }).subscribe(r => {
+    this.api.get<ServicePlace[]>('/api/pois/near', { lat: h.lat, lng: h.lng, kind: s.kind, radiusM: 5000 }).subscribe(r => {
       if (this.activeService() !== s.kind || this.harbour() !== h || !this.map) return;
-      setServiceHighlight(this.map, r.map((p, i): ServiceSpot => ({ lat: p.lat, lng: p.lng, text: `${p.name ?? label} · ${this.distance(p.distanceM)}`, nearest: i === 0 })), h);
+      const lang = appI18n.lang(), t = (k: string) => this.translate.instant('harbour.' + k) as string;
+      const labels = { hours: t('openingHours'), cuisine: t('cuisine'), website: t('website'), phone: t('phone'), address: t('address') };
+      const view = r.map((p, i) => ({ p, name: p.name ?? label, dist: this.distance(p.distanceM), rows: placeRows(p, lang, labels), route: googleRouteUrl(h, p), nearest: i === 0 }));
+      this.places.set(view.map(v => ({ id: v.p.id, name: v.name, dist: v.dist, rows: v.rows, route: v.route })));
+      this.placesEmpty.set(!r.length);
+      setServiceHighlight(this.map, view.map((v): ServiceSpot => ({
+        lat: v.p.lat, lng: v.p.lng, text: `${v.name} · ${v.dist}`, nearest: v.nearest,
+        popup: () => {
+          const d = document.createElement('div'); d.className = 'poi-popup';
+          d.append(textEl(v.name, 'b'), textEl(' · ' + v.dist, 'span'));
+          for (const row of v.rows) {
+            const line = document.createElement('div'); line.append(textEl(row.label + ': '));
+            if (row.href) { const a = document.createElement('a'); a.href = row.href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = row.value; line.append(a); } else line.append(textEl(row.value));
+            d.append(line);
+          }
+          const a = document.createElement('a'); a.href = v.route; a.target = '_blank'; a.rel = 'noopener'; a.textContent = this.translate.instant('harbour.googleRoute') as string;
+          d.append(a);
+          return d;
+        },
+      })), h, i => this.pickPlace(i));
     });
   }
-  private clearService(): void { this.activeService.set(null); if (this.map) setServiceHighlight(this.map, [], null); }
+  /** Hover on a list item (null = leave): its ring and line stand out on the map; the picked one stays highlighted. */
+  focusPlace(i: number | null): void { if (this.map) setServiceActive(this.map, i ?? this.selected()); }
+  selectPlace(i: number): void { this.selected.set(i); this.focusPlace(i); }
+  /** A ring was clicked on the map: highlight and scroll the list item into view. */
+  private pickPlace(i: number): void {
+    this.selectPlace(i);
+    setTimeout(() => document.getElementById('svc-place-' + i)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+  }
+  private clearService(): void { this.activeService.set(null); this.places.set([]); this.placesEmpty.set(false); this.selected.set(null); if (this.map) setServiceHighlight(this.map, [], null); }
   hovered: string | null = null;
   private map?: MlMap;
   private harbours = new Map<string, HarbourMarker>();

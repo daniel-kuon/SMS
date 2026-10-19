@@ -31,30 +31,42 @@ public static class PoiEndpoints
         {
             var tags = HarbourServices.PoiKinds.Where(k => k.Service == kind).ToList();
             if (tags.Count == 0 || Math.Abs(lat) > 85 || Math.Abs(lng) > 180) return Results.BadRequest();
-            radiusM = Math.Clamp(radiusM, 1, 5000);
+            radiusM = Math.Clamp(radiusM, 1, 5000);   // 5 km: the harbour page highlights everything within walking/cycling distance
             var at = SeamarkEndpoints.ToMercator(lat, lng);
             var k = Math.Cos(lat * Math.PI / 180);   // Pois are EPSG:3857, metres stretched by 1/cos(lat)
             var kinds = tags.Select(t => t.Kind).ToList();
             var rows = await db.Pois.AsNoTracking().Where(x => kinds.Contains(x.Kind) && x.Location.IsWithinDistance(at, radiusM / k))
-                .OrderBy(x => x.Location.Distance(at)).Take(100).Select(x => new { x.Id, x.Name, x.Class, x.Kind, x.Location }).ToListAsync(ct);
+                .OrderBy(x => x.Location.Distance(at)).Take(100).Select(x => new { x.Id, x.Name, x.Class, x.Kind, x.Location, x.TagsJson }).ToListAsync(ct);
             return Results.Ok(rows.Where(x => tags.Any(t => t.Class == x.Class && t.Kind == x.Kind)).Take(50).Select(x =>
             {
                 var (pLat, pLng) = Sms.Infrastructure.Routing.Fairways.FromMercator(x.Location.X, x.Location.Y);
-                return new { x.Id, x.Name, kind, lat = pLat, lng = pLng, distanceM = (int)Math.Round(x.Location.Distance(at) * k) };
+                var i = Info(x.TagsJson);
+                return new { x.Id, x.Name, kind, lat = pLat, lng = pLng, distanceM = (int)Math.Round(x.Location.Distance(at) * k), i.OpeningHours, i.Cuisine, i.Website, i.Phone, i.Address };
             }));
         }).WithTags("Pois").RequireRateLimiting("ingest");
         api.MapGet("/pois/status", async (SmsDbContext db, CancellationToken ct) => Results.Ok(new { count = await db.Pois.CountAsync(ct) })).WithTags("Pois");
+    }
+
+    private record Tagged(string? OpeningHours, string? Website, string? Phone, string? Email, string? Address, string? Cuisine);
+
+    /// <summary>The user-facing OSM tags of a POI (opening hours, contact, address, cuisine).</summary>
+    private static Tagged Info(string tagsJson)
+    {
+        using var tags = JsonDocument.Parse(tagsJson);
+        string? T(string k) => tags.RootElement.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var addr = string.Join(", ", new[] { string.Join(" ", new[] { T("addr:street"), T("addr:housenumber") }.Where(s => s != null)), string.Join(" ", new[] { T("addr:postcode"), T("addr:city") }.Where(s => s != null)) }.Where(s => s.Length > 0));
+        return new Tagged(T("opening_hours"), HttpUrl(T("website") ?? T("contact:website")), T("phone") ?? T("contact:phone"), T("email") ?? T("contact:email"), addr.Length > 0 ? addr : null, T("cuisine"));
     }
 
     private static object Details(Poi p)
     {
         using var tags = JsonDocument.Parse(p.TagsJson);
         string? T(string k) => tags.RootElement.TryGetProperty(k, out var v) ? v.GetString() : null;
-        var addr = string.Join(", ", new[] { string.Join(" ", new[] { T("addr:street"), T("addr:housenumber") }.Where(s => s != null)), string.Join(" ", new[] { T("addr:postcode"), T("addr:city") }.Where(s => s != null)) }.Where(s => s.Length > 0));
+        var i = Info(p.TagsJson);
         return new
         {
-            p.OsmType, p.OsmId, p.Name, p.Class, p.Kind, openingHours = T("opening_hours"), website = HttpUrl(T("website") ?? T("contact:website")), phone = T("phone") ?? T("contact:phone"), email = T("email") ?? T("contact:email"),
-            address = addr.Length > 0 ? addr : null, cuisine = T("cuisine"), wheelchair = T("wheelchair"), description = T("description"), osmUrl = $"https://www.openstreetmap.org/{p.OsmType}/{p.OsmId}",
+            p.OsmType, p.OsmId, p.Name, p.Class, p.Kind, openingHours = i.OpeningHours, website = i.Website, phone = i.Phone, email = i.Email,
+            address = i.Address, cuisine = i.Cuisine, wheelchair = T("wheelchair"), description = T("description"), osmUrl = $"https://www.openstreetmap.org/{p.OsmType}/{p.OsmId}",
         };
     }
 

@@ -259,7 +259,7 @@ export function addPoiOverlay(map: MlMap, tilesUrl: string): void {
   const paint = { 'text-color': '#37474f', 'text-halo-color': '#ffffff', 'text-halo-width': 1.2 };
   map.addLayer({ id: 'poi-icons', type: 'symbol', source: 'poi', 'source-layer': 'poi', minzoom: 16, layout: layout as never, paint }, before);
   map.addLayer({ id: 'poi-icons-near', type: 'symbol', source: 'poi', 'source-layer': 'poi', minzoom: 13, maxzoom: 16, layout: { ...layout, visibility: 'none' } as never, paint }, before);
-  for (const id of ['poi-icons', 'poi-icons-near']) clickable(map, id, e => { const f = e.features?.[0]; if (f) void showPoiPopup(map, f.properties as Record<string, unknown>, e.lngLat); });
+  for (const id of ['poi-icons', 'poi-icons-near']) clickable(map, id, e => { const f = e.features?.[0]; if (f && !(map.getLayer('service-hl-ring') && map.queryRenderedFeatures(e.point, { layers: ['service-hl-ring'] }).length)) void showPoiPopup(map, f.properties as Record<string, unknown>, e.lngLat); });
   // the basemap's own POI labels (OpenMapTiles "poi" layer): name and kind, details from our Pois table when it knows the place
   for (const l of map.getStyle().layers) if ('source-layer' in l && l['source-layer'] === 'poi' && l.type === 'symbol') clickable(map, l.id, e => {
     const p = e.features?.[0]?.properties as Record<string, unknown> | undefined; if (!p) return;
@@ -289,17 +289,38 @@ export function setPoiFocus(map: MlMap, at: { lat: number; lng: number } | null)
   map.setFilter('poi-icons-near', ['within', { type: 'Polygon', coordinates: [ring] }] as never);
 }
 
-/** A highlighted service location: ring on top of the map with a label, the nearest one emphasised. */
-export interface ServiceSpot { lat: number; lng: number; text: string; nearest: boolean; }
-/** Highlights the spots (empty = clear). The map moves only when a spot (or the harbour) is off-screen. */
-export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: { lat: number; lng: number } | null): void {
+/** A highlighted service location: ring on top of the map with a label and a straight line from the harbour, the nearest one emphasised. */
+export interface ServiceSpot { lat: number; lng: number; text: string; nearest: boolean; popup?: () => HTMLElement; }
+let hlSpots: ServiceSpot[] = [], hlPick: ((i: number) => void) | undefined, hlPopup: maplibregl.Popup | undefined;
+const HL_ORANGE = '#ff9800', HL_DARK = '#e65100';
+/** Highlights the spots (empty = clear); a click on a ring opens its popup and reports its index to onPick. The map moves only when a spot (or the harbour) is off-screen. */
+export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: { lat: number; lng: number } | null, onPick?: (i: number) => void): void {
+  hlSpots = spots; hlPick = onPick; hlPopup?.remove(); hlPopup = undefined;
   if (!map.getSource('service-hl')) {
     if (!spots.length) return;
     map.addSource('service-hl', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    map.addLayer({ id: 'service-hl-ring', type: 'circle', source: 'service-hl', paint: { 'circle-radius': ['case', ['get', 'nearest'], 20, 14], 'circle-color': '#ff6f00', 'circle-opacity': 0.18, 'circle-stroke-color': ['case', ['get', 'nearest'], '#e65100', '#ff9800'], 'circle-stroke-width': ['case', ['get', 'nearest'], 4, 2.5] } });
-    map.addLayer({ id: 'service-hl-label', type: 'symbol', source: 'service-hl', layout: { 'text-field': ['get', 'text'], 'text-size': 12, 'text-offset': [0, 1.9], 'text-anchor': 'top', 'text-font': ['Noto Sans Regular'], 'text-allow-overlap': true }, paint: { 'text-color': '#bf360c', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
+    const none = ['==', ['get', 'i'], -1] as never;
+    const line = { type: 'line', source: 'service-hl', layout: { 'line-cap': 'round' } } as const;
+    map.addLayer({ ...line, id: 'service-hl-line', filter: ['!', ['get', 'nearest']], paint: { 'line-color': HL_ORANGE, 'line-width': 1, 'line-dasharray': [3, 3] } });
+    map.addLayer({ ...line, id: 'service-hl-line-near', filter: ['get', 'nearest'], paint: { 'line-color': HL_DARK, 'line-width': 2.5, 'line-dasharray': [3, 2] } });
+    map.addLayer({ ...line, id: 'service-hl-line-active', filter: none, paint: { 'line-color': '#d50000', 'line-width': 3.5 } });
+    map.addLayer({ id: 'service-hl-ring', type: 'circle', source: 'service-hl', filter: ['has', 'text'], paint: { 'circle-radius': ['case', ['get', 'nearest'], 20, 14], 'circle-color': '#ff6f00', 'circle-opacity': 0.18, 'circle-stroke-color': ['case', ['get', 'nearest'], HL_DARK, HL_ORANGE], 'circle-stroke-width': ['case', ['get', 'nearest'], 4, 2.5] } });
+    map.addLayer({ id: 'service-hl-ring-active', type: 'circle', source: 'service-hl', filter: none, paint: { 'circle-radius': 22, 'circle-color': '#d50000', 'circle-opacity': 0.25, 'circle-stroke-color': '#d50000', 'circle-stroke-width': 4 } });
+    map.addLayer({ id: 'service-hl-label', type: 'symbol', source: 'service-hl', filter: ['has', 'text'], layout: { 'text-field': ['get', 'text'], 'text-size': 12, 'text-offset': [0, 1.9], 'text-anchor': 'top', 'text-font': ['Noto Sans Regular'], 'text-optional': true }, paint: { 'text-color': '#bf360c', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
+    clickable(map, 'service-hl-ring', e => {
+      const i = e.features?.[0]?.properties?.['i'] as number | undefined, s = i === undefined ? undefined : hlSpots[i];
+      if (i === undefined || !s) return;
+      hlPopup?.remove();
+      if (s.popup) hlPopup = new maplibregl.Popup({ offset: 16, maxWidth: '300px' }).setLngLat([s.lng, s.lat]).setDOMContent(s.popup()).addTo(map);
+      hlPick?.(i);
+    });
   }
-  (map.getSource('service-hl') as GeoJSONSource).setData({ type: 'FeatureCollection', features: spots.map(s => ({ type: 'Feature', properties: { text: s.text, nearest: s.nearest }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } })) });
+  const features: GeoJSON.Feature[] = spots.flatMap((s, i) => [
+    { type: 'Feature' as const, properties: { i, text: s.text, nearest: s.nearest }, geometry: { type: 'Point' as const, coordinates: [s.lng, s.lat] } },
+    ...(harbour && (s.lat !== harbour.lat || s.lng !== harbour.lng) ? [{ type: 'Feature' as const, properties: { i, nearest: s.nearest }, geometry: { type: 'LineString' as const, coordinates: [[harbour.lng, harbour.lat], [s.lng, s.lat]] } }] : []),
+  ]);
+  (map.getSource('service-hl') as GeoJSONSource).setData({ type: 'FeatureCollection', features });
+  setServiceActive(map, null);
   if (!spots.length) return;
   const pts = [...spots, ...(harbour ? [harbour] : [])];
   const view = map.getBounds();
@@ -307,6 +328,10 @@ export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: {
   const b = new maplibregl.LngLatBounds([pts[0].lng, pts[0].lat], [pts[0].lng, pts[0].lat]);
   for (const p of pts) b.extend([p.lng, p.lat]);
   map.fitBounds(b, { padding: 70, maxZoom: 17 });
+}
+/** Emphasises one spot's ring and line (null = none), e.g. for the hovered list item. */
+export function setServiceActive(map: MlMap, i: number | null): void {
+  for (const id of ['service-hl-line-active', 'service-hl-ring-active']) if (map.getLayer(id)) map.setFilter(id, ['==', ['get', 'i'], i ?? -1] as never);
 }
 
 /** Map view in the URL (?c=lat,lng,zoom), like Google Maps: survives reloads, Back returns to the previous view. */
