@@ -53,9 +53,16 @@ public class FairwaysTests
         var marks = Channel(3);
         marks.AddRange(Channel(3, lat0: 54.40 + 0.009 + 0.027));
         for (var k = 1; k <= 3; k++) marks.Add(new FairwayMark(54.409 + k * 0.00675, 10.15 + 0.0023, MarkSide.Starboard));
-        var fairway = Assert.Single(Fairways.Derive(marks, F, Shallow));
-        Assert.Equal(6, fairway.Pairs); Assert.Equal(3, fairway.Singles);
-        Assert.All(fairway.Line.Coordinates, c => Assert.Equal(10.15, c.X, 6));
+        // three lines sharing their ends: 3 pairs, the stretch of 3 single marks (no pairs: no channel zone in the graph build), 3 pairs
+        var pieces = Fairways.Derive(marks, F, Shallow);
+        Assert.Equal(3, pieces.Count);
+        Assert.Equal(6, pieces.Sum(p => p.Pairs)); Assert.Equal(3, pieces.Sum(p => p.Singles));
+        var stretch = Assert.Single(pieces, p => p.Pairs == 0);
+        Assert.Equal(5, stretch.Line.NumPoints); // pair, 3 single marks, pair
+        Assert.All(pieces.SelectMany(p => p.Line.Coordinates), c => Assert.Equal(10.15, c.X, 6));
+        Assert.Equal("Fahrwasser (3 Einzeltonnen)", Fairways.Note(stretch));
+        Assert.Equal("Fahrwasser (3 Tonnenpaare)", Fairways.Note(pieces.First(p => p.Pairs > 0)));
+        Assert.Equal("Fahrwasser (2 Tonnenpaare, 1 Einzeltonnen)", Fairways.Note(new Fairway(stretch.Line, 2, 1)));
         // without the single marks the 3 km gap splits the chains - unless the gap on that straight course is charted deep
         Assert.Equal(2, Fairways.Derive(marks.Take(12).ToList(), F, Shallow).Count);
         Assert.Single(Fairways.Derive(marks.Take(12).ToList(), F));
@@ -76,12 +83,13 @@ public class FairwaysTests
         marks.Add(new FairwayMark(54.483, 10.1495, MarkSide.Starboard));
         marks.Add(new FairwayMark(54.5145, 10.1505, MarkSide.Port));
         marks.Add(new FairwayMark(54.522, 10.15, MarkSide.SafeWater));
-        var fairway = Assert.Single(Fairways.Derive(marks, F));
-        Assert.Equal(3, fairway.Pairs); Assert.Equal(5, fairway.Singles);
+        var lines = Fairways.Derive(marks, F);
+        Assert.Equal(3, lines.Sum(p => p.Pairs)); Assert.Equal(5, lines.Sum(p => p.Singles)); // the pairs, then the single-mark stretch
+        var fairway = Assert.Single(lines, p => p.Pairs == 0);
         Assert.Contains(fairway.Line.Coordinates, c => Math.Abs(c.Y - 54.420) < 1e-9 && Math.Abs(c.X - 10.15) < 1e-9); // 100 m east of the cardinal
         Assert.True(fairway.Line.Coordinates[^1].Equals2D(new Coordinate(10.15, 54.522)) || fairway.Line.Coordinates[0].Equals2D(new Coordinate(10.15, 54.522)));
         // a wide hop only leads on to a mark that goes on somewhere: without the safe-water mark the last port mark is left out
-        Assert.Equal(3, Assert.Single(Fairways.Derive(marks.SkipLast(1).ToList(), F)).Singles);
+        Assert.Equal(3, Fairways.Derive(marks.SkipLast(1).ToList(), F).Sum(p => p.Singles));
         // the same marks where the 3.5 km hops are not charted deep: the fairway ends at the cardinal (one single, trimmed)
         var shallow = Assert.Single(Fairways.Derive(marks, F, Shallow));
         Assert.Equal(0, shallow.Singles);
@@ -163,6 +171,30 @@ public class FairwaysTests
         // a chain does not run south of a north cardinal next to its course: the hop is refused, the line ends before it
         var marks = Channel(3).Append(new FairwayMark(54.416, 10.1503, MarkSide.North)).Concat(Channel(3, lat0: 54.4225)).ToList();
         Assert.Equal(2, Fairways.Derive(marks, F, Shallow).Count);
+    }
+
+    [Fact]
+    public void A_wide_gap_with_land_on_the_straight_hop_bends_round_it_through_deep_water()
+    {
+        // Grønsund: 3 pairs, then lateral single marks 3.5 km apart; between the 2nd and 3rd single mark a headland lies on the
+        // straight line (lat 54.47 … 54.48 east of 10.149), the water path bends 500 m west round it
+        var marks = Channel(3);
+        marks.Add(new FairwayMark(54.4405, 10.1505, MarkSide.Port));
+        marks.Add(new FairwayMark(54.4720, 10.1495, MarkSide.Starboard));
+        marks.Add(new FairwayMark(54.5035, 10.1505, MarkSide.Port));
+        marks.Add(new FairwayMark(54.511, 10.15, MarkSide.SafeWater));
+        static bool Headland(Coordinate c) => c.Y > 54.480 && c.Y < 54.495 && c.X > 10.1490;
+        var bend = new Coordinate(10.140, 54.4875);
+        var water = new FairwayWater(
+            (a, b) => !Enumerable.Range(1, 99).Any(k => Headland(new Coordinate(a.X + (b.X - a.X) * k / 100, a.Y + (b.Y - a.Y) * k / 100))),
+            (_, _) => true,
+            (a, b) => [bend]);
+        var lines = Fairways.Derive(marks, F, water);
+        Assert.Contains(lines, l => l.Line.Coordinates.Any(c => c.Equals2D(bend)));
+        Assert.True(lines.SelectMany(l => l.Line.Coordinates).Max(c => c.Y) > 54.50);
+        Assert.Equal(4, lines.Sum(l => l.Singles)); // the bend is no mark
+        // without a water path the fairway ends before the headland
+        Assert.True(Fairways.Derive(marks, F, water with { Path = null }).SelectMany(l => l.Line.Coordinates).Max(c => c.Y) < 54.48);
     }
 
     [Fact]
