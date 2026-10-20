@@ -186,7 +186,10 @@ if (args.Length > 3 && args[2] == "derive-fairways")
             var (marks, water) = await Fairways.InputsAsync((Npgsql.NpgsqlConnection)db.Database.GetDbConnection(), new NetTopologySuite.Geometries.Envelope(w - mLng, e + mLng, s - mLat, n + mLat), default);
             var extent = Geo.Factory.ToGeometry(new NetTopologySuite.Geometries.Envelope(w, e, s, n));
             foreach (var f in Fairways.Derive(marks, Geo.Factory, water).Where(f => extent.Intersects(f.Line.Centroid)))
+            {
                 Console.WriteLine($"derived {f.Pairs} pairs {f.Singles} singles: " + string.Join(" ", f.Line.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
+                if (f.Area is { } area) Console.WriteLine("area: " + area.AsText());
+            }
         }
     return;
 }

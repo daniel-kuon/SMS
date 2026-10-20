@@ -629,12 +629,13 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         if (o.ChannelPreferenceM > 0)
         {
             var fairways = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Note.Contains(Fairways.PairedNote)).Select(c => c.Geometry).ToListAsync()).OfType<LineString>().ToList(); // same set as the builder's channel zone
+            var fairwayAreas = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Fairway).Select(c => c.Geometry).ToListAsync()).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
             if (fairways.Count > 0)
             {
                 var corridorDeg = 150 / WaterGraphTiler.MPerDegLat;
                 var corridor = NetTopologySuite.Operation.Union.UnaryUnionOp.Union(fairways.Select(f => f.Buffer(corridorDeg)).ToList());
                 var corridorPrepared = PreparedGeometryFactory.Prepare(corridor);
-                foreach (var z in ChannelPreference.Zone(fairways, [], o.ChannelPreferenceM))
+                foreach (var z in ChannelPreference.Zone(fairways, fairwayAreas, o.ChannelPreferenceM))
                 {
                     var g = corridorPrepared.Intersects(z) ? z.Difference(corridor) : z;
                     if (!g.IsEmpty) zone.Insert(g.EnvelopeInternal, g);

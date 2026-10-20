@@ -447,12 +447,17 @@ public static class RoutingEndpoints
             var (marks, water) = await Fairways.InputsAsync((Npgsql.NpgsqlConnection)db.Database.GetDbConnection(), new Envelope(w - marginLng, e + marginLng, s - marginLat, n + marginLat), ct);
             var extent = Geo.Factory.ToGeometry(new Envelope(w, e, s, n)); extent.SRID = 4326;
             var fairways = Fairways.Derive(marks, Geo.Factory, water).Where(f => extent.Intersects(f.Line.Centroid)).ToList();
-            var old = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Geometry.Centroid.Intersects(extent)).ToListAsync(ct);
+            // the lines, and the water between the marks of the paired lines as Fairway areas (the graph build cuts them out of the
+            // channel zone and leaves them open under the strict depth rule: buoyed water, Fairways.AreaNote)
+            var old = await db.RoutingCorrections.Where(c => c.Source == CorrectionSource.Derived && c.Note != null && ((c.Kind == CorrectionKind.Passage && c.Note.StartsWith("Fahrwasser")) || (c.Kind == CorrectionKind.Fairway && c.Note.StartsWith(Fairways.AreaNote))) && c.Geometry.Centroid.Intersects(extent)).ToListAsync(ct);
             db.RoutingCorrections.RemoveRange(old);
             foreach (var f in fairways)
+            {
                 db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = f.Line, Note = Fairways.Note(f), Active = true, CreatedById = current.Id });
+                if (f.Area is { } area) db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Fairway, Source = CorrectionSource.Derived, Geometry = area, Note = $"{Fairways.AreaNote}, {f.Pairs} {Fairways.PairedNote})", Active = true, CreatedById = current.Id });
+            }
             await db.SaveChangesAsync(ct);
-            return Results.Ok(new { marks = marks.Count, created = fairways.Count, removed = old.Count, lines = fairways.Select(f => new { f.Pairs, points = f.Line.NumPoints, lengthNm = Math.Round(LengthNm(f.Line), 1) }) });
+            return Results.Ok(new { marks = marks.Count, created = fairways.Count, areas = fairways.Count(f => f.Area is not null), removed = old.Count, lines = fairways.Select(f => new { f.Pairs, points = f.Line.NumPoints, lengthNm = Math.Round(LengthNm(f.Line), 1) }) });
         });
 
         // Spec 10 §10.1: Europe-wide import from a Geofabrik PBF extract (background job with progress).
@@ -493,7 +498,7 @@ public static class RoutingEndpoints
         if (replaceExisting && env is not null)
         {
             var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-            old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge") || c.Note.StartsWith("Annahme")))) || (c.Kind == CorrectionKind.Bridge && !(c.Note != null && c.Note.StartsWith(Waterways.UnknownBridgeNote))) || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
+            old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge") || c.Note.StartsWith("Annahme")))) || (c.Kind == CorrectionKind.Bridge && !(c.Note != null && c.Note.StartsWith(Waterways.UnknownBridgeNote))) || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || (c.Kind == CorrectionKind.Fairway && !(c.Note != null && c.Note.StartsWith(Fairways.AreaNote))) || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
         }
         // a waterway chain that crosses the bbox edge was merged from more ways by the neighbouring chunk's import: it is kept
         // (deleting it and re-adding only this chunk's part cut the Stockholm fairway off from Danvikskanalen and the Hammarby lock),

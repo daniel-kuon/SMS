@@ -10,12 +10,14 @@ public enum MarkSide { Port, Starboard, North, East, South, West, SafeWater }
 /// <param name="Light">A red or green minor light (pier head): pairs only with another light, across a harbour entrance.</param>
 public sealed record FairwayMark(double Lat, double Lng, MarkSide Side, bool Light = false);
 /// <param name="Singles">Unpaired marks (single lateral, cardinal or safe-water marks) the chain runs past.</param>
-public sealed record Fairway(LineString Line, int Pairs, int Singles = 0);
+/// <param name="Area">The water between the port and the starboard marks of the pairs (lines with ≥ 2 pairs): the fairway as an area,
+/// red border on one side, green on the other; the routing passage is its centreline <paramref name="Line"/>.</param>
+public sealed record Fairway(LineString Line, int Pairs, int Singles = 0, Polygon? Area = null);
 /// <summary>Water checks for a hop a → b (X = lng, Y = lat). Clear: no land between water on it. Deep: charted depth all along
 /// (wide hops between single marks, straightened corners).
 /// Path: a way a → b through charted deep water when the straight hop crosses land (the points between, or null).
-/// Water: the point is not on land (a harbour entrance's inside).</summary>
-public sealed record FairwayWater(Func<Coordinate, Coordinate, bool> Clear, Func<Coordinate, Coordinate, bool> Deep, Func<Coordinate, Coordinate, Coordinate[]?>? Path = null, Func<Coordinate, bool>? Water = null);
+/// Water: the point is not on land (a harbour entrance's inside). Floor: the floor (m) of the deepest charted depth band at the point, null = no band.</summary>
+public sealed record FairwayWater(Func<Coordinate, Coordinate, bool> Clear, Func<Coordinate, Coordinate, bool> Deep, Func<Coordinate, Coordinate, Coordinate[]?>? Path = null, Func<Coordinate, bool>? Water = null, Func<Coordinate, double?>? Floor = null);
 
 /// <summary>
 /// Spec 10 §10.5 step 2: fairway centrelines from OpenSeaMap marks. Each port mark is paired with the nearest starboard mark
@@ -37,15 +39,31 @@ public sealed record FairwayWater(Func<Coordinate, Coordinate, bool> Clear, Func
 /// end, become lines of their own (no channel zone in the graph build, which takes lines with ≥ 2 pairs). Red/green minor lights
 /// pair only with each other (pier heads at a harbour entrance); a lone pair counts when it joins a line. A wide gap between single lateral marks whose straight hop crosses ≥ 300 m of land may bend through deep
 /// water (<see cref="FairwayWater.Path"/>); land inside a Water correction counts as water.
-/// ponytail: greedy chaining, no buoy sequence numbers or fairway areas; special-purpose marks are not used (none tagged as fairway
-/// marks); marks too sparse to chain without crossing land (Grønsund between Bogø and Falster) stay unchained.
+/// The fairway as an area: a paired line carries the water between its pairs' marks (<see cref="Fairway.Area"/>, red border on one
+/// side, green on the other). A wide river whose rows are too far apart to pair (the Elbe) is two one-sided single-mark stretches
+/// side by side: they are merged into one corridor, each mark paired with the foot of its perpendicular on the other row (widePairMaxM,
+/// through charted deep water). A one-sided row without a pair within <see cref="PairReachM"/> collapses to a line
+/// <see cref="RowOffsetM"/> (half the deepest band's run) off the marks towards the deeper charted band (<see cref="FairwayWater.Floor"/>).
+/// Rows of ≥ 3 cardinals of one kind (a shoal's edge) are fairways of their own; a moved mark whose hop enters a cardinal's danger
+/// quadrant goes back onto its mark.
+/// ponytail: greedy chaining, no buoy sequence numbers; a one-sided row gets a line, not an area (its open side is the deeper band,
+/// not a border); special-purpose marks are not used (none tagged as fairway marks); marks too sparse to chain without crossing
+/// land (Grønsund between Bogø and Falster) stay unchained.
 /// </summary>
 public static class Fairways
 {
     public const double CardinalOffsetM = 100, CardinalDangerM = 300, HeadingBaseM = 300, LandMaxM = 50, PathLandM = 300, EndLandM = 100, EntranceM = 150;
+    /// <summary>A single lateral mark is moved at most this far towards the channel (half the width of the nearest pair, or of the charted deep water beside a row without pairs).</summary>
+    public const double SingleOffsetMaxM = 600;
+    /// <summary>A single lateral mark of a row without pairs nearby is moved at most this far towards the deeper water beside the row.</summary>
+    public const double RowOffsetM = 150;
+    /// <summary>A single lateral mark takes its offset from a pair of its line this close; farther from any pair it is a mark of a row (RowOffsetM).</summary>
+    public const double PairReachM = 1000;
     /// <summary>In the note of every derived line with pairs; a stretch of single marks only ("Fahrwasser (k Einzeltonnen)") lacks
     /// it and gets no ×3 channel zone in the graph build (RoutingGraphBuilder, SeaRouter's smoother zone).</summary>
     public const string PairedNote = "Tonnenpaare";
+    /// <summary>Start of the note of a derived Fairway area (the water between the marks of a paired line).</summary>
+    public const string AreaNote = "Fahrwasserfläche (abgeleitet";
     /// <summary>The Passage note of a derived line.</summary>
     public static string Note(Fairway f) => f.Pairs == 0 ? $"Fahrwasser ({f.Singles} Einzeltonnen)"
         : f.Singles > 0 ? $"Fahrwasser ({f.Pairs} {PairedNote}, {f.Singles} Einzeltonnen)" : $"Fahrwasser ({f.Pairs} {PairedNote})";
@@ -79,7 +97,7 @@ public static class Fairways
         public (double x, double y) B => Pair ? (-V(At(P!), At(S!)).y, V(At(P!), At(S!)).x) : (0, 0);
     }
 
-    public static List<Fairway> Derive(IReadOnlyList<FairwayMark> marks, GeometryFactory f, FairwayWater? water = null, double pairMaxM = 600, double gapMaxM = 2000, double wideGapM = 5000)
+    public static List<Fairway> Derive(IReadOnlyList<FairwayMark> marks, GeometryFactory f, FairwayWater? water = null, double pairMaxM = 600, double gapMaxM = 2000, double wideGapM = 5000, double widePairMaxM = 2000)
     {
         Func<Coordinate, Coordinate, bool> clear = water?.Clear ?? ((_, _) => true), deep = water?.Deep ?? ((_, _) => true);
         var port = marks.Where(m => m.Side == MarkSide.Port).ToList();
@@ -204,11 +222,12 @@ public static class Fairways
                 var inner = new Coordinate(mid.X + step * b.x / Math.Cos(mid.Y * Math.PI / 180), mid.Y + step * b.y);
                 if (isWater(inner) && clear(mid, inner)) { if (items[0].i < 0) items.Add((-1, inner)); else items.Insert(0, (-1, inner)); }
             }
+            Unmove(items);
             if (Accepted(items)) lines.Add(items);
         }
         // cleanup: lines in order of quality; a line's ends running along a better line (within 150 m) are cut back to where it
         // leaves it, a line mostly (≥ 80 %) along better ones is dropped (unpaired marks of a channel chained beside its pairs)
-        var result = new List<Fairway>(); var keptLines = new List<Coordinate[]>();
+        var result = new List<Fairway>(); var keptLines = new List<Coordinate[]>(); var singleRuns = new List<List<(int i, Coordinate c)>?>(); var merging = false;
         foreach (var items in lines.OrderByDescending(l => l.Count(x => x.i >= 0 && pts[x.i].Pair)).ThenByDescending(l => l.Count))
         {
             var near = items.Select(x => keptLines.Any(k => SegmentsM(x.c, k) <= 150)).ToArray();
@@ -243,7 +262,148 @@ public static class Fairways
             }
             if (start < cut.Count - 1) Emit(cut[start..]);
         }
+        // two stretches of single marks, one of red and one of green marks (a run of single marks split where the colour changes;
+        // cardinals and junction points go with the stretch they are in), running side by side ≤ widePairMaxM apart through
+        // charted deep water, are the two borders of one wide fairway (the Elbe between Brunsbüttel and Glückstadt: rows 1-2 km
+        // apart, chained as "two fairways instead of one", one run down the green row and back along the red): they become one
+        // line of pairs, each mark paired with the foot of its perpendicular on the other row (a synthetic partner; midpoints of
+        // the staggered marks themselves would zigzag), the points without a foot (the rows' loose ends, cardinals, the pairs shared
+        // with the paired pieces) kept, all in order along the red row. Runs with a merged stretch are emitted stretch by stretch
+        // (consecutive stretches share their boundary point), the others whole
+        var stretches = new List<(int run, List<(int i, Coordinate c)> items)>();
+        foreach (var (run, r) in singleRuns.Select((r, k) => (k, r!)))
+        {
+            var cur = new List<(int i, Coordinate c)>(); MarkSide? colour = null;
+            foreach (var x in r)
+            {
+                var side = x.i >= 0 && !pts[x.i].Pair && pts[x.i].Side is MarkSide.Port or MarkSide.Starboard ? pts[x.i].Side : null;
+                if (side is not null && colour is not null && side != colour) { cur.Add(x); stretches.Add((run, cur)); cur = [x]; colour = side; continue; }
+                colour ??= side; cur.Add(x);
+            }
+            stretches.Add((run, cur));
+        }
+        var mergedRuns = new HashSet<int>(); var taken = new HashSet<int>();
+        var corridors = new List<List<(int i, Coordinate c)>>();
+        if (widePairMaxM > 0)
+            for (var a = 0; a < stretches.Count; a++)
+            {
+                if (taken.Contains(a) || !OneColour(stretches[a].items, MarkSide.Port)) continue;
+                var red = stretches[a].items;
+                for (var b = 0; b < stretches.Count; b++)
+                {
+                    if (b == a || taken.Contains(b) || !OneColour(stretches[b].items, MarkSide.Starboard)) continue;
+                    var green = stretches[b].items;
+                    var redFeet = red.Select(x => x.i >= 0 && pts[x.i].Side == MarkSide.Port ? Foot(pts[x.i].C, green) : null).ToList();
+                    var greenFeet = green.Select(x => x.i >= 0 && pts[x.i].Side == MarkSide.Starboard ? Foot(pts[x.i].C, red) : null).ToList();
+                    // side by side: ≥ 2 marks of each row and ≥ 5 in all, or half of each row, face the other row (a sandbank between
+                    // the rows, the Rhinplate off Glückstadt, leaves the marks beside it without a foot)
+                    int rf = redFeet.Count(x => x is not null), gf = greenFeet.Count(x => x is not null);
+                    if ((rf < 2 || gf < 2 || rf + gf < 5) && (rf < 0.5 * red.Count(x => x.i >= 0 && pts[x.i].Side == MarkSide.Port) || gf < 0.5 * green.Count(x => x.i >= 0 && pts[x.i].Side == MarkSide.Starboard))) continue;
+                    var merged = new List<(double at, int i, Coordinate c)>();
+                    for (var k = 0; k < red.Count; k++)
+                    {
+                        var (i, c) = red[k];
+                        if (redFeet[k] is { } foot) { var j = AddPair(new FairwayMark(pts[i].C.Y, pts[i].C.X, MarkSide.Port), new FairwayMark(foot.Y, foot.X, MarkSide.Starboard)); merged.Add((Along(pts[i].C, red), j, pts[j].C)); }
+                        else merged.Add((Along(i >= 0 ? pts[i].C : c, red), i, c));
+                    }
+                    for (var k = 0; k < green.Count; k++)
+                    {
+                        var (i, c) = green[k];
+                        if (greenFeet[k] is { } foot) { var j = AddPair(new FairwayMark(foot.Y, foot.X, MarkSide.Port), new FairwayMark(pts[i].C.Y, pts[i].C.X, MarkSide.Starboard)); merged.Add((Along(foot, red), j, pts[j].C)); }
+                        else merged.Add((Along(i >= 0 ? pts[i].C : c, red), i, c));
+                    }
+                    // a mark of either row without a foot goes half the width of the corridor's nearest pair towards the other row
+                    // (as Moved does next to a pair; its run had none, so it sat on the row and the line would zigzag)
+                    // cardinals and safe-water marks of the rows (on the banks, a cable or more off the centre) stay out of the line
+                    var corridor = merged.OrderBy(x => x.at).Select(x => (x.i, x.c)).Where(x => x.i < 0 || pts[x.i].Lateral).ToList();
+                    for (var k = 0; k < corridor.Count; k++)
+                    {
+                        var (i, c) = corridor[k];
+                        if (i < 0 || pts[i].Pair || pts[i].Side is not (MarkSide.Port or MarkSide.Starboard)) continue;
+                        var near = corridor.Where(x => x.i >= 0 && pts[x.i].Pair && Dist(i, x.i) <= widePairMaxM).Select(x => (int?)x.i).MinBy(j => Dist(i, j!.Value));
+                        if (near is not { } j) continue;
+                        var sign = pts[i].Side == MarkSide.Port ? 0.5 : -0.5;
+                        corridor[k] = (i, new Coordinate(pts[i].C.X + sign * (pts[j].S!.Lng - pts[j].P!.Lng), pts[i].C.Y + sign * (pts[j].S.Lat - pts[j].P.Lat)));
+                    }
+                    // a hop between two pair midpoints across land (rows bending round an island) cuts the corridor there
+                    Unmove(corridor);
+                    var from = 0;
+                    for (var k = 1; k < corridor.Count; k++)
+                        if (!clear(corridor[k - 1].c, corridor[k].c)) { corridors.Add(corridor[from..k]); from = k; }
+                    corridors.Add(corridor[from..]);
+                    taken.Add(a); taken.Add(b); mergedRuns.Add(stretches[a].run); mergedRuns.Add(stretches[b].run);
+                    break;
+                }
+            }
+        merging = true;
+        foreach (var c in corridors) Emit(c);
+        for (var k = 0; k < stretches.Count; k++)
+            if (!taken.Contains(k) && mergedRuns.Contains(stretches[k].run)) Emit(stretches[k].items);
+        foreach (var (run, r) in singleRuns.Select((r, k) => (k, r!)))
+            if (!mergedRuns.Contains(run)) Emit(r);
         return result;
+
+
+        // the hops are checked for land and against the cardinals' danger quadrants with the marks moved (the chain checked them on
+        // the marks): a moved mark whose hop crosses land or comes within CardinalDangerM on a cardinal's danger side goes back onto
+        // its mark
+        void Unmove(List<(int i, Coordinate c)> items)
+        {
+            for (var k = 1; k < items.Count; k++)
+            {
+                if (CardinalsOk(items[k - 1].c, items[k].c) && clear(items[k - 1].c, items[k].c)) continue;
+                foreach (var j in (ReadOnlySpan<int>)[k - 1, k])
+                    if (items[j].i >= 0 && !pts[items[j].i].Pair && !items[j].c.Equals2D(pts[items[j].i].C)) items[j] = (items[j].i, pts[items[j].i].C);
+            }
+        }
+        // lateral marks of one colour only (≥ 2) between its end points (those are shared with the stretches or paired pieces on
+        // either side: a pair, or the first mark of the next colour), no pairs of its own
+        bool OneColour(List<(int i, Coordinate c)> run, MarkSide side)
+        {
+            var own = run.Where(x => x.i >= 0).Select(x => pts[x.i]).ToList();
+            return own.Count(p => p.Side == side) >= 2 && own.Skip(1).SkipLast(1).All(p => !p.Pair && (p.Side == side || p.Side is not (MarkSide.Port or MarkSide.Starboard)));
+        }
+        int AddPair(FairwayMark pm, FairwayMark sm)
+        {
+            pts.Add(new Pt(new Coordinate((pm.Lng + sm.Lng) / 2, (pm.Lat + sm.Lat) / 2), null, pm, sm)); used.Add(true); chainOf.Add(-1);
+            return pts.Count - 1;
+        }
+        // the foot of the perpendicular from c on a segment of the row (its marks' own positions), ≤ widePairMaxM away through
+        // charted deep water, the nearest
+        Coordinate? Foot(Coordinate c, List<(int i, Coordinate c)> row)
+        {
+            Coordinate? best = null; var bd = widePairMaxM;
+            for (var k = 1; k < row.Count; k++)
+            {
+                Coordinate a = RowPt(row[k - 1]), b = RowPt(row[k]);
+                var (bx, by) = V(a, b); var (cx, cy) = V(a, c);
+                if (bx * bx + by * by == 0) continue;
+                var t = (cx * bx + cy * by) / (bx * bx + by * by);
+                if (t is < 0 or > 1) continue;
+                var foot = new Coordinate(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y));
+                var d = RoutingGraphBuilder.Haversine(c.Y, c.X, foot.Y, foot.X);
+                if (d < 50 || d >= bd || !clear(c, foot) || !deep(c, foot)) continue;
+                bd = d; best = foot;
+            }
+            return best;
+        }
+        Coordinate RowPt((int i, Coordinate c) x) => x.i >= 0 ? pts[x.i].C : x.c;
+        // arc length (degrees of latitude) along the row to the point nearest c
+        double Along(Coordinate c, List<(int i, Coordinate c)> row)
+        {
+            double best = double.MaxValue, at = 0, sum = 0;
+            for (var k = 1; k < row.Count; k++)
+            {
+                Coordinate a = RowPt(row[k - 1]), b = RowPt(row[k]);
+                var (bx, by) = V(a, b); var (cx, cy) = V(a, c);
+                var len2 = bx * bx + by * by;
+                var t = len2 > 0 ? Math.Clamp((cx * bx + cy * by) / len2, 0, 1) : 0;
+                double dx = cx - t * bx, dy = cy - t * by, d = dx * dx + dy * dy;
+                if (d < best) { best = d; at = sum + t * Math.Sqrt(len2); }
+                sum += Math.Sqrt(len2);
+            }
+            return at;
+        }
 
         void Emit(List<(int i, Coordinate c)> piece)
         {
@@ -256,19 +416,39 @@ public static class Fairways
             // a single-mark stretch counts its single marks only (a lone pair: as one mark); its end pairs belong to the paired pieces
             int pairs = piece.Count(x => x.i >= 0 && pts[x.i].Pair), own = piece.Count(x => x.i >= 0 && !pts[x.i].Via);
             var singleRun = pairs < 2 || piece.Count > 2 && piece.Skip(1).SkipLast(1).All(x => x.i < 0 || !pts[x.i].Pair);
-            result.Add(singleRun ? new Fairway(ls, 0, Math.Max(1, own - pairs)) : new Fairway(ls, pairs, own - pairs));
+            if (singleRun && !merging) { singleRuns.Add(piece); return; }
+            result.Add(singleRun ? new Fairway(ls, 0, Math.Max(1, own - pairs)) : new Fairway(ls, pairs, own - pairs, Area(piece)));
+        }
+
+        // the water between the marks of the piece's pairs: the convex hulls of each two pairs in a row, united (a quad of
+        // staggered pairs may cross itself); singles between the pairs lie inside
+        Polygon? Area(List<(int i, Coordinate c)> piece)
+        {
+            var pairs = piece.Where(x => x.i >= 0 && pts[x.i].Pair).Select(x => pts[x.i]).ToList();
+            if (pairs.Count < 2) return null;
+            var quads = new List<Geometry>();
+            for (var k = 1; k < pairs.Count; k++)
+                quads.Add(f.CreateMultiPointFromCoords([At(pairs[k - 1].P!), At(pairs[k - 1].S!), At(pairs[k].P!), At(pairs[k].S!)]).ConvexHull());
+            Geometry union;
+            try { union = NetTopologySuite.Operation.Union.UnaryUnionOp.Union(quads); } catch (TopologyException) { union = f.CreateGeometryCollection(quads.ToArray()).Buffer(0); }
+            var poly = union as Polygon ?? (union as MultiPolygon)?.Geometries.OfType<Polygon>().MaxBy(p => p.Area);
+            if (poly is null || poly.IsEmpty) return null;
+            poly.SRID = 4326;
+            return poly;
         }
 
         // ≥ 2 pairs, 1 pair and 2 single marks, a lit pair (harbour entrance) with a junction, or ≥ 4 single marks (3 at a
-        // junction or a safe-water end), at least half and ≥ 2 of them lateral (not a ring of cardinals round a harbour)
+        // junction or a safe-water end), at least half and ≥ 2 of them lateral, or ≥ 3 cardinals all of one kind (a shoal's edge;
+        // not a ring of cardinals round a danger or a harbour, nor east and west cardinals alternating along a line)
         bool Accepted(List<(int i, Coordinate c)> items)
         {
             var own = items.Where(x => x.i >= 0 && !pts[x.i].Via).Select(x => pts[x.i]).ToList();
             int pairs = own.Count(p => p.Pair), singles = own.Count - pairs;
             var joined = items.Count > 0 && (items[0].i < 0 || items[^1].i < 0 || own[0].Side == MarkSide.SafeWater || own[^1].Side == MarkSide.SafeWater);
             var laterals = own.Count(p => p.Side is MarkSide.Port or MarkSide.Starboard);
+            var cardinals = own.Where(p => p.Side is MarkSide.North or MarkSide.East or MarkSide.South or MarkSide.West).Select(p => p.Side).ToList();
             return pairs >= 2 || pairs == 1 && (singles >= 2 || own.Single(p => p.Pair).P!.Light && (items[0].i < 0 || items[^1].i < 0))
-                || pairs == 0 && singles >= (joined ? 3 : 4) && laterals >= 2 && 2 * laterals >= singles;
+                || pairs == 0 && singles >= (joined ? 3 : 4) && (laterals >= 2 && 2 * laterals >= singles || cardinals.Count >= 3 && cardinals.Distinct().Count() == 1);
         }
 
         // a new chain from a seed; its first hops had no heading to keep, so an end hop that turns more than a later hop of that
@@ -472,11 +652,42 @@ public static class Fairways
             var kn = Enumerable.Range(0, line.Count).Where(k => pts[line[k]].Pair).Select(k => (int?)k).MinBy(k => Dist(i, line[k!.Value]));
             var near = kn is { } n ? pts[line[n]] : null;
             var width = near is null ? 100 : RoutingGraphBuilder.Haversine(near.P!.Lat, near.P.Lng, near.S!.Lat, near.S.Lng);
-            if (near is not null && Dist(i, line[kn!.Value]) <= 3000)
+            // a pair within PairReachM rules; farther off (≤ 3 km) only where the charted depth beside the row gives no side (Ulvsund:
+            // the bridge gate's 100 m width would have kept the marks of the wide row before it on the row)
+            Coordinate ByPair()
             {
-                var k = (p.Side == MarkSide.Port ? 0.5 : -0.5) * Math.Min(1, 300 / Math.Max(width, 1));
-                return new Coordinate(p.C.X + k * (near.S!.Lng - near.P!.Lng), p.C.Y + k * (near.S.Lat - near.P.Lat));
+                var k = (p.Side == MarkSide.Port ? 0.5 : -0.5) * Math.Min(1, 2 * (width > pairMaxM ? SingleOffsetMaxM : 150) / Math.Max(width, 1));
+                return new Coordinate(p.C.X + k * (near!.S!.Lng - near.P!.Lng), p.C.Y + k * (near.S.Lat - near.P.Lat));
             }
+            if (near is not null && Dist(i, line[kn!.Value]) <= PairReachM) return ByPair();
+            // a row without pairs: the channel is the deepest charted band beside the row (probed square to it every 50 m up to
+            // 2 RowOffsetM, on both sides); the mark goes half the width of that band's run towards it, 50-RowOffsetM, on the
+            // side whose deepest band is deeper (Ulvsund: red marks along the north-west edge of the 5.5 m band, 300-500 m wide, the
+            // expert's track ~150 m south-east of them; a narrow 200 m band: 100 m). The same floor both sides, or no band data:
+            // the buoyage vote below
+            if (water?.Floor is { } floorAt)
+            {
+                var t0 = V(pts[line[Math.Max(0, at0 - 1)]].C, pts[line[Math.Min(line.Count - 1, at0 + 1)]].C);
+                var l0 = Math.Sqrt(t0.x * t0.x + t0.y * t0.y);
+                if (l0 > 0)
+                {
+                    (double floor, double run) Probe(double sx, double sy)
+                    {
+                        var floors = new List<double>();
+                        for (var d = 50.0; d <= 2 * RowOffsetM; d += 50)
+                        {
+                            var q = Shift(p.C, sx, sy, d);
+                            if (!clear(p.C, q) || floorAt(q) is not { } fl) break;
+                            floors.Add(fl);
+                        }
+                        return floors.Count == 0 ? (double.NaN, 0) : (floors.Max(), 50 * floors.Count(fl => fl == floors.Max()));
+                    }
+                    var left = Probe(-t0.y / l0, t0.x / l0); var right = Probe(t0.y / l0, -t0.x / l0);
+                    if (!double.IsNaN(left.floor) && (double.IsNaN(right.floor) || left.floor > right.floor)) return Shift(p.C, -t0.y / l0, t0.x / l0, Math.Clamp(left.run / 2, 50, RowOffsetM));
+                    if (!double.IsNaN(right.floor) && (double.IsNaN(left.floor) || right.floor > left.floor)) return Shift(p.C, t0.y / l0, -t0.x / l0, Math.Clamp(right.run / 2, 50, RowOffsetM));
+                }
+            }
+            if (near is not null && Dist(i, line[kn!.Value]) <= 3000) return ByPair();
             // which way the buoyage runs along the line here: the marks around it vote (a port mark left of the line through its
             // neighbours says "with the line"); too few votes → no offset (a pair kilometres off may sit beyond a junction)
             var at = line.IndexOf(i);
@@ -543,12 +754,13 @@ public static class Fairways
                     marks.Add(new FairwayMark(r.GetDouble(3), r.GetDouble(4), side, r.GetString(0) == "light_minor"));
         }
         var land = new STRtree<IndexedPointInAreaLocator>(); var depth = new STRtree<IndexedPointInAreaLocator>();
+        var floors = new STRtree<(IndexedPointInAreaLocator at, double floor)>();
         bool hasTables;
         await using (var cmd = new NpgsqlCommand("SELECT to_regclass('routing_land') IS NOT NULL AND to_regclass('routing_meta') IS NOT NULL AND to_regclass('routing_depth') IS NOT NULL", conn))
             hasTables = (bool)(await cmd.ExecuteScalarAsync(ct))!;
         if (hasTables)
         {
-            async Task Load(string sql, STRtree<IndexedPointInAreaLocator> into)
+            async Task Load(string sql, STRtree<IndexedPointInAreaLocator> into, bool withFloor = false)
             {
                 await using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 600 };
                 Box(cmd, box);
@@ -557,7 +769,11 @@ public static class Fairways
                 {
                     var g = r.GetFieldValue<Geometry>(0);
                     foreach (var poly in g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : g is GeometryCollection gc ? gc.Geometries.OfType<Polygon>() : [])
-                        into.Insert(poly.EnvelopeInternal, new IndexedPointInAreaLocator(poly));
+                    {
+                        var at = new IndexedPointInAreaLocator(poly);
+                        into.Insert(poly.EnvelopeInternal, at);
+                        if (withFloor) floors.Insert(poly.EnvelopeInternal, (at, r.GetDouble(1)));
+                    }
                 }
             }
             await Load("""
@@ -565,7 +781,7 @@ public static class Fairways
                 WHERE l.graph_version = (SELECT value::int FROM routing_meta WHERE key = 'land_version') AND l.geom && ST_MakeEnvelope(@w, @s, @e, @n, 4326)
                   AND NOT EXISTS (SELECT 1 FROM "RoutingCorrections" c WHERE c."Active" AND c."Kind" = 'Block' AND c."Geometry" ~= l.geom)
                 """, land);
-            await Load("SELECT geom FROM routing_depth WHERE geom && ST_MakeEnvelope(@w, @s, @e, @n, 4326)", depth);
+            await Load("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@w, @s, @e, @n, 4326)", depth, withFloor: true);
         }
         // water that routing_land draws as land: inland Water corrections (Teltowkanal). Not the corridor of the imported OSM
         // waterways: "waterway=fairway" lines run through skerries, and land next to them is land (Stockholm → Sandhamn)
@@ -580,7 +796,7 @@ public static class Fairways
                 foreach (var poly in r.GetFieldValue<Geometry>(0) is var g && g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : [])
                     waterAreas.Insert(poly.EnvelopeInternal, new IndexedPointInAreaLocator(poly));
         }
-        land.Build(); depth.Build(); waterAreas.Build();
+        land.Build(); depth.Build(); waterAreas.Build(); floors.Build();
         bool In(STRtree<IndexedPointInAreaLocator> tree, Coordinate c) => tree.Query(new Envelope(c)).Any(l => l.Locate(c) != Location.Exterior);
         bool OnLand(Coordinate c) => In(land, c) && !In(waterAreas, c);
         bool Clear(Coordinate a, Coordinate b)
@@ -676,7 +892,14 @@ public static class Fairways
             var len = vias.Prepend(a).Append(b).Zip(vias.Append(b), (p, q) => RoutingGraphBuilder.Haversine(p.Y, p.X, q.Y, q.X)).Sum();
             return vias.Count is > 0 and <= 3 && len <= 1.25 * straight ? [.. vias] : null; // a gentle bend round one obstacle
         }
-        return (marks, new FairwayWater(Clear, Deep, Path, c => !OnLand(c)));
+        double? Floor(Coordinate c)
+        {
+            double? best = null;
+            foreach (var (at, floor) in floors.Query(new Envelope(c)))
+                if (at.Locate(c) != Location.Exterior && (best is null || floor > best)) best = floor;
+            return best;
+        }
+        return (marks, new FairwayWater(Clear, Deep, Path, c => !OnLand(c), floors.Count > 0 ? Floor : null));
 
         static void Box(NpgsqlCommand cmd, Envelope b)
         {
@@ -732,6 +955,12 @@ public static class Fairways
     }
     /// <summary>a → b in a local metric frame (degrees of latitude).</summary>
     private static (double x, double y) V(Coordinate a, Coordinate b) => ((b.X - a.X) * Math.Cos(a.Y * Math.PI / 180), b.Y - a.Y);
+    /// <summary>c moved metres along the unit direction (nx, ny) of the local metric frame.</summary>
+    private static Coordinate Shift(Coordinate c, double nx, double ny, double metres)
+    {
+        var m = metres / WaterGraphTiler.MPerDegLat;
+        return new Coordinate(c.X + nx * m / Math.Cos(c.Y * Math.PI / 180), c.Y + ny * m);
+    }
     private static double Cos((double x, double y) u, (double x, double y) v)
     {
         double lu = Math.Sqrt(u.x * u.x + u.y * u.y), lv = Math.Sqrt(v.x * v.x + v.y * v.y);

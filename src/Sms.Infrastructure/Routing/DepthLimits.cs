@@ -18,15 +18,21 @@ public static class DepthLimits
     public const double UnknownCoastalFloorM = 0;
 
     /// <param name="nearLand">(point, metres) → land lies within that distance; null = no coastal rule (passage edges).</param>
-    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry area, double minDepthM)> areas, Func<Coordinate, double, bool>? nearLand = null)
+    /// <param name="buoyed">Fairway areas (derived from the buoys, or charted): an edge at least half inside one is buoyed water and gets no
+    /// depth of its own, like a passage edge – the strict depth rule leaves it open.</param>
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry area, double minDepthM)> areas, Func<Coordinate, double, bool>? nearLand = null, IReadOnlyList<Polygon>? buoyed = null)
     {
         if (areas.Count == 0) return edges.ToList();
         var index = new STRtree<(IPreparedGeometry prepared, double depth)>();
         foreach (var (area, depth) in areas) index.Insert(area.EnvelopeInternal, (PreparedGeometryFactory.Prepare(area), depth));
         index.Build();
+        var fairways = new STRtree<IPreparedGeometry>();
+        foreach (var b in buoyed ?? []) fairways.Insert(b.EnvelopeInternal, PreparedGeometryFactory.Prepare(b));
+        fairways.Build();
         var result = new List<GraphEdge>(edges.Count);
         foreach (var e in edges)
         {
+            if (buoyed is { Count: > 0 } && fairways.Query(e.Geom.EnvelopeInternal) is { Count: > 0 } inside && ChannelPreference.ShareInside(e.Geom, inside) >= 0.5) { result.Add(e); continue; }
             double? min = null;
             foreach (var (prepared, depth) in index.Query(e.Geom.EnvelopeInternal))
                 if (prepared.Intersects(e.Geom) && (min is null || depth < min)) min = depth;

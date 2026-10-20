@@ -273,4 +273,58 @@ public class FairwaysTests
         Assert.Equal(54.3721, lat, 6);
         Assert.Equal(10.1234, lng, 6);
     }
+
+    [Fact]
+    public void A_wide_river_with_staggered_rows_becomes_one_corridor_with_an_area()
+    {
+        // red marks 600 m west and green marks 600 m east of the river's centre, every km, staggered by half a km: too far apart to
+        // pair, chained as two one-sided rows - which are the borders of one corridor: pairs with the foot on the other row, the area
+        // between the rows, the line on the medial line
+        const double lng0 = 10.15, lat0 = 54.40, half = 0.0092;
+        var marks = new List<FairwayMark>();
+        for (var i = 0; i < 6; i++)
+        {
+            marks.Add(new FairwayMark(lat0 + i * 0.009, lng0 - half, MarkSide.Port));
+            marks.Add(new FairwayMark(lat0 + 0.0045 + i * 0.009, lng0 + half, MarkSide.Starboard));
+        }
+        var corridor = Assert.Single(Fairways.Derive(marks, F));
+        Assert.True(corridor.Pairs >= 8, $"pairs {corridor.Pairs}");
+        Assert.All(corridor.Line.Coordinates, c => Assert.InRange(c.X, lng0 - 0.002, lng0 + 0.002));
+        Assert.NotNull(corridor.Area);
+        Assert.True(corridor.Area!.Contains(F.CreatePoint(new Coordinate(lng0, lat0 + 0.025))));
+        Assert.Contains(Fairways.PairedNote, Fairways.Note(corridor));
+        // without the merge (widePairMaxM 0) the rows stay two single-mark lines
+        Assert.All(Fairways.Derive(marks, F, widePairMaxM: 0), f => Assert.Equal(0, f.Pairs));
+    }
+
+    [Fact]
+    public void A_row_without_pairs_moves_towards_the_deeper_charted_band_beside_it()
+    {
+        // five red marks in a row running north, no green marks: a 5 m band east of the row, 2 m west of it - the line runs
+        // 150 m east of the marks (half the band's run of 300 m probed); without band data it stays on the marks
+        const double lng0 = 10.15, lat0 = 54.40;
+        var marks = Enumerable.Range(0, 5).Select(i => new FairwayMark(lat0 + i * 0.0045, lng0, MarkSide.Port)).ToList();
+        var water = new FairwayWater((_, _) => true, (_, _) => true, Floor: c => c.X > lng0 ? 5.0 : 2.0);
+        var line = Assert.Single(Fairways.Derive(marks, F, water));
+        var eastM = line.Line.Coordinates.Select(c => (c.X - lng0) * WaterGraphTiler.MPerDegLat * Math.Cos(lat0 * Math.PI / 180)).ToList();
+        Assert.All(eastM, m => Assert.InRange(m, Fairways.RowOffsetM - 20, Fairways.RowOffsetM + 20));
+        Assert.All(Fairways.Derive(marks, F).Single().Line.Coordinates, c => Assert.Equal(lng0, c.X, 9));
+    }
+
+    [Fact]
+    public void Cardinals_of_one_kind_in_a_row_form_a_fairway_but_a_ring_round_a_danger_does_not()
+    {
+        // four west cardinals along a shoal's west edge, 600 m apart: the fairway runs 100 m west of them
+        const double lng0 = 10.15, lat0 = 54.40;
+        var shoal = Enumerable.Range(0, 4).Select(i => new FairwayMark(lat0 + i * 0.0054, lng0, MarkSide.West)).ToList();
+        var line = Assert.Single(Fairways.Derive(shoal, F));
+        Assert.Equal(4, line.Singles);
+        Assert.All(line.Line.Coordinates, c => Assert.InRange((lng0 - c.X) * WaterGraphTiler.MPerDegLat * Math.Cos(lat0 * Math.PI / 180), 80, 120));
+        // a ring of four cardinals round a wreck (one of each kind) is no fairway
+        var ring = new List<FairwayMark>
+        {
+            new(lat0 + 0.002, lng0, MarkSide.North), new(lat0, lng0 + 0.0035, MarkSide.East), new(lat0 - 0.002, lng0, MarkSide.South), new(lat0, lng0 - 0.0035, MarkSide.West),
+        };
+        Assert.Empty(Fairways.Derive(ring, F));
+    }
 }
