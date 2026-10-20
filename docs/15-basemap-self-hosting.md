@@ -241,6 +241,15 @@ outside the bbox are a 204 from Martin). Zoomed in beyond z5 outside the bbox th
 
 If 403 MB is too much: villages/suburbs from z12 instead of z11 and islands only from z11 would cut most of the 91 MB place layer.
 
+**Water outside the box at z6+ (`basemap.pmtiles.new-wide2`, 427 MB).** The browser check showed land colour with a hard edge at the bbox from
+z6 on (North Sea west of 3 E, Channel, Norwegian Sea, east of 31 E). Chosen fix: a second water tier `ring-<area>` (z6–12, water layer only, from
+the global OSM water-polygons shapefile, so the PBF does not matter) over `RING_BOX` (default −12…40 E, 35…72 N) **minus the cut**, as a .poly
+with a hole, so tiles inside the cut are not doubled (border tiles carry both, identical colour). 267 571 tiles, 24 MB, Planetiler 3 min 13 s;
+merged by the same tile-join pass (whole lean build 16.5 min). z12 is overzoomed beyond, so the sea is blue at every zoom inside RING_BOX.
+Rejected: a water-coloured background with a coarse land layer on top would need a land polygon source that OpenMapTiles does not have, and
+would put Natural Earth's coarse coast inside the cut. Remaining gap: lakes outside the cut (e.g. Ladoga east of 31 E) come from OSM and stay
+land-coloured.
+
 ## 7. Sources
 
 Protomaps docs (downloads, layers, ODbL Produced Work), Planetiler README (hardware/benchmarks: heap ≈ 0.5x PBF, disk 5–10x PBF, v0.10.1 planet in 19 min on 192 cores), Planetiler custommap README (YAML schema),

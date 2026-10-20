@@ -6,7 +6,7 @@
 #   tools/build-basemap.sh schleswig-holstein            # full detail (z0–14) for one Geofabrik area, ≈ 3 min → basemap.pmtiles
 #   tools/build-basemap.sh europe                        # full detail for Europe: hours, ≈ 25 GB, ≈ 60 GB temp, 32+ GB RAM → basemap-europe.pmtiles
 #   tools/build-basemap.sh lean wide                     # z0–12, only water/waterway/water_name/place/transportation(_name)/boundary, then the
-#                                                        #   class filter below, plus a z0–5 world water tier → basemap-lean-wide.pmtiles
+#                                                        #   class filter below, plus the water tiers → basemap-lean-wide.pmtiles
 #   tools/build-basemap.sh filter media/tiles/x.pmtiles  # only the class filter, on an already built lean file → basemap-lean-filtered.pmtiles
 #   tools/build-basemap.sh detail europe harbours.poly   # z12–14 full detail only inside the polygon (3 km around every harbour,
 #                                                        #   GET /api/admin/map/harbour-areas.poly) → basemap-detail.pmtiles
@@ -14,8 +14,8 @@
 # Areas "region" (routing region, 4.5–19.5 E, 52–60 N) and "wide" (whole Baltic incl. Finland, Gulf of Bothnia, Baltic states, south Norway,
 # Benelux/German North Sea coast: 3–31 E, 50.5–66 N) are cut out of the Europe PBF (docs/15), in the Ubuntu WSL distro:
 #   osmium extract -b 3,50.5,31,66 --strategy=simple -o media/cache/osm/wide.osm.pbf media/cache/osm/europe-latest.osm.pbf
-# Lean builds also get a z0–5 world tier (water + country borders from Natural Earth) merged in, so the sea outside the cut is not
-# drawn in Liberty's land colour when zoomed out.
+# Lean builds also get water tiers merged in (z0–5 world, z6–10 around the cut, see water_tiers), so the sea outside the cut is not
+# drawn in Liberty's land colour.
 # Env: OUT_NAME=<file> overrides the output name (e.g. basemap-detail.pmtiles.new, which Martin does not serve),
 #      JAVA_XMX (heap), DOCKER_MEM (container cap, default 40g), THREADS (Planetiler threads, default 12),
 #      LEAN_FILTER (tile-join -j feature filter, default below).
@@ -68,20 +68,37 @@ JSON
 # attributes kept (-y; everything else goes): what the Liberty style reads plus the German/English names. The ~80 name:xx translations
 # per label are ~half of the place/water_name bytes and nothing renders them.
 LEAN_KEEP="$(printf -- '-y %s ' class subclass brunnel ramp oneway intermittent admin_level maritime disputed claimed_by capital rank network ref ref_length   name name_en name_de name_int name:latin name:nonlatin)"
-# z0–5 of the whole world, water and boundary only: at these zooms the OpenMapTiles profile takes both from Natural Earth, so any small
-# OSM file will do as input. Built once (~2 min) and kept in the volume.
-world_tier() {
-  MSYS_NO_PATHCONV=1 docker run --rm -v sms-planetiler-tmp:/tmp-data alpine test -f /tmp-data/world-z5.pmtiles && return
+# Outside the cut there are no OSM tiles, and MapLibre draws Liberty's land-coloured background there, sea included. Two water tiers
+# are merged into lean builds against that (both from Planetiler's OpenMapTiles profile, whose ocean does not come from the PBF, so any
+# small OSM file will do as input; built once and kept in the volume):
+#   world-z5      z0–5 of the whole world, water + boundary (Natural Earth at these zooms), ~2 min
+#   ring-<area>   z6–12 water only (OSM water-polygons shapefile) in RING_BOX minus the cut (.poly with a hole), so tiles inside the
+#                 cut are not doubled; lakes outside the cut are missing (they come from OSM)
+RING_BOX="${RING_BOX:--12,35,40,72}"
+planetiler_tier() { # <output> <args…>
+  local out="$1"; shift
+  MSYS_NO_PATHCONV=1 docker run --rm -v sms-planetiler-tmp:/tmp-data alpine test -f "/tmp-data/$out" && return
   local osm=(--area=monaco --download); [ -f media/cache/osm/schleswig-holstein-latest.osm.pbf ] && osm=(--osm_path=/osm/schleswig-holstein-latest.osm.pbf)
-  MSYS_NO_PATHCONV=1 docker run --rm --memory="${DOCKER_MEM:-40g}" --cpus="${THREADS:-12}" -e JAVA_TOOL_OPTIONS="-Xmx4g" \
-    -v "$HOST/media/tiles:/data" -v "$HOST/media/cache/osm:/osm" -v sms-planetiler-tmp:/tmp-data ghcr.io/onthegomap/planetiler:latest \
-    "${osm[@]}" --download --output=/tmp-data/world-z5.pmtiles --force --tmpdir=/tmp-data/tmp-world --threads="${THREADS:-12}" \
-    --bounds=world --maxzoom=5 --only_layers=water,boundary
-  MSYS_NO_PATHCONV=1 docker run --rm -v sms-planetiler-tmp:/tmp-data alpine rm -rf /tmp-data/tmp-world
+  MSYS_NO_PATHCONV=1 docker run --rm --memory="${DOCKER_MEM:-40g}" --cpus="${THREADS:-12}" -e JAVA_TOOL_OPTIONS="-Xmx8g" \
+    -v "$HOST/media/tiles:/data" -v "$HOST/media/cache/osm:/osm" -v "$HOST/media/cache/planetiler-tmp:/poly" -v sms-planetiler-tmp:/tmp-data \
+    ghcr.io/onthegomap/planetiler:latest "${osm[@]}" --download --output="/tmp-data/$out" --force --tmpdir=/tmp-data/tmp-tier --threads="${THREADS:-12}" "$@"
+  MSYS_NO_PATHCONV=1 docker run --rm -v sms-planetiler-tmp:/tmp-data alpine rm -rf /tmp-data/tmp-tier
+}
+water_tiers() {
+  TIERS=(/tmp-data/world-z5.pmtiles)
+  planetiler_tier world-z5.pmtiles --bounds=world --maxzoom=5 --only_layers=water,boundary
+  [ -n "$BBOX" ] || return 0
+  IFS=, read -r W S E N <<< "$BBOX"; IFS=, read -r RW RS RE RN <<< "$RING_BOX"
+  # no --bounds: Planetiler 0.10.3 ignores --polygon when --bounds is given (see below)
+  printf 'ring\nouter\n  %s %s\n  %s %s\n  %s %s\n  %s %s\n  %s %s\nEND\n!cut\n  %s %s\n  %s %s\n  %s %s\n  %s %s\n  %s %s\nEND\nEND\n' \
+    "$RW" "$RS" "$RE" "$RS" "$RE" "$RN" "$RW" "$RN" "$RW" "$RS"  "$W" "$S" "$E" "$S" "$E" "$N" "$W" "$N" "$W" "$S" > media/cache/planetiler-tmp/ring.poly
+  planetiler_tier "ring-$AREA.pmtiles" --polygon=/poly/ring.poly --minzoom=6 --maxzoom=12 --only_layers=water
+  rm -f media/cache/planetiler-tmp/ring.poly
+  TIERS+=("/tmp-data/ring-$AREA.pmtiles")
 }
 # runs the class filter on /tmp-data/build.pmtiles in the volume (on a Windows bind mount tile-join's SQLite temp is ~10x slower)
 lean_filter() {
-  world_tier
+  water_tiers
   docker image inspect "$TIPPECANOE" >/dev/null 2>&1 || docker build -t "$TIPPECANOE" - <<'DOCKERFILE'
 FROM debian:bookworm-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential libsqlite3-dev zlib1g-dev git ca-certificates
@@ -90,9 +107,9 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 zlib1g && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/tile-join /usr/local/bin/tippecanoe /usr/local/bin/
 DOCKERFILE
-  # tile-join writes world bounds into the header, which is right with the world tier merged in (z6+ outside the cut: Martin answers 204)
+  # tile-join writes world bounds into the header, which is right with the water tiers merged in
   MSYS_NO_PATHCONV=1 docker run --rm --memory="${DOCKER_MEM:-40g}" --cpus="${THREADS:-12}" -v sms-planetiler-tmp:/tmp-data "$TIPPECANOE" \
-    sh -c "tile-join -q -f -pk $LEAN_KEEP -j \"\$1\" -o /tmp-data/filtered.pmtiles /tmp-data/build.pmtiles /tmp-data/world-z5.pmtiles && mv /tmp-data/filtered.pmtiles /tmp-data/build.pmtiles" _ "$LEAN_FILTER"
+    sh -c "tile-join -q -f -pk $LEAN_KEEP -j \"\$1\" -o /tmp-data/filtered.pmtiles /tmp-data/build.pmtiles ${TIERS[*]} && mv /tmp-data/filtered.pmtiles /tmp-data/build.pmtiles" _ "$LEAN_FILTER"
 }
 if [ "$MODE" = filter ]; then
   MSYS_NO_PATHCONV=1 docker run --rm -v sms-planetiler-tmp:/tmp-data -v "$HOST/$(dirname "$AREA"):/in:ro" alpine cp "/in/$(basename "$AREA")" /tmp-data/build.pmtiles
