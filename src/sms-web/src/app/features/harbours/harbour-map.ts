@@ -51,7 +51,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
         }
         <label [title]="'ship.minDepthHint' | translate">{{ 'ship.minDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.minDepthM()" (ngModelChange)="shipCtx.manual($event === '' ? null : +$event, shipCtx.warnDepthM(), shipCtx.airDraftM())" /></label>
         <label [title]="'ship.warnDepthHint' | translate">{{ 'ship.warnDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.warnDepthM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), $event === '' ? null : +$event, shipCtx.airDraftM())" /></label>
-        <label>{{ 'ship.airDraft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), shipCtx.warnDepthM(), $event === '' ? null : +$event)" /></label>
+        <label [title]="'ship.airDraftHint' | translate">{{ 'ship.airDraft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), shipCtx.warnDepthM(), $event === '' ? null : +$event)" /></label>
         @if (shipCtx.hazardDepthM() !== null) { <span class="muted small">{{ 'ship.hazardsHidden' | translate }}</span> }
       </div>
       <aside class="panel" [class.open]="harbour()">

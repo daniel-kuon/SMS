@@ -8,7 +8,10 @@ public sealed record GraphNode(long Id, double X, double Y, bool IsMin);
 /// <summary>MinDepthM: shallowest charted depth area the edge touches (null = no data or a marked passage, which is never depth-limited).</summary>
 /// <param name="Assumed">An assumed passage (AssumedPassages): routes over it carry a warning.</param>
 /// <param name="AdjacentDepthM">No charted depth, coastal strip: floor of the shallowest band next to it (DepthLimits), the router treats the edge as that band.</param>
-public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null, bool Assumed = false, double? AdjacentDepthM = null);
+/// <param name="FloorM">Not a limit, only whether the water is definitely deep enough (SeaGraph.Floor): for a derived channel ("Enge") the
+/// depth limit leaves open, the floor of the band it runs through or next to it; for coastal water without any band in reach
+/// DepthLimits.UnknownCoastalFloorM.</param>
+public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null, bool Assumed = false, double? AdjacentDepthM = null, double? FloorM = null);
 public sealed record GraphTile(Envelope Envelope, double StartDegLng, double StartDegLat);
 
 /// <summary>

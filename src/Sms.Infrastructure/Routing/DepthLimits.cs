@@ -8,11 +8,14 @@ namespace Sms.Infrastructure.Routing;
 /// Gives every grid edge the shallowest depth area it crosses; routes for a ship then skip edges below its band floor (DepthBands).
 /// An edge that crosses no depth area but runs all along within <see cref="CoastalM"/> of land - the coastal strip the raster leaves
 /// out because it is shallower than its first band - gets the floor of the shallowest depth area within <see cref="AdjacentM"/> as
-/// AdjacentDepthM, and the router treats it as that band (DepthBands.Effective). Open water without data stays unlimited.
+/// AdjacentDepthM, and the router treats it as that band (DepthBands.Effective). Such an edge without a band in reach gets
+/// FloorM = <see cref="UnknownCoastalFloorM"/>: no limit, but not definitely deep enough either (SeaGraph.Floor). Open water without data stays unlimited.
 /// </summary>
 public static class DepthLimits
 {
     public const double AdjacentM = 200, CoastalM = 500;
+    /// <summary>Floor of coastal water without data and without a band in reach: depth unknown, at most the raster's first band - below every minimum depth.</summary>
+    public const double UnknownCoastalFloorM = 0;
 
     /// <param name="nearLand">(point, metres) → land lies within that distance; null = no coastal rule (passage edges).</param>
     public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry area, double minDepthM)> areas, Func<Coordinate, double, bool>? nearLand = null)
@@ -27,22 +30,29 @@ public static class DepthLimits
             double? min = null;
             foreach (var (prepared, depth) in index.Query(e.Geom.EnvelopeInternal))
                 if (prepared.Intersects(e.Geom) && (min is null || depth < min)) min = depth;
-            result.Add(min is not null ? e with { MinDepthM = min } : nearLand is not null && Adjacent(e.Geom, index, nearLand) is { } adj ? e with { AdjacentDepthM = adj } : e);
+            result.Add(min is not null ? e with { MinDepthM = min } : nearLand is null || !Coastal(e.Geom, nearLand) ? e
+                : Adjacent(e.Geom, index) is { } adj ? e with { AdjacentDepthM = adj } : e with { FloorM = UnknownCoastalFloorM });
         }
         return result;
     }
 
-    // ponytail: distances in planar degrees of latitude, so east-west reach is cos φ shorter (500 m → ~290 m at 55° N); a metric frame if that matters
-    private static double? Adjacent(LineString edge, STRtree<(IPreparedGeometry prepared, double depth)> index, Func<Coordinate, double, bool> nearLand)
+    /// <summary>The edge runs all along within CoastalM of land.</summary>
+    private static bool Coastal(LineString edge, Func<Coordinate, double, bool> nearLand)
     {
         var cs = edge.Coordinates;
-        if (!nearLand(cs[0], CoastalM) || !nearLand(cs[^1], CoastalM)) return null;
+        if (!nearLand(cs[0], CoastalM) || !nearLand(cs[^1], CoastalM)) return false;
         for (var k = 1; k < cs.Length; k++)
         {
             var n = (int)Math.Ceiling(RoutingGraphBuilder.Haversine(cs[k - 1].Y, cs[k - 1].X, cs[k].Y, cs[k].X) / 250);
             for (var i = 1; i < n; i++)
-                if (!nearLand(new Coordinate(cs[k - 1].X + (cs[k].X - cs[k - 1].X) * i / n, cs[k - 1].Y + (cs[k].Y - cs[k - 1].Y) * i / n), CoastalM)) return null;
+                if (!nearLand(new Coordinate(cs[k - 1].X + (cs[k].X - cs[k - 1].X) * i / n, cs[k - 1].Y + (cs[k].Y - cs[k - 1].Y) * i / n), CoastalM)) return false;
         }
+        return true;
+    }
+
+    // ponytail: distances in planar degrees of latitude, so east-west reach is cos φ shorter (500 m → ~290 m at 55° N); a metric frame if that matters
+    private static double? Adjacent(LineString edge, STRtree<(IPreparedGeometry prepared, double depth)> index)
+    {
         var d = AdjacentM / WaterGraphTiler.MPerDegLat;
         var env = edge.EnvelopeInternal.Copy(); env.ExpandBy(d);
         double? min = null;

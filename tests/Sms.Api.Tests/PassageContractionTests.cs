@@ -19,12 +19,14 @@ public class PassageContractionTests
             E(3, 6, 9.02, 54.0, 9.02, 54.01),
             E(4, 90, 9.03, 54.0, 9.03, 53.99),
         };
+        edges[0] = edges[0] with { FloorM = 1.8288 }; // an unbuoyed channel piece through the 1.83 m band
         var result = PassageContraction.Contract(edges, new HashSet<long> { 1, 5, 4 }, id => id >= 90);
         // 1-3 merged (through 2), 3-4, 4-5, 3-6, 4-90 stay: five edges
         Assert.Equal(5, result.Count);
         var merged = result.Single(e => (e.Source == 1 && e.Target == 3) || (e.Source == 3 && e.Target == 1));
         Assert.Equal(3, merged.Geom.NumPoints);
         Assert.Equal(3.0, merged.MinDepthM); // the strictest depth of the parts
+        Assert.Equal(1.8288, merged.FloorM);  // … and the shallowest floor
         Assert.Equal(edges[0].Cost + edges[1].Cost, merged.Cost, 6);
         Assert.DoesNotContain(result, e => e.Source == 2 || e.Target == 2); // vertex 2 is gone
         // without the link at 4 the whole 3-4-5 stretch would be one edge

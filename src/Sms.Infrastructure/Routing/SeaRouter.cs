@@ -54,7 +54,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var b = await db.Harbours.AsNoTracking().Where(h => h.Id == to).Select(h => h.Location).FirstOrDefaultAsync(ct);
         if (a is null || b is null) return null;
         var straight = Math.Round((decimal)(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / Nm), 1);
-        if (cached is not null) return new RouteResult(cached.DistanceNm, straight, cached.Geometry, version, "sea-graph", Warnings: (await WarningsAlongAsync([cached.Geometry], ct, warnDepthM))[0]);
+        if (cached is not null) return new RouteResult(cached.DistanceNm, straight, cached.Geometry, version, "sea-graph", Warnings: [.. (await WarningsAlongAsync([cached.Geometry], ct, warnDepthM))[0], .. await BridgeWarningsAsync(cached.Geometry, version, ct)]);
         var start = await AccessNodeAsync(from, version, ct);
         var end = await AccessNodeAsync(to, version, ct);
         if (start is null || end is null) return null;
@@ -237,10 +237,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             await using var r = await c.ExecuteReaderAsync();
             while (await r.ReadAsync()) { var id = (int)r.GetInt64(0); x[id] = r.GetDouble(1); y[id] = r.GetDouble(2); }
         }
-        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount]; var adjacent = new float[edgeCount];
+        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount]; var adjacent = new float[edgeCount]; var floor = new float[edgeCount];
         var geomStart = new int[edgeCount + 1]; var geom = new List<double>();
         var m = 0;
-        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed, adjacent_depth_m FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
+        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed, adjacent_depth_m, floor_m FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
         {
             c.Parameters.AddWithValue("v", version);
             await using var r = await c.ExecuteReaderAsync();
@@ -253,11 +253,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 if (!r.IsDBNull(5)) AppendInterior(r.GetFieldValue<byte[]>(5), geom);
                 assumed[m] = r.GetBoolean(6);
                 adjacent[m] = r.IsDBNull(7) ? float.NaN : (float)r.GetDouble(7);
+                floor[m] = r.IsDBNull(8) ? float.NaN : (float)r.GetDouble(8);
                 m++;
             }
         }
         geomStart[m] = geom.Count / 2;
-        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref adjacent, m); Array.Resize(ref geomStart, m + 1); }
+        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref adjacent, m); Array.Resize(ref floor, m); Array.Resize(ref geomStart, m + 1); }
         var isolated = new bool[maxNode + 1];
         await using (var c = new NpgsqlCommand("SELECT id FROM routing_isolated WHERE graph_version = @v", conn))
         {
@@ -266,7 +267,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             while (await r.ReadAsync()) { var id = r.GetInt64(0); if (id <= maxNode) isolated[id] = true; }
         }
         var loaded = sw.ElapsedMilliseconds;
-        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed, adjacent: adjacent);
+        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed, adjacent: adjacent, floor: floor);
         logger.LogInformation("Routing graph v{Version} in memory: {Nodes} node slots, {Edges} edges, {Snap} passage edges for snapping, heuristic x{Factor:F6}, ~{Mb} MB (GC +{GcMb} MB); read {Read} ms, indexed {Index} ms",
             version, graph.NodeSlots, graph.EdgeCount, graph.SnapEdgeCount, graph.HeuristicFactor, graph.ApproxBytes >> 20, (GC.GetTotalMemory(false) - before) >> 20, loaded, sw.ElapsedMilliseconds - loaded);
         return graph;
@@ -336,32 +337,45 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         if (straightM > builder.Options.MaxRouteNm * Nm) return null;
         timings ??= []; var clock = Stopwatch.StartNew();
         var o = builder.Options;
-        var limits = new SeaGraph.Limits(airDraftM, minDepthM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat, NoAssumed: !o.AssumedPassages);
+        // no air draft given: a typical yacht's mast (Routing:DefaultAirDraftM) - fixed bridges charted lower are closed unless no other route exists
+        var air = airDraftM ?? (o.DefaultAirDraftM > 0 ? o.DefaultAirDraftM : null);
+        var limits = new SeaGraph.Limits(air, minDepthM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat, NoAssumed: !o.AssumedPassages,
+            MinDepthM: minDepthM, UncertainFactor: o.UncertainDepthFactor);
         // the builder lets a passage end's link into the water graph cross up to 50 m of land (a harbour point on its pier): from a marina
         // channel that is a link straight across the mole (Großenbrode). Links on the path that cross land with water on both sides
         // cost Limits.PenaltyM (20 km) extra and the search runs again: they stay usable where nothing else leads on, as before
         var penalized = new HashSet<int>(); var checkedLinks = new HashSet<int>(); var rounds = 0;
-        SeaGraph.Path? path;
-        while (true)
+        async Task<SeaGraph.Path?> SearchAsync()
         {
-            path = graph.Route(from, to, limits with { Penalized = penalized });
-            if (path?.Edges is null || rounds++ == 8) break;
-            // … and so do straight edges between passage vertices across an island (gap links between channel pieces: Marstrand, Koön)
-            var bad = await LandLinksAsync(graph, path.Edges.Where(e => (graph.IsLink(e) || graph.IsStraightPassage(e)) && checkedLinks.Add(e)).ToList(), version, ct);
-            if (bad.Count == 0) break;
-            // the other links at both ends of a bad one go with it: a water node beyond a mole collects the links of a whole marina
-            var near = bad.SelectMany(e => graph.EdgesAt(graph.Source(e)).Concat(graph.EdgesAt(graph.Target(e)))).Where(e => graph.IsLink(e) && checkedLinks.Add(e)).ToList();
-            bad.AddRange(await LandLinksAsync(graph, near, version, ct));
-            penalized.UnionWith(bad);
+            while (true)
+            {
+                var p = graph.Route(from, to, limits with { Penalized = penalized });
+                if (p?.Edges is null || rounds++ == 8) return p;
+                // … and so do straight edges between passage vertices across an island (gap links between channel pieces: Marstrand, Koön)
+                var bad = await LandLinksAsync(graph, p.Edges.Where(e => (graph.IsLink(e) || graph.IsStraightPassage(e)) && checkedLinks.Add(e)).ToList(), version, ct);
+                if (bad.Count == 0) return p;
+                // the other links at both ends of a bad one go with it: a water node beyond a mole collects the links of a whole marina
+                var near = bad.SelectMany(e => graph.EdgesAt(graph.Source(e)).Concat(graph.EdgesAt(graph.Target(e)))).Where(e => graph.IsLink(e) && checkedLinks.Add(e)).ToList();
+                bad.AddRange(await LandLinksAsync(graph, near, version, ct));
+                penalized.UnionWith(bad);
+            }
         }
-        timings["astar"] = clock.ElapsedMilliseconds; timings["astar-rounds"] = rounds; timings["penalized-links"] = penalized.Count; clock.Restart();
+        var path = await SearchAsync();
+        if (path is null && airDraftM is null && air is not null)
+        {
+            // only under a bridge lower than the assumed mast: that route, with the bridge named in a warning
+            limits = limits with { AirDraftM = null }; air = null; rounds = 0;
+            path = await SearchAsync();
+            timings["low-bridge-fallback"] = 1;
+        }
+        timings["astar"] = clock.ElapsedMilliseconds; timings["astar-rounds"] = rounds; timings["penalized-links"] = penalized.Count; timings["cost"] = (long)(path?.Cost ?? -1); clock.Restart();
         if (path is null) { logger.LogInformation("No sea route between {From} and {To}", from, to); return null; }
         span?.SetTag("routing.settled", path.Settled);
         Stage("astar", path.Points);
         // the points of assumed edges: their legs cross the coastline land by design and are not rerouted round it
         var assumedPoints = new HashSet<Coordinate>();
         foreach (var e in path.Edges ?? []) if (graph.IsAssumed(e)) assumedPoints.UnionWith(graph.Coords(e));
-        var smoothed = await SmoothAsync(path.Points, path.Fixed, version, ct, airDraftM, minDepthM, timings, assumedPoints);
+        var smoothed = await SmoothAsync(path.Points, path.Fixed, version, ct, air, minDepthM, timings, assumedPoints);
         timings["smooth"] = clock.ElapsedMilliseconds;
         var metres = 0.0;
         for (var i = 1; i < smoothed.Count; i++) metres += RoutingGraphBuilder.Haversine(smoothed[i - 1].Y, smoothed[i - 1].X, smoothed[i].Y, smoothed[i].X);
@@ -370,6 +384,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var warnings = await WarningsAtAsync(path.Assumed ?? [], ct);
         if (from.OnLand is { } fl) warnings.Insert(0, LandWarning("startOnLand", fl, a, "Start liegt an Land – Route beginnt am nächsten Wasser"));
         if (to.OnLand is { } tl) warnings.Add(LandWarning("endOnLand", tl, b, "Ziel liegt an Land – Route endet am nächsten Wasser"));
+        if (airDraftM is null) warnings.AddRange(await BridgeWarningsAsync(line, version, ct));
         if (warnDepthM is { } wd)
         {
             // graph edges without charted depth that count as the band next to them (the smoothed line runs along them)
@@ -406,6 +421,46 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             }
         }
         return bad;
+    }
+
+    /// <summary>A point bridge (a charted span) this close to the route counts as passed under.</summary>
+    private const double BridgeWarnM = 300;
+
+    /// <summary>
+    /// "bridge" warnings for a route asked for without an air draft: every fixed bridge with a known clearance it passes under (a bridge
+    /// line it crosses, a charted span point within BridgeWarnM), one per bridge, in route order - the mast height is the skipper's to check.
+    /// DistanceM carries the clearance.
+    /// </summary>
+    private async Task<List<RouteWarning>> BridgeWarningsAsync(LineString route, int version, CancellationToken ct)
+    {
+        var defaultAir = builder.Options.DefaultAirDraftM;
+        if (defaultAir <= 0) return [];
+        var statics = await StaticsAsync(version, ct);
+        var near = route.EnvelopeInternal.Copy(); near.ExpandBy(2 * BridgeWarnM / WaterGraphTiler.MPerDegLat);
+        var line = new NetTopologySuite.LinearReferencing.LengthIndexedLine(route);
+        var hits = new List<(double at, Coordinate where, double clearance)>();
+        foreach (var (g, clearance, kind) in statics.Bridges.Query(near))
+        {
+            if (kind != CorrectionKind.Bridge || clearance is not { } cl || cl <= 0) continue;
+            Coordinate? where = null;
+            if (g is Point pt)
+            {
+                var q = line.ExtractPoint(line.Project(pt.Coordinate));
+                if (RoutingGraphBuilder.Haversine(q.Y, q.X, pt.Y, pt.X) <= BridgeWarnM) where = pt.Coordinate;
+            }
+            else if (g.Intersects(route)) where = g.Intersection(route).Coordinate;
+            if (where is not null) hits.Add((line.Project(where), where, cl));
+        }
+        // a bridge line and its span point (or the pieces of one bridge) name one bridge: one warning per 500 m of route
+        var result = new List<RouteWarning>(); var lastAt = double.NegativeInfinity;
+        foreach (var h in hits.OrderBy(h => h.at))
+        {
+            if ((h.at - lastAt) * WaterGraphTiler.MPerDegLat < 500) continue; // ponytail: planar degrees along the line, fine for "the same bridge"
+            lastAt = h.at;
+            var low = h.clearance < defaultAir ? string.Format(De, ", niedriger als die angenommene Masthöhe von {0:0} m: die Route führt nur hier durch", defaultAir) : "";
+            result.Add(new RouteWarning("bridge", Math.Round(h.where.Y, 5), Math.Round(h.where.X, 5), string.Format(De, "Brücke mit {0:0.0} m Durchfahrtshöhe{1} – Durchfahrtshöhe des Schiffs prüfen (nicht angegeben)", h.clearance, low), DistanceM: h.clearance));
+        }
+        return result;
     }
 
     /// <summary>Warnings for the assumed edges a path used (their midpoints), each with the note of the nearest "Annahme" correction.</summary>
@@ -511,7 +566,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// (every ≤ 1 km) – otherwise the pulled string could only bend at grid nodes and kept a dog-leg when the direct line to the
     /// next node grazed the coast. Passage geometry outside charted deep water keeps its shape.
     /// </summary>
-    private sealed record SmoothStatics(STRtree<(Geometry geom, double? clearance)> Bridges, STRtree<Geometry> Zone);
+    private sealed record SmoothStatics(STRtree<(Geometry geom, double? clearance, CorrectionKind kind)> Bridges, STRtree<Geometry> Zone);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<Task<SmoothStatics>>> _statics = new();
 
     /// <summary>Per graph version: the bridge pieces after chains and charted spans, and the channel zone pieces; built on first use.</summary>
@@ -524,10 +579,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     private async Task<SmoothStatics> BuildStaticsAsync(int version)
     {
         var sdb = db; // the first route of a version builds the cache; the caller awaits it, so its scope outlives the build
-        var bridges = new STRtree<(Geometry, double?)>();
+        var bridges = new STRtree<(Geometry, double?, CorrectionKind)>();
         var raw = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync())
             .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
-        foreach (var (g, _, cl) in Obstacles.WithSpans(raw)) bridges.Insert(g.EnvelopeInternal, (g, cl));
+        foreach (var (g, kind, cl) in Obstacles.WithSpans(raw)) bridges.Insert(g.EnvelopeInternal, (g, cl, kind));
         bridges.Build();
         var zone = new STRtree<Geometry>();
         var o = builder.Options;
@@ -586,7 +641,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         {
             // bridge pieces (chains, charted spans) are the same for every route of a graph version: computed once, queried by envelope
             var radiusDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
-            foreach (var (g, clearance) in statics.Bridges.Query(env))
+            foreach (var (g, clearance, _) in statics.Bridges.Query(env))
             {
                 if (clearance is not { } cl || (cl > 0 && (airDraftM is not { } ad || cl >= ad))) continue;
                 var b = g is Point ? g.Buffer(radiusDeg) : g.Buffer(300 / WaterGraphTiler.MPerDegLat);
@@ -636,7 +691,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             tree.Build();
             return tree;
         }
-        deep = await DeepAsync(boxes, limit);
+        // "Tonnen first": next to a buoy chain and along a passage only water definitely deep enough counts - every band floor at or above
+        // the minimum depth; a band that passes by its middle only is the water a channel avoids (Oknö: the pull cut from the fairway
+        // across the 1.8-3.7 m band into the skerries)
+        deep = await DeepAsync(boxes, minDepthM ?? limit);
         // passage geometry keeps its shape where it matters – canals, rivers, channels through shallow or uncharted water; a
         // passage segment that lies in water charted deep enough all along (a buoyed fairway across the open Kiel Bay) is pulled
         // like any other leg (fixed, the route rode the Fehmarnsund–Kiel lighthouse chain up to 54.49 N instead of heading for the Förde)

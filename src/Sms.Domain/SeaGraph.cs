@@ -27,6 +27,7 @@ public sealed class SeaGraph
     private readonly bool[]? _isolated;
     private readonly bool[]? _assumed;
     private readonly float[]? _adjacent;
+    private readonly float[]? _floor;
     private readonly STRtree<int> _passages = new();
 
     /// <summary>Lower bound of cost per metre over all edges (the heuristic's scale).</summary>
@@ -44,9 +45,11 @@ public sealed class SeaGraph
     /// <param name="assumed">Per edge: an assumed passage (null = none).</param>
     /// <param name="adjacent">Per edge without a charted depth: the floor of the shallowest band next to it in the coastal strip, NaN = none
     /// (<see cref="DepthBands.Effective"/>; null = no such data).</param>
-    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null, float[]? adjacent = null)
+    /// <param name="floor">Per edge of a derived channel ("Enge", no buoys) that the depth limit leaves open: the floor of the band it
+    /// runs through (or, without data in the coastal strip, of the band next to it), NaN = none. Counts for <see cref="Floor"/> only.</param>
+    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null, float[]? adjacent = null, float[]? floor = null)
     {
-        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed; _adjacent = adjacent;
+        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed; _adjacent = adjacent; _floor = floor;
         int n = x.Length, m = src.Length;
         _adjStart = new int[n + 1];
         for (var e = 0; e < m; e++) { _adjStart[src[e] + 1]++; _adjStart[tgt[e] + 1]++; }
@@ -76,7 +79,7 @@ public sealed class SeaGraph
     }
 
     /// <summary>Approximate bytes held (arrays and the snap index).</summary>
-    public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + (_adjacent?.Length ?? 0) * 4L + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
+    public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + (_adjacent?.Length ?? 0) * 4L + (_floor?.Length ?? 0) * 4L + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
 
     public bool IsPassage(int e) => _src[e] >= _firstPassage && _tgt[e] >= _firstPassage;
     public bool IsAssumed(int e) => _assumed is not null && _assumed[e];
@@ -87,6 +90,15 @@ public sealed class SeaGraph
     public bool IsStraightPassage(int e) => IsPassage(e) && _geomStart[e] == _geomStart[e + 1] && !IsAssumed(e);
     /// <summary>The depth the edge counts with (charted, else the adjacent band's floor; NaN = unknown).</summary>
     public float Depth(int e) => DepthBands.Effective(_depth[e], _adjacent?[e] ?? float.NaN);
+    /// <summary>The band floor the edge runs through, for the "definitely deep enough" test: its depth, or the floor of a derived
+    /// channel the depth limit leaves open (the shallower of both); NaN = unknown (open water without data, buoyed fairways, canals).</summary>
+    public float Floor(int e)
+    {
+        var d = Depth(e); var c = _floor?[e] ?? float.NaN;
+        return float.IsNaN(d) ? c : float.IsNaN(c) ? d : Math.Min(d, c);
+    }
+    /// <summary>Bridge clearance of the edge, NaN = none.</summary>
+    public float Clearance(int e) => _clear[e];
     /// <summary>The edge has no charted depth of its own and counts with the band next to it.</summary>
     public bool DepthInferred(int e) => float.IsNaN(_depth[e]) && !float.IsNaN(Depth(e));
     public int Source(int e) => _src[e];
@@ -184,7 +196,10 @@ public sealed class SeaGraph
 
     /// <param name="NoAssumed">Assumed passages closed (Routing:AssumedPassages off, or the derive endpoint testing what the graph connects without them).</param>
     /// <param name="Penalized">Edges that cost PenaltyM extra: links found crossing a mole, used only where nothing else leads on.</param>
-    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000);
+    /// <param name="MinDepthM">The ship's minimum depth: an edge whose band floor (<see cref="Floor"/>) lies below it is not definitely deep
+    /// enough – the band's middle may pass (DepthLimitM), its floor does not – and costs ×UncertainFactor, so a buoyed channel (no floor)
+    /// wins wherever one leads; water whose floor reaches it, open water without data and the channel itself cost as before.</param>
+    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000, double? MinDepthM = null, double UncertainFactor = 1);
     /// <summary>A route end projected onto a passage edge: on segment Segment of its geometry, at Fraction of its length.</summary>
     public sealed record Snap(int Edge, int Segment, double Fraction, Coordinate Point, double DistanceM);
     /// <summary>A route end: the clicked point and either a node or a snap onto an edge.</summary>
@@ -251,6 +266,9 @@ public sealed class SeaGraph
             if (!Exempt(e, l, from, to)) return double.PositiveInfinity;
             c *= ShallowFactor;
         }
+        // "Tonnen first": water whose band floor lies below the minimum depth is uncertain (×UncertainFactor, on top of ShallowFactor in the
+        // harbour approach), so the buoyed channel is left only where the water is definitely deep enough
+        if (l.MinDepthM is { } md && l.UncertainFactor != 1 && Floor(e) is var f && !float.IsNaN(f) && f < (float)md) c *= l.UncertainFactor;
         return c;
     }
 

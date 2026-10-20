@@ -1,4 +1,4 @@
-import { fromShip, parseContext } from './ship-context';
+import { fromShip, parseContext, routeParams } from './ship-context';
 import { routeWarningText } from './models';
 import { depthFillColour, depthHatchFilter } from './map';
 
@@ -13,6 +13,10 @@ describe('ship depth settings', () => {
     const ship = { id: 's', name: 'S', draftM: 1.8, airDraftM: null, minDepthM: null, warnDepthM: null };
     expect(fromShip(ship).minDepthM).toBe(2.3);
     expect(fromShip({ ...ship, minDepthM: 2, warnDepthM: 2.6 })).toEqual({ id: 's', name: 'S', minDepthM: 2, warnDepthM: 2.6, airDraftM: null });
+  });
+  it('sends the ship\'s depths and air draft to the routing API', () => {
+    expect(routeParams(fromShip({ id: 's', name: 'S', draftM: 1.8, airDraftM: 14.5, minDepthM: null, warnDepthM: 2.8 }))).toEqual({ minDepth: 2.3, warnDepth: 2.8, airDraft: 14.5 });
+    expect(routeParams(null)).toEqual({});
   });
   it('lists the same route warning once with a count', () => {
     const w = (note: string) => ({ kind: 'checkDepth', lat: 54, lng: 10, note });

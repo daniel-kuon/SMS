@@ -79,6 +79,13 @@ public sealed class RoutingOptions
     public double FillHoleKm2 { get; set; } = 3;
     /// <summary>Visibility legs within this distance of a bridge/lock point get its clearance and cost (passages use 60 m).</summary>
     public double BridgeMatchAreaM { get; set; } = 1500;
+    /// <summary>Air draft assumed when a route is asked for without one (a typical cruising yacht's mast): fixed bridges with a lower
+    /// charted clearance are closed unless no other route exists, and every fixed bridge with a known clearance on the route is
+    /// named in a warning. 0 = off (bridges without an air draft are passed silently, the rule before).</summary>
+    public double DefaultAirDraftM { get; set; } = 15;
+    /// <summary>"Tonnen first": edges in water whose band floor lies below the ship's minimum depth (the band's middle may pass, the
+    /// floor does not: not definitely deep enough) cost ×this outside buoyed channels, so the buoyed channel wins wherever one leads. 1 = off.</summary>
+    public double UncertainDepthFactor { get; set; } = 3;
 
     public sealed class RegionBox { public double MinLng { get; set; } = 7.6; public double MinLat { get; set; } = 53.3; public double MaxLng { get; set; } = 12.6; public double MaxLat { get; set; } = 55.4; }
 }
@@ -306,6 +313,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var shared = new Dictionary<(long, long), long>();
         var linked = new HashSet<long>(); // one grid link per passage node
         var passageEndIds = new List<(long id, Coordinate p)>();
+        var channelEnds = new HashSet<long>(); // ends of derived channels: their gap links and relinks run through the same unbuoyed water
         var linkNodes = new HashSet<long>(); // passage vertices that carry a link into the water graph: junctions the contraction keeps
         long NodeAt(Coordinate p)
         {
@@ -350,6 +358,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 // ends always hook into the water graph; inner vertices every ~1 km (derived channels have a vertex every few metres)
                 var isEnd = i == 0 || i == ls.NumPoints - 1;
                 if (isEnd) passageEndIds.Add((id, p));
+                if (isEnd && isChannel) channelEnds.Add(id);
                 var linkM = isEnd ? o.HarbourAccessM : sinceLink >= 1000 ? o.PassageLinkM : 0;
                 if (linkM > 0) sinceLink = 0;
                 if (linkM > 0 && linked.Add(id))
@@ -361,9 +370,10 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             }
             if (isChannel && extraEdges.Count > firstEdge) { channelEdgeFrom.Add(firstEdge); channelEdgeFrom.Add(extraEdges.Count); }
         }
+        List<(Geometry, double)>? depthRows = null;
         if (channelEdgeFrom.Count > 0)
         {
-            var depthRows = new List<(Geometry, double)>();
+            depthRows = [];
             await using (var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn) { CommandTimeout = 3600 })
             {
                 dcmd.Parameters.AddWithValue("x1", regionEnv.MinX); dcmd.Parameters.AddWithValue("y1", regionEnv.MinY); dcmd.Parameters.AddWithValue("x2", regionEnv.MaxX); dcmd.Parameters.AddWithValue("y2", regionEnv.MaxY);
@@ -372,15 +382,18 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             }
             var channelEdges = new List<GraphEdge>(); var ranges = new List<(int from, int to)>();
             for (var i = 0; i < channelEdgeFrom.Count; i += 2) { ranges.Add((channelEdgeFrom[i], channelEdgeFrom[i + 1])); channelEdges.AddRange(extraEdges.Skip(channelEdgeFrom[i]).Take(channelEdgeFrom[i + 1] - channelEdgeFrom[i])); }
-            var limited = DepthLimits.Apply(channelEdges, depthRows);
-            // a channel through water charted shallower than the default yacht costs ×AvoidPenaltyFactor but stays open (the depth
-            // areas are coarse in the Swedish archipelago and would close every sound); a channel across a drying flat is closed
+            var limited = DepthLimits.Apply(channelEdges, depthRows, nearLand);
+            // a channel through water charted shallower than the default yacht costs ×ShallowChannelFactor but stays open (the depth
+            // areas are coarse in the Swedish archipelago and would close every sound); a channel across a drying flat is closed.
+            // The floor it runs through stays known as FloorM (as does the band next to a channel in the coastal strip without
+            // data): an unbuoyed channel there is not definitely deep enough, a buoyed one wins (SeaGraph.Limits.MinDepthM)
             var shallowM = o.DefaultDraftM + o.DepthSafetyMarginM;
             var k = 0;
             foreach (var (from, to) in ranges) for (var i = from; i < to; i++)
             {
                 var e = limited[k++];
-                extraEdges[i] = e.MinDepthM is { } d && d > 0 && d < shallowM ? e with { Cost = e.Cost * o.ShallowChannelFactor, MinDepthM = null } : e;
+                extraEdges[i] = e.MinDepthM is { } d && d > 0 && d < shallowM ? e with { Cost = e.Cost * o.ShallowChannelFactor, MinDepthM = null, FloorM = d }
+                    : e.AdjacentDepthM is { } adj ? e with { AdjacentDepthM = null, FloorM = adj } : e;
             }
         }
         var obstacles = Obstacles.WithSpans((await db.RoutingCorrections.Where(c => c.Active && (c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync(ct))
@@ -437,7 +450,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 gapSeen.Add((Math.Min(n.Id, id), Math.Max(n.Id, id)));
                 gapLinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
             }
-            await WriteEdgesAsync(conn, version, gapLinks, ct);
+            await WriteEdgesAsync(conn, version, ChannelLinkFloors(gapLinks, channelEnds, depthRows, nearLand), ct);
             // live union-find: a stray end links to the nearest node of any other component (land-free), and the two merge; chains
             // of such merges pull archipelago fragments together even where no main-component node is within reach
             var parent = await ComponentsAsync(conn, version, ct);
@@ -456,7 +469,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 relinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
                 Union(id, n.Id);
             }
-            await WriteEdgesAsync(conn, version, relinks, ct);
+            await WriteEdgesAsync(conn, version, ChannelLinkFloors(relinks, channelEnds, depthRows, nearLand), ct);
             var giantRoot = Find(giant);
             // nodes outside the main component (enclosed pockets, lakes without a passage): the snap of a map click prefers the main
             // component, otherwise a click on a town quay snapped into a pond next to it and the route fell back to a straight line
@@ -519,10 +532,23 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         Report("done", $"Graph version {version} active: {nodes} nodes, {edges} edges, {access.Count} harbours ({sw.Elapsed:hh\\:mm\\:ss})");
     }
 
+    /// <summary>Links from a derived channel's end (gap links, relinks) carry no limit, only the floor of the water they cross (FloorM: the
+    /// charted band, the band next to them in the coastal strip, or unknown coastal water), as the channel itself.</summary>
+    private static List<GraphEdge> ChannelLinkFloors(List<GraphEdge> links, IReadOnlySet<long> channelEnds, IReadOnlyList<(Geometry, double)>? depths, Func<Coordinate, double, bool> nearLand)
+    {
+        if (depths is null || links.Count == 0) return links;
+        var idx = Enumerable.Range(0, links.Count).Where(i => channelEnds.Contains(links[i].Source)).ToList();
+        var limited = DepthLimits.Apply(idx.Select(i => links[i]).ToList(), depths, nearLand);
+        var result = links.ToList();
+        for (var k = 0; k < idx.Count; k++)
+            if ((limited[k].MinDepthM ?? limited[k].AdjacentDepthM ?? limited[k].FloorM) is { } f) result[idx[k]] = links[idx[k]] with { FloorM = f };
+        return result;
+    }
+
     private static async Task WriteEdgesAsync(NpgsqlConnection conn, int version, IReadOnlyList<GraphEdge> edges, CancellationToken ct)
     {
         if (edges.Count == 0) return;
-        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed, adjacent_depth_m) FROM STDIN (FORMAT BINARY)", ct);
+        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed, adjacent_depth_m, floor_m) FROM STDIN (FORMAT BINARY)", ct);
         foreach (var e in edges)
         {
             await w.StartRowAsync(ct);
@@ -535,6 +561,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             if (e.MinDepthM is { } md) await w.WriteAsync(md, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
             await w.WriteAsync(e.Assumed, NpgsqlDbType.Boolean, ct);
             if (e.AdjacentDepthM is { } ad) await w.WriteAsync(ad, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
+            if (e.FloorM is { } cf) await w.WriteAsync(cf, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
         }
         await w.CompleteAsync(ct);
     }

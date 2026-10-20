@@ -37,7 +37,8 @@ export interface Trip extends TripSummary {
 export interface Leg { id: string; order: number; alternative: number; fromHarbourId: string; fromName: string; toHarbourId: string; toName: string; plannedDate: string | null; distanceNm: number | null; etaHours: number | null; warnings?: RouteWarning[]; }
 /** A route assumption the chart data does not show (kind "assumedPassage": a strait the coastline closes, passed along a ferry line or buoy gap).
  *  Kind "startOnLand"/"endOnLand": the clicked point (lat/lng) lies on land, the route starts/ends at the nearest navigable water (snapped*, distanceM away).
- *  Kind "checkDepth": the route crosses water charted below the ship's warning depth at lat/lng (distanceM: length of that stretch). */
+ *  Kind "checkDepth": the route crosses water charted below the ship's warning depth at lat/lng (distanceM: length of that stretch).
+ *  Kind "bridge": asked without an air draft, the route passes under a fixed bridge at lat/lng (distanceM: its charted clearance). */
 export interface RouteWarning { kind: string; lat: number; lng: number; note: string; snappedLat?: number | null; snappedLng?: number | null; distanceM?: number | null; }
 /** " · ⚠ <notes>" for a route's warnings (the same note once, with a count), "" without any. */
 export function routeWarningText(warnings?: RouteWarning[] | null): string {

@@ -432,7 +432,7 @@ public static class RoutingEndpoints
             var old = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Geometry.Within(extent)).ToListAsync(ct);
             db.RoutingCorrections.RemoveRange(old);
             foreach (var f in fairways)
-                db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = f.Line, Note = $"Fahrwasser ({f.Pairs} Tonnenpaare)", Active = true, CreatedById = current.Id });
+                db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = f.Line, Note = f.Singles > 0 ? $"Fahrwasser ({f.Pairs} Tonnenpaare, {f.Singles} Einzeltonnen)" : $"Fahrwasser ({f.Pairs} Tonnenpaare)", Active = true, CreatedById = current.Id });
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { marks = marks.Count, created = fairways.Count, removed = old.Count, lines = fairways.Select(f => new { f.Pairs, points = f.Line.NumPoints, lengthNm = Math.Round(LengthNm(f.Line), 1) }) });
         });

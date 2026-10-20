@@ -25,8 +25,8 @@ public class SeaGraphTests
             foreach (var p in interior) { Geom.Add(10 + p.x * D); Geom.Add(54 + p.y * D); }
             return S.Count - 1;
         }
-        public SeaGraph Build(int firstPassage = int.MaxValue, double snapMinM = 1000, float[]? adjacent = null) =>
-            new([.. X], [.. Y], [.. S], [.. T], [.. Cost], [.. Depth], [.. Clear], [.. GeomStart, Geom.Count / 2], [.. Geom], firstPassage, null, snapMinM, adjacent: adjacent);
+        public SeaGraph Build(int firstPassage = int.MaxValue, double snapMinM = 1000, float[]? adjacent = null, float[]? floor = null) =>
+            new([.. X], [.. Y], [.. S], [.. T], [.. Cost], [.. Depth], [.. Clear], [.. GeomStart, Geom.Count / 2], [.. Geom], firstPassage, null, snapMinM, adjacent: adjacent, floor: floor);
         public Coordinate C(int n) => new(X[n], Y[n]);
     }
 
@@ -72,6 +72,37 @@ public class SeaGraphTests
         Assert.DoesNotContain(g.C(detour), graph.Route(new(g.C(a), a), new(g.C(c), c), limits with { ExemptDeg = 0.02 })!.Points);
         // without a draft it is a plain edge
         Assert.True(graph.Route(new(g.C(a), a), new(g.C(b), b), new())!.Cost < 6000);
+    }
+
+    [Fact]
+    public void Water_not_definitely_deep_enough_costs_extra_so_the_buoyed_channel_wins()
+    {
+        // a → b straight across the 1.83-3.66 m band (passes for 2 m by its middle, its floor does not), or round via the buoyed
+        // channel (passage edges, no floor) 2.3× as long
+        var g = new G();
+        int a = g.Node(0, 0), b = g.Node(8, 0), c1 = g.Node(0, 3), c2 = g.Node(8, 3);
+        var band = g.Edge(a, b, depth: 1.8288f);
+        var channel = new[] { g.Edge(a, c1), g.Edge(c1, c2), g.Edge(c2, b) };
+        var limits = new SeaGraph.Limits(DepthLimitM: 1.8288, MinDepthM: 2.0, UncertainFactor: 3);
+        var graph = g.Build(firstPassage: c1); // c1, c2 are passage vertices, a and b water nodes
+        Assert.Contains(g.C(c1), graph.Route(new(g.C(a), a), new(g.C(b), b), limits)!.Points);
+        // the band's floor reaches the minimum depth: definitely deep enough, the straight way
+        Assert.DoesNotContain(g.C(c1), graph.Route(new(g.C(a), a), new(g.C(b), b), limits with { MinDepthM = 1.8 })!.Points);
+        // the rule off (factor 1) or no minimum depth: as before
+        Assert.DoesNotContain(g.C(c1), graph.Route(new(g.C(a), a), new(g.C(b), b), limits with { UncertainFactor = 1 })!.Points);
+        Assert.DoesNotContain(g.C(c1), graph.Route(new(g.C(a), a), new(g.C(b), b), limits with { MinDepthM = null })!.Points);
+        // an unbuoyed channel through the band (no depth of its own, floor 1.83 m) or coastal water without data (floor 0) counts the same
+        g.Depth[band] = float.NaN;
+        var floor = Enumerable.Repeat(float.NaN, g.S.Count).ToArray();
+        floor[band] = 1.8288f;
+        Assert.Contains(g.C(c1), g.Build(firstPassage: c1, floor: floor).Route(new(g.C(a), a), new(g.C(b), b), limits)!.Points);
+        floor[band] = 0;
+        var coastal = g.Build(firstPassage: c1, floor: floor);
+        Assert.Equal(0f, coastal.Floor(band)); Assert.True(float.IsNaN(coastal.Depth(band))); // no limit, only the cost
+        Assert.Contains(g.C(c1), coastal.Route(new(g.C(a), a), new(g.C(b), b), limits)!.Points);
+        // open water without data: normal cost
+        Assert.DoesNotContain(g.C(c1), g.Build(firstPassage: c1).Route(new(g.C(a), a), new(g.C(b), b), limits)!.Points);
+        Assert.All(channel, e => Assert.True(float.IsNaN(graph.Floor(e))));
     }
 
     [Fact]

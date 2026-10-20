@@ -15,6 +15,7 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { drafts, isNetworkError, OfflineQueue } from '../../core/offline';
 import { EntryCrew, LogbookDefaults, LogbookEntry, Paged, RouteWarning, routeWarningText, Ship } from '../../core/models';
+import { fromShip, routeParams } from '../../core/ship-context';
 import { TranslateService } from '@ngx-translate/core';
 
 interface WeatherSummary { samples: number; windBft: number; windKn: number; windDirection: string | null; gustKn: number | null; weather: string; seaState: string; waveHeightM: number | null; temperatureC: number | null; }
@@ -162,6 +163,8 @@ export class EntryDialog {
 
   // --- route on the trip map (docs/14): routed line between the harbours, adjusted on the map, stored as routeGeometry
   routeHint = signal(''); private routeReset = false;
+  /** The entry ship's depths and air draft for the routing API, loaded once. */
+  private shipParams?: Record<string, number>;
   private initRoute(): void {
     const stored = this.e?.routeGeometry?.coordinates;
     if (stored?.length) this.data.map?.showRoute(stored); else this.loadRoute();
@@ -170,10 +173,12 @@ export class EntryDialog {
     const map = this.data.map; const from = this.m.startHarbourId, to = this.m.endHarbourId;
     if (!map || !from || !to) return;
     this.routeReset = false; this.routeHint.set('…');
-    this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] }; warnings?: RouteWarning[] }>('/api/routing/route', { fromHarbour: from, toHarbour: to }).subscribe({
+    const route = (p: Record<string, number>) => this.api.get<{ distanceNm: number; geometry: { coordinates: number[][] }; warnings?: RouteWarning[] }>('/api/routing/route', { fromHarbour: from, toHarbour: to, ...p }).subscribe({
       next: r => { map.showRoute(r.geometry.coordinates); this.routeHint.set(`${r.distanceNm} sm${routeWarningText(r.warnings)}`); this.m.sailedDistanceNm ??= r.distanceNm; },
       error: err => this.routeHint.set(errorMessage(err)),
     });
+    if (this.shipParams) { route(this.shipParams); return; }
+    this.api.get<Ship>(`/api/ships/${this.data.shipId}`).subscribe({ next: s => route(this.shipParams = routeParams(fromShip(s))), error: () => route({}) });
   }
   async pickEnd(): Promise<void> {
     const h = await this.data.map?.pickHarbour(this.m.startHarbourId);

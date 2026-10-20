@@ -58,11 +58,14 @@ public class DepthTests
         var stripEast = Edge(3, 4, 10.08, 54.52, 10.12, 54.52);    // reaches the 0 m band too: the shallowest counts
         var offshore = Edge(5, 6, 10.02, 54.40, 10.06, 54.40);     // no data far from land: stays unlimited
         var wide = Edge(7, 8, 10.02, 54.52, 10.02, 54.47);         // charted on the way: its own depth
-        var result = DepthLimits.Apply([strip, stripEast, offshore, wide], [(band, 1.8288), (flat, 0)], NearLand);
+        var farStrip = Edge(9, 10, 10.25, 54.52, 10.28, 54.52);    // along the coast, no band in reach: unknown, not definitely deep
+        var result = DepthLimits.Apply([strip, stripEast, offshore, wide, farStrip], [(band, 1.8288), (flat, 0)], NearLand);
         Assert.Null(result[0].MinDepthM); Assert.Equal(1.8288, result[0].AdjacentDepthM);
         Assert.Equal(0, result[1].AdjacentDepthM);
         Assert.Null(result[2].AdjacentDepthM);
         Assert.Equal(1.8288, result[3].MinDepthM); Assert.Null(result[3].AdjacentDepthM);
+        Assert.Null(result[4].MinDepthM); Assert.Null(result[4].AdjacentDepthM); Assert.Equal(DepthLimits.UnknownCoastalFloorM, result[4].FloorM);
+        Assert.All(result.Take(4), e => Assert.Null(e.FloorM));
         Assert.Null(DepthLimits.Apply([strip], [(band, 1.8288)])[0].AdjacentDepthM); // without land (passages): no coastal rule
     }
 }

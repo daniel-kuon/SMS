@@ -33,13 +33,17 @@ export class ShipContextService {
     this.ship.set(minDepthM === null && warnDepthM === null && airDraftM === null ? null : { id: null, name: '', minDepthM, warnDepthM, airDraftM });
   }
   /** Query parameters the routing API understands. */
-  routeParams(): Record<string, number> {
-    const p: Record<string, number> = {}; const s = this.ship();
-    if (s?.minDepthM != null) p['minDepth'] = s.minDepthM;
-    if (s?.warnDepthM != null) p['warnDepth'] = s.warnDepthM;
-    if (s?.airDraftM != null) p['airDraft'] = s.airDraftM;
-    return p;
-  }
+  routeParams(): Record<string, number> { return routeParams(this.ship()); }
+}
+
+/** Routing API parameters for a context: minimum and warning depth, air draft ("Durchfahrtshöhe": without it the API assumes a
+ *  typical yacht's mast and names every fixed bridge on the route in a warning). */
+export function routeParams(s: ShipContext | null): Record<string, number> {
+  const p: Record<string, number> = {};
+  if (s?.minDepthM != null) p['minDepth'] = s.minDepthM;
+  if (s?.warnDepthM != null) p['warnDepth'] = s.warnDepthM;
+  if (s?.airDraftM != null) p['airDraft'] = s.airDraftM;
+  return p;
 }
 
 /** The context for a ship: its own minimum depth, else draft + margin; warnings only with its own warning depth. */

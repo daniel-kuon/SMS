@@ -41,6 +41,24 @@ public class FairwaysTests
     }
 
     [Fact]
+    public void A_stretch_marked_on_one_side_only_joins_the_chains_on_either_side()
+    {
+        // 3 pairs, 3 km with starboard marks only (every ~750 m), 3 pairs: one fairway through the single marks, half a pair width
+        // off them towards the channel (on the centreline)
+        var marks = Channel(3);
+        marks.AddRange(Channel(3, lat0: 54.40 + 0.009 + 0.027));
+        for (var k = 1; k <= 3; k++) marks.Add(new LateralMark(54.409 + k * 0.00675, 10.15 + 0.0023, LateralSide.Starboard));
+        var fairway = Assert.Single(Fairways.Derive(marks, F));
+        Assert.Equal(6, fairway.Pairs); Assert.Equal(3, fairway.Singles);
+        Assert.All(fairway.Line.Coordinates, c => Assert.Equal(10.15, c.X, 6));
+        // without the single marks the 3 km gap splits the chains, as before
+        Assert.Equal(2, Fairways.Derive(marks.Take(12).ToList(), F).Count);
+        // single marks off to the side (behind the chain's end, not ahead of it) join nothing
+        var aside = Channel(3).Concat(Channel(3, lat0: 54.436)).Append(new LateralMark(54.405, 10.20, LateralSide.Starboard)).ToList();
+        Assert.Equal(2, Fairways.Derive(aside, F).Count);
+    }
+
+    [Fact]
     public void Side_mapping_follows_iala_a_categories()
     {
         Assert.Equal(LateralSide.Port, Fairways.SideOf("buoy_lateral", "port"));
