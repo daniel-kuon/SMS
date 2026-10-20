@@ -24,7 +24,7 @@ public class FairwayDeriveTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(6, result.GetProperty("marks").GetInt32()); // the cardinal mark is not lateral
         Assert.Equal(1, result.GetProperty("created").GetInt32());
         Assert.Equal(3, result.GetProperty("lines")[0].GetProperty("pairs").GetInt32());
-        var corrections = await admin.GetFromJsonAsync<JsonElement>("/api/admin/routing/corrections");
+        var corrections = await admin.GetFromJsonAsync<JsonElement>("/api/admin/routing/corrections?bbox=54.59,9.99,54.63,10.06"); // without a bbox: manual corrections only
         var fairway = corrections.EnumerateArray().Single(c => c.GetProperty("note").GetString()!.StartsWith("Fahrwasser"));
         var coords = fairway.GetProperty("geometry").GetProperty("coordinates");
         Assert.Equal(3, coords.GetArrayLength());
