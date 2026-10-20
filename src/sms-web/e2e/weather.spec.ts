@@ -67,23 +67,23 @@ test('a selected harbour shows the distance to a hovered harbour and to any clic
   await expect(page.locator('.maplibregl-popup-content')).toHaveCount(0);
 });
 
-test('ship context hides deep hazards and routes carry the draft', async ({ page }) => {
+test('ship context hides deep hazards and routes carry the minimum depth', async ({ page }) => {
   const list = await (await page.request.get('/api/harbours?q=Meldorfer')).json() as { id: string }[];
   // listen before navigating: a cached nearby-ports answer can arrive before the canvas is visible
   const nearby = page.waitForResponse(r => r.url().includes('/api/routing/nearby-ports') && r.ok());
   await page.goto(`/harbours/${list[0].id}`);
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
   await nearby;
-  await page.locator('.ship-ctx input').first().fill('1.8');
+  await page.locator('.ship-ctx input').first().fill('2.3'); // minimum depth for routes (applied without extra margin)
   await page.locator('.ship-ctx input').first().dispatchEvent('input');
   await expect(page.locator('.ship-ctx .small')).toBeVisible();
   await page.waitForFunction(() => !!(window as unknown as { smsMap?: unknown }).smsMap); // the map handle is set once the style and overlays are up
   const filter = await page.evaluate(() => JSON.stringify((window as unknown as { smsMap: { getFilter(id: string): unknown } }).smsMap.getFilter('seamark-icons')));
   expect(filter).toContain('2.3');
-  const route = page.waitForRequest(r => r.url().includes('/api/routing/route?') && r.url().includes('draft=1.8'), { timeout: 30_000 });
+  const route = page.waitForRequest(r => r.url().includes('/api/routing/route?') && r.url().includes('minDepth=2.3'), { timeout: 30_000 });
   await page.waitForTimeout(1000);
   await page.locator('.maplibregl-canvas').click({ position: { x: 60, y: 420 } });
   await route;
   await page.reload();
-  await expect(page.locator('.ship-ctx input').first()).toHaveValue('1.8'); // remembered
+  await expect(page.locator('.ship-ctx input').first()).toHaveValue('2.3'); // remembered
 });
