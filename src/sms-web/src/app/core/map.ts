@@ -1,4 +1,5 @@
 import * as maplibregl from 'maplibre-gl';
+import { readableQuery } from './route-link';
 import type { ExpressionSpecification, GeoJSONSource, Map as MlMap, MapOptions, StyleSpecification } from 'maplibre-gl';
 import type { Feature, LineString, Point } from 'geojson';
 import { formatPosition, seamarkTypeLabel } from './seamark-icons';
@@ -417,7 +418,7 @@ export interface UrlHistory { path(): string; replaceState(path: string, query?:
  */
 export function syncViewWithUrl(map: MlMap, history: UrlHistory, settleMs = 1000): () => void {
   const current = (): MapView => { const c = map.getCenter(); return { lat: c.lat, lng: c.lng, zoom: map.getZoom() }; };
-  const withView = (url: string, v: MapView): [string, string] => { const [path, q = ''] = url.split('?'); const p = new URLSearchParams(q); p.set('c', formatView(v)); return [path, p.toString().replace(/%2C/g, ',')]; };
+  const withView = (url: string, v: MapView): [string, string] => { const [path, q = ''] = url.split('?'); const p = new URLSearchParams(q); p.set('c', formatView(v)); return [path, readableQuery(p)]; };
   let entry = { path: history.path().split('?')[0], view: current() };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const moved = (a: MapView, b: MapView) => Math.abs(a.zoom - b.zoom) >= 0.5 || map.project([a.lng, a.lat]).dist(map.project([b.lng, b.lat])) > 100;

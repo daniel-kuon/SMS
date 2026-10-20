@@ -20,7 +20,7 @@ import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, HarbourService, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
 import { Location } from '@angular/common';
-import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, rowValueEl, ServiceSpot, setPoiFocus, setServiceActive, setServiceHighlight, setServicePath, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
+import { bounds, createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, rowValueEl, ServiceSpot, setPoiFocus, setServiceActive, setServiceHighlight, setServicePath, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
 import { formatServiceDistance } from '../../core/service-distance';
 import { googleRouteUrl, PlaceRow, placeRows, ServicePlace } from '../../core/service-place';
@@ -31,6 +31,7 @@ import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, Weat
 import { ShipContextService } from '../../core/ship-context';
 import { applyDepthShading, applyHazardFilter } from '../../core/map';
 import { formatDecimal, formatDepthBand, formatNautical, insertVia, joinLegs, LatLng, nearestLeg, PointInfo, RouteLeg } from '../../core/map-point';
+import { parseRouteLink, RouteLink, routeLinkParams, withParams } from '../../core/route-link';
 /** Show only the places up to this distance when there are any; otherwise the ones up to the 5 km that the API returns. */
 const NEAR_RADIUS_M = 3000;
 
@@ -81,6 +82,16 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
               @if (start()) { <span class="muted start">{{ 'mapPoint.start' | translate: { name: startName() } }}
                 @if (routeStart()) { <button mat-icon-button class="clear-start" (click)="clearStart()" [title]="'mapPoint.clearStart' | translate" [attr.aria-label]="'mapPoint.clearStart' | translate"><mat-icon>close</mat-icon></button> }</span> }
             </div>
+          </div>
+        }
+        @if (courseRoute() || refRoute()) {
+          <div class="route-box" [class.above-bar]="point()" role="region" [attr.aria-label]="'routeLink.title' | translate">
+            @if (refRoute(); as r) {
+              <div class="legend"><label><input type="checkbox" class="toggle-ref" [checked]="refVisible()" (change)="toggleRef()" /><span class="swatch saved"></span>{{ 'routeLink.saved' | translate: { nm: r.nm } }}</label>
+                <button mat-icon-button class="remove-ref" (click)="removeRef()" [title]="'routeLink.remove' | translate" [attr.aria-label]="'routeLink.remove' | translate"><mat-icon>close</mat-icon></button></div>
+              <div class="legend current"><span class="swatch"></span>{{ 'routeLink.current' | translate: { nm: courseRoute()?.distanceNm ?? (routing() ? '…' : '–') } }}</div>
+            }
+            @if (courseRoute()) { <button mat-stroked-button class="save-link" [disabled]="routing()" (click)="saveRouteLink()"><mat-icon>{{ linkCopied() ? 'check' : 'link' }}</mat-icon> {{ (linkCopied() ? 'routeLink.copied' : 'routeLink.save') | translate }}</button> }
           </div>
         }
       </div>
@@ -181,6 +192,10 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     .point-bar .pos { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; } .point-bar .close { position: absolute; top: 0; right: 0; }
     .point-bar .facts, .point-bar .actions { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; } .point-bar mat-icon[inline] { vertical-align: middle; }
     .point-bar .start { display: inline-flex; align-items: center; }
+    .route-box { position: absolute; left: 8px; bottom: 28px; z-index: 3; background: rgba(255,255,255,.97); border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.3); padding: 4px 8px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+    .route-box .legend { display: flex; align-items: center; gap: 6px; min-height: 28px; } .route-box label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; } .route-box .current { padding-left: 19px; }
+    .route-box .swatch { display: inline-block; width: 22px; border-top: 4px solid #1e88e5; } .route-box .swatch.saved { border-top: 3px dashed #757575; }
+    .route-box.above-bar { bottom: 140px; } /* the point bar spans the bottom */
     .panel { width: 0; overflow: hidden; transition: width .2s; background: white; box-shadow: -2px 0 8px rgba(0,0,0,.15); }
     .panel.open { width: 420px; max-width: 100vw; padding: 12px; overflow-y: auto; }
     .panel h2 { margin: 0; font-size: 20px; } .links { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; } .links .pos { font-size: 12px; }
@@ -315,6 +330,8 @@ export class HarbourMapPage {
     map.addLayer({ id: 'harbour-cluster-count', type: 'symbol', source: 'harbours', filter: ['has', 'point_count'], layout: { 'text-field': ['get', 'point_count_abbreviated'], 'text-size': 12, 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#ffffff' } });
     map.addLayer({ id: 'harbour-points', type: 'circle', source: 'harbours', filter: ['!', ['has', 'point_count']], paint: { 'circle-color': ['case', ['boolean', ['get', 'selected'], false], '#e65100', '#1976d2'], 'circle-radius': 7, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 } });
     map.addLayer({ id: 'harbour-labels', type: 'symbol', source: 'harbours', filter: ['!', ['has', 'point_count']], layout: { 'text-field': ['get', 'name'], 'text-size': 11, 'text-anchor': 'left', 'text-offset': [0.9, 0], 'text-font': ['Noto Sans Regular'], 'text-optional': true }, paint: { 'text-color': '#1b4d7a', 'text-halo-color': 'rgba(255,255,255,.9)', 'text-halo-width': 1.5 } });
+    map.addSource('route-ref', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'route-ref-line', type: 'line', source: 'route-ref', paint: { 'line-color': '#757575', 'line-width': 3, 'line-dasharray': [2, 1.5] } });
     map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['!=', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 4 } });
     map.addLayer({ id: 'route-on-land', type: 'line', source: 'route', filter: ['==', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 1.5, 'line-dasharray': [1, 2] } });
@@ -341,6 +358,7 @@ export class HarbourMapPage {
     this.refresh();
     const h = this.harbour();
     if (h) { setPoiFocus(map, h.id ? h : null); this.revealHarbour(h); }
+    if (this.link) { this.openLink(this.link); this.link = null; }
   }
 
   ngOnDestroy(): void { this.unsyncView?.(); this.map?.remove(); }
@@ -379,7 +397,8 @@ export class HarbourMapPage {
   load(id: string): void {
     this.api.get<Harbour>(`/api/harbours/${id}`).subscribe(h => {
       this.harbour.set(h);
-      this.pinned = false; this.hideRoute(true);
+      if (this.keepLinkedRoute) this.keepLinkedRoute = false;   // a route link on a harbour page: the harbour's first load keeps the linked route
+      else { this.pinned = false; this.hideRoute(true); }
       if (this.map) { this.revealHarbour(h); this.setHarbourData(); }
       this.api.get<{ ports: NearbyPort[] }>('/api/routing/nearby-ports', { harbour: id, maxNm: 60, limit: 30 }).subscribe(r => this.nearby.set(r.ports));
       this.api.get<ReturnType<HarbourMapPage['visits']>>(`/api/harbours/${id}/visits`).subscribe(v => this.visits.set(v));
@@ -454,16 +473,61 @@ export class HarbourMapPage {
   editable = () => !!this.course?.legs.length && this.pinned && !this.routing();
 
   /** "Route hierher": a pinned route from the start to the clicked point, the distance in a popup there. */
-  routeHere(): void {
-    const s = this.start(), p = this.point(), map = this.map;
-    if (!s || !p || !map) return;
+  routeHere(): void { const s = this.start(), p = this.point(); if (s && p) this.startCourse({ lat: s.lat, lng: s.lng }, p); }
+
+  private startCourse(s: LatLng, p: LatLng, vias: LatLng[] = []): void {
+    const map = this.map; if (!map) return;
     this.hideRoute(true);
-    this.course = { from: { lat: s.lat, lng: s.lng }, to: p, vias: [], legs: [] };
+    this.course = { from: s, to: p, vias, legs: [] };
     this.draw([[s.lng, s.lat], [p.lng, p.lat]], straightNm(s, p), true);
     this.pinned = true;
     this.pointPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false, offset: 8 }).setLngLat([p.lng, p.lat]).setDOMContent(textEl(`${straightNm(s, p)} sm (Luftlinie) …`)).addTo(map);
     this.pointPopup.on('close', () => { if (this.pinned) this.hideRoute(true); });
-    this.recalc();
+    this.syncVias(); this.recalc();
+  }
+
+  // --- route links: the route's inputs and its line (ref) in the URL; a link with ref shows that route next to the newly calculated one ---
+  /** The route of the URL the page opened with, until it is shown. */
+  private link: RouteLink | null = parseRouteLink(this.location.path().split('?')[1] ?? '');
+  private keepLinkedRoute = !!this.link;
+  /** The current course's routed line, for saving it in a link. */
+  courseRoute = signal<{ coordinates: [number, number][]; distanceNm: number } | null>(null);
+  /** The route saved in the opened link (grey dashed). */
+  refRoute = signal<{ coordinates: [number, number][]; nm: number } | null>(null);
+  refVisible = signal(true);
+  linkCopied = signal(false);
+
+  /** Opens a route link: its settings become the ship context, the saved route is drawn and the route is calculated anew from its inputs. */
+  private openLink(link: RouteLink): void {
+    const map = this.map; if (!map) return;
+    const ctx = this.shipCtx;
+    if (ctx.minDepthM() !== link.minDepth || ctx.warnDepthM() !== link.warnDepth || ctx.airDraftM() !== link.airDraft) ctx.manual(link.minDepth, link.warnDepth, link.airDraft);
+    if (link.unknownBridges) ctx.unknownBridges.set(link.unknownBridges);
+    if (link.ref) {
+      this.refRoute.set(link.ref); this.refVisible.set(true);
+      (map.getSource('route-ref') as GeoJSONSource).setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: link.ref.coordinates } });
+      map.setLayoutProperty('route-ref-line', 'visibility', 'visible');
+    }
+    this.routeStart.set(link.from);
+    (this.startMarker ??= new maplibregl.Marker({ element: dotEl('#2e7d32') })).setLngLat([link.from.lng, link.from.lat]).addTo(map);
+    this.startCourse(link.from, link.to, link.vias);
+    if (!viewFromUrl(this.location.path())) map.fitBounds(bounds(link.ref?.coordinates ?? [link.from, ...link.vias, link.to].map(p => [p.lng, p.lat] as [number, number])), { padding: 60, animate: false });
+  }
+
+  /** "Route im Link speichern": the route's inputs and line into the URL (the view stays), the URL to the clipboard. */
+  saveRouteLink(): void {
+    const c = this.course, r = this.courseRoute(); if (!c || !r) return;
+    const [path, query = ''] = this.location.path().split('?');
+    this.location.replaceState(path, withParams(query, routeLinkParams(c.from, c.to, c.vias, this.shipCtx.routeParams(), r.coordinates, r.distanceNm)), this.location.getState());
+    navigator.clipboard?.writeText(window.location.href).then(() => this.linkCopied.set(true), () => undefined);
+    setTimeout(() => this.linkCopied.set(false), 2500);
+  }
+  toggleRef(): void { const v = !this.refVisible(); this.refVisible.set(v); this.map?.setLayoutProperty('route-ref-line', 'visibility', v ? 'visible' : 'none'); }
+  removeRef(): void {
+    this.refRoute.set(null);
+    (this.map?.getSource('route-ref') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
+    const [path, query = ''] = this.location.path().split('?');
+    this.location.replaceState(path, withParams(query, { ref: null }), this.location.getState());
   }
 
   /** Routes every leg of the course (the route API per leg, in parallel), joins them and draws the result; the old line stays faded meanwhile. */
@@ -479,6 +543,7 @@ export class HarbourMapPage {
         busy(false);
         const r = joinLegs(legs);
         c.legs = legs.map(l => l.geometry.coordinates);
+        this.courseRoute.set({ coordinates: r.coordinates, distanceNm: r.distanceNm });
         this.pinned = false; this.draw(r.coordinates, r.distanceNm, r.straight, !!r.warnings.length, r.warnings); this.pinned = true;
         popup?.setDOMContent(textEl(r.straight ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${straight} sm${routeWarningText(r.warnings)}`));
       },
@@ -486,7 +551,7 @@ export class HarbourMapPage {
       error: err => {
         if (seq !== this.routeSeq || this.course !== c) return;
         busy(false);
-        c.legs = [];
+        c.legs = []; this.courseRoute.set(null);
         (map.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
         popup?.setDOMContent(textEl(`${errorMessage(err)} (Luftlinie ${straight} sm)`));
       },
@@ -562,7 +627,7 @@ export class HarbourMapPage {
     if (this.pinned && !force) return;
     if (force) {
       const p = this.pointPopup; this.pointPopup = undefined; p?.remove();
-      this.course = null; this.routeSeq++; this.syncVias(); this.routing.set(false); this.pinned = false;
+      this.course = null; this.routeSeq++; this.syncVias(); this.routing.set(false); this.pinned = false; this.courseRoute.set(null);
       if (this.map?.getLayer('route-line')) this.map.setPaintProperty('route-line', 'line-opacity', 1);
     }
     this.hovered = null;
