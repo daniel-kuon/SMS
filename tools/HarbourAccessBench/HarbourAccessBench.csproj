@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Harbour access links of the active graph re-checked in memory against the dev database, read-only; see Program.cs -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\Sms.Infrastructure\Sms.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

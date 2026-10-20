@@ -473,9 +473,13 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 Tick();
                 // the access link may not cross land: a harbour on a river or lake the graph does not know stays unreachable rather than
                 // being routed across a field (the audit found 35 such routes); a node of the main component is preferred, any other
-                // connected node is taken when none is within reach
-                var n = await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, h.Location.Coordinate, o.HarbourAccessM, m => Find(m.Id) == giantRoot, ct)
-                    ?? await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, h.Location.Coordinate, o.HarbourAccessM, _ => true, ct);
+                // connected node is taken when none is within reach. Only when no link passes, the harbour's own basin and its quay or mole
+                // may be crossed (SeaGraph.LinkLandOk harbour: 60 marinas behind a quay lost their access in v64 with the 300 m shortcut)
+                var hc = h.Location.Coordinate;
+                var n = await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, hc, o.HarbourAccessM, m => Find(m.Id) == giantRoot, ct)
+                    ?? await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, hc, o.HarbourAccessM, _ => true, ct)
+                    ?? await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, hc, o.HarbourAccessM, m => Find(m.Id) == giantRoot, ct, harbour: true)
+                    ?? await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, hc, o.HarbourAccessM, _ => true, ct, harbour: true);
                 if (n is not null) access.Add((h.Id, n.Id, Haversine(h.Location.Y, h.Location.X, n.Y, n.X)));
             }
             Report("passages", $"{extraNodes.Count} passage nodes, {extraEdges.Count} edges; {gapLinks.Count} gap links, {strays} stray passage ends, {relinks.Count} relinked; {access.Count}/{harbours.Count} harbours reachable ({sw.Elapsed:hh\\:mm\\:ss})");
@@ -779,9 +783,10 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         return parent.Keys.ToList().ToDictionary(k => k, Find);
     }
 
-    /// <summary>The nearest acceptable node whose link from <paramref name="p"/> does not cross land. The first 150 m at the start are
-    /// ignored (a harbour point sits on its pier, a channel end on the shore).</summary>
-    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, NodeIndex? index, STRtree<(IPreparedGeometry prepared, Geometry geom)> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct, long maxId = long.MaxValue)
+    /// <summary>The nearest acceptable node whose link from <paramref name="p"/> does not cross land (<see cref="SeaGraph.LinkLandOk"/>:
+    /// a harbour point sits on its pier, a channel end on the shore; <paramref name="harbour"/> also lets a harbour's access link leave
+    /// its own basin across the quay or mole – never for passage, gap or stray links, which are transit edges).</summary>
+    private static async Task<GraphNode?> NearestWaterLinkAsync(NpgsqlConnection conn, int version, NodeIndex? index, STRtree<(IPreparedGeometry prepared, Geometry geom)> landIndex, Coordinate p, double maxM, Func<GraphNode, bool> accept, CancellationToken ct, long maxId = long.MaxValue, bool harbour = false)
     {
         var candidates = index is not null ? index.Nearest(p, maxM, 40, maxId) : await NearestNodesAsync(conn, version, p.X, p.Y, maxM, 40, ct, maxId);
         foreach (var n in candidates)
@@ -789,27 +794,27 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             if (!accept(n)) continue;
             var lenM = Haversine(p.Y, p.X, n.Y, n.X);
             // no shortcut for short links: a gap link of 172 m between two channel pieces crossed an islet (Marstrand, 57.8218 N)
-            var seg = Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)]);
-            // a harbour point sits on its pier and a channel end on the shore: crossing a mole or pier is fine, crossing a field is not.
-            // Sampled every 25 m with the prepared point-in-polygon test (an exact overlay against a mainland tile took minutes per node)
-            var hits = landIndex.Query(seg.EnvelopeInternal).Where(l => l.prepared.Intersects(seg)).Select(l => l.prepared).ToList();
-            if (hits.Count == 0) return n;
-            // Two shapes of land crossing are fine: up to 50 m anywhere (a mole or pier), or a leading stretch of up to 1.5 km (the harbour's
-            // own basin or creek, which the coastline polygons count as land, plus its mole or dike). Land after water on the way is a field
-            // or a spit (150 m let the Schleimünde links cross the Lotseninsel, so routes cut through the island instead of using the mole gap).
-            var steps = Math.Max(2, (int)Math.Ceiling(lenM / 25)); var onLand = 0; var leading = 0; var trailing = 0; var water = false; var middle = false;
-            for (var k = 1; k < steps; k++)
-            {
-                var q = Geo.Factory.CreatePoint(new Coordinate(p.X + (n.X - p.X) * k / steps, p.Y + (n.Y - p.Y) * k / steps));
-                if (hits.Any(l => l.Contains(q))) { onLand++; trailing++; if (!water) leading++; } else { water = true; if (trailing > 0 && onLand > leading) middle = true; trailing = 0; }
-                if (middle || (onLand > 2 && onLand > leading + trailing)) break; // land between water: a mole or spit
-            }
-            // land between water on both sides is a mole, breakwater or spit: never linked across (Großenbrode: channel ends in the
-            // marina were linked across the mole to the water outside). Land at the start (a harbour on its pier, a Siel behind its
-            // dike up to 1.5 km) or up to 50 m at the far end (a node on the shore) is fine.
-            if (!middle && onLand - leading <= 2 && leading * 25 <= 1500) return n;
+            if (LinkLandSamples(landIndex, p, new Coordinate(n.X, n.Y)) is not { } land || SeaGraph.LinkLandOk(land, lenM / (land.Length + 1), harbour)) return n;
         }
         return null;
+    }
+
+    /// <summary>Land flags of the points every ~25 m along p → q (ends excluded), null when the link touches no land at all. A harbour
+    /// point sits on its pier and a channel end on the shore: <see cref="SeaGraph.LinkLandOk"/> decides which crossings are fine.
+    /// Sampled with the prepared point-in-polygon test (an exact overlay against a mainland tile took minutes per node).</summary>
+    public static bool[]? LinkLandSamples(STRtree<(IPreparedGeometry prepared, Geometry geom)> landIndex, Coordinate p, Coordinate q)
+    {
+        var seg = Geo.Factory.CreateLineString([p, q]);
+        var hits = landIndex.Query(seg.EnvelopeInternal).Where(l => l.prepared.Intersects(seg)).Select(l => l.prepared).ToList();
+        if (hits.Count == 0) return null;
+        var steps = Math.Max(2, (int)Math.Ceiling(Haversine(p.Y, p.X, q.Y, q.X) / 25));
+        var land = new bool[steps - 1];
+        for (var k = 1; k < steps; k++)
+        {
+            var pt = Geo.Factory.CreatePoint(new Coordinate(p.X + (q.X - p.X) * k / steps, p.Y + (q.Y - p.Y) * k / steps));
+            land[k - 1] = hits.Any(l => l.Contains(pt));
+        }
+        return land;
     }
 
     /// <summary>A fairway link crossing more land than this between water costs FairwayJumpPenaltyM extra (as the router penalizes a link across a mole).</summary>

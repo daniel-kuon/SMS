@@ -141,6 +141,34 @@ public sealed class SeaGraph
         }
         return longest * step;
     }
+
+    /// <summary>Whether a link into the water graph may cross the land of <paramref name="land"/> (flags of the points every
+    /// <paramref name="stepM"/> from the link's start, ends excluded). Land at the start up to 1.5 km is fine (a harbour on its pier, a
+    /// Siel behind its dike, the harbour's own basin or creek counted as land), so is up to 50 m at the far end (a node on the shore).
+    /// Land between water is a mole, breakwater or spit: never crossed (Großenbrode: channel ends in the marina were linked across the
+    /// mole to the water outside; 150 m let the Schleimünde links cross the Lotseninsel, so routes cut through the island).
+    /// <paramref name="harbour"/>: a harbour's access link (never a transit edge), tried only when no link passes the strict test. The
+    /// harbour point may lie in its own basin (a marina pool behind its quay or mole, an imported inner Water polygon): water up to
+    /// <see cref="HarbourBasinM"/> and then up to <see cref="HarbourMoleM"/> of land (the quay, mole or river bank) count as the start;
+    /// land after that is an island or a field as for any link (60 harbours, v64, lost their access when the 300 m shortcut went).</summary>
+    public static bool LinkLandOk(IReadOnlyList<bool> land, double stepM = 25, bool harbour = false)
+    {
+        var leading = 0; while (leading < land.Count && land[leading]) leading++;
+        var maxLeadingM = 1500.0;
+        if (harbour && leading == 0)
+        {
+            var basin = 0; while (basin < land.Count && !land[basin]) basin++;
+            if (basin < land.Count && basin * stepM <= HarbourBasinM)
+            {
+                leading = basin; while (leading < land.Count && land[leading]) leading++;
+                maxLeadingM = basin * stepM + HarbourMoleM;
+            }
+        }
+        var trailing = 0; while (trailing < land.Count - leading && land[land.Count - 1 - trailing]) trailing++;
+        for (var k = leading; k < land.Count - trailing; k++) if (land[k]) return false;
+        return trailing * stepM <= 50 && leading * stepM <= maxLeadingM;
+    }
+    public const double HarbourBasinM = 150, HarbourMoleM = 200;
     public Coordinate Node(int id) => new(_x[id], _y[id]);
 
     /// <summary>The edge's geometry from source to target.</summary>

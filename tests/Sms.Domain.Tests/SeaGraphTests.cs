@@ -381,4 +381,28 @@ public class StringPullTests
         Assert.Equal(0, SeaGraph.InteriorLandM(new(10.015, 54), new(10.03, 54), island)); // starts on land: a quay, not an island
         Assert.Equal(0, SeaGraph.InteriorLandM(new(10.0, 54), new(10.009, 54), island));
     }
+
+    // land samples every 25 m from the link's start, as runs: "W2 L3" = 50 m water, then 75 m land
+    private static bool[] Runs(string runs) => runs.Split(' ').SelectMany(r => Enumerable.Repeat(r[0] == 'L', int.Parse(r[1..]))).ToArray();
+
+    [Theory]
+    [InlineData("W10", true, true)]
+    [InlineData("L20 W10", true, true)]        // harbour on its pier / Siel behind its dike: leading land up to 1.5 km
+    [InlineData("L70 W10", false, false)]      // a field
+    [InlineData("W10 L2", true, true)]         // node on the shore
+    [InlineData("W10 L3", false, false)]
+    [InlineData("W4 L1 W4", false, true)]      // Großenbrode: a passage end in the marina is never linked across the mole; a harbour is
+    [InlineData("W2 L3 W2", false, true)]      // marina basin, quay, water outside (Fiskehamn, Skagen Sejlklub)
+    [InlineData("W1 L5 W1", false, true)]      // inland basin cut out as Water, bank, river passage (Lüneburg, Wittingen)
+    [InlineData("W2 L3", false, true)]         // basin, then the river bank up to a passage node on the coastline land (Meppen)
+    [InlineData("W2 L8 W2", false, true)]      // 200 m quay or mole
+    [InlineData("W2 L9 W2", false, false)]     // 225 m: an island or a field, not the harbour's quay
+    [InlineData("W7 L2 W2", false, false)]     // 175 m of water first: open water, the land is an islet
+    [InlineData("W2 L2 W3 L2 W2", false, false)] // out of the basin, then across an islet
+    [InlineData("W2 L2 W3 L3", false, false)]  // ... or a node 75 m inland
+    public void Link_land_crossing_is_classified(string runs, bool strict, bool harbour)
+    {
+        Assert.Equal(strict, SeaGraph.LinkLandOk(Runs(runs)));
+        Assert.Equal(harbour, SeaGraph.LinkLandOk(Runs(runs), harbour: true));
+    }
 }
