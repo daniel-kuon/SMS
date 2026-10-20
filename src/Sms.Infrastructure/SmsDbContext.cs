@@ -36,6 +36,8 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
     public DbSet<HarbourReview> HarbourReviews => Set<HarbourReview>();
     public DbSet<ContentPage> ContentPages => Set<ContentPage>();
     public DbSet<RoutingCorrection> RoutingCorrections => Set<RoutingCorrection>();
+    public DbSet<FeedbackGroup> FeedbackGroups => Set<FeedbackGroup>();
+    public DbSet<FeedbackItem> FeedbackItems => Set<FeedbackItem>();
     public DbSet<ShipAisConfig> ShipAisConfigs => Set<ShipAisConfig>();
     public DbSet<WeatherObservation> WeatherObservations => Set<WeatherObservation>();
     public DbSet<RouteCache> RouteCaches => Set<RouteCache>();
@@ -198,6 +200,8 @@ public class SmsDbContext(DbContextOptions<SmsDbContext> options)
             e.Property(s => s.TagsJson).HasColumnType("jsonb");
         });
         m.Entity<RoutingCorrection>(e => e.Property(c => c.Geometry).HasColumnType("geometry(Geometry,4326)"));
+        m.Entity<FeedbackGroup>(e => { e.Property(g => g.Name).HasMaxLength(200); e.HasMany(g => g.Items).WithOne(i => i.Group).HasForeignKey(i => i.GroupId).OnDelete(DeleteBehavior.Cascade); });
+        m.Entity<FeedbackItem>(e => { e.Property(i => i.Geometry).HasColumnType("geometry(Geometry,4326)"); e.Property(i => i.ObjectSnapshot).HasColumnType("jsonb"); e.Property(i => i.ObjectRef).HasMaxLength(100); });
         m.Entity<WeatherObservation>(e => { e.Property(o => o.Location).HasColumnType("geography (point, 4326)"); e.HasIndex(o => new { o.ShipId, o.Time }); e.HasIndex(o => new { o.TripId, o.Time }); e.Property(o => o.Provider).HasMaxLength(40); });
         m.Entity<ShipAisConfig>(e => { e.HasKey(c => c.ShipId); e.HasOne<Ship>().WithOne().HasForeignKey<ShipAisConfig>(c => c.ShipId).OnDelete(DeleteBehavior.Cascade); e.Property(c => c.Provider).HasMaxLength(40); e.Property(c => c.Mmsi).HasMaxLength(20); });
         m.Entity<RouteCache>(e =>

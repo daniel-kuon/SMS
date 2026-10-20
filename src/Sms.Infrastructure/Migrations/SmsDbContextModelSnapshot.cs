@@ -505,6 +505,101 @@ namespace Sms.Infrastructure.Migrations
                     b.ToTable("ExpenseShares");
                 });
 
+            modelBuilder.Entity("Sms.Domain.FeedbackGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedById")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedById")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("FeedbackGroups");
+                });
+
+            modelBuilder.Entity("Sms.Domain.FeedbackItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedById")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Expectation")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<Geometry>("Geometry")
+                        .HasColumnType("geometry(Geometry,4326)");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("ObjectRef")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("ObjectSnapshot")
+                        .HasMaxLength(4000)
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedById")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GroupId");
+
+                    b.ToTable("FeedbackItems");
+                });
+
             modelBuilder.Entity("Sms.Domain.Harbour", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2555,6 +2650,17 @@ namespace Sms.Infrastructure.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Sms.Domain.FeedbackItem", b =>
+                {
+                    b.HasOne("Sms.Domain.FeedbackGroup", "Group")
+                        .WithMany("Items")
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Group");
+                });
+
             modelBuilder.Entity("Sms.Domain.HarbourReview", b =>
                 {
                     b.HasOne("Sms.Domain.Harbour", null)
@@ -2724,6 +2830,11 @@ namespace Sms.Infrastructure.Migrations
             modelBuilder.Entity("Sms.Domain.Expense", b =>
                 {
                     b.Navigation("Shares");
+                });
+
+            modelBuilder.Entity("Sms.Domain.FeedbackGroup", b =>
+                {
+                    b.Navigation("Items");
                 });
 
             modelBuilder.Entity("Sms.Domain.Harbour", b =>

@@ -1,4 +1,4 @@
-import { formatDecimal, formatDepthBand, formatNautical, insertVia, joinLegs, nearestLeg, RouteLeg } from './map-point';
+import { formatDecimal, formatDepthBand, formatNautical, insertVia, joinLegs, nearestLeg, nearestOnPolyline, removeAt, replaceAt, RouteLeg } from './map-point';
 
 describe('map point', () => {
   it('formats positions nautically with a decimal comma and decimally', () => {
@@ -31,5 +31,18 @@ describe('map point', () => {
     expect(r.warnings.map(x => x.kind)).toEqual(['startOnLand', 'bridge', 'endOnLand']);
     expect(r.straight).toBe(false);
     expect(joinLegs([leg([[0, 0], [1, 0]], 1, [], 'straight-line')]).straight).toBe(true);
+  });
+
+  it('finds the nearest point on a polyline and edits vertices', () => {
+    const line: [number, number][] = [[0, 0], [10, 0], [10, 10]];
+    expect(nearestOnPolyline(line, [4, 3])).toEqual({ index: 0, point: [4, 0], dist: 3 });
+    expect(nearestOnPolyline(line, [12, 6])).toEqual({ index: 1, point: [10, 6], dist: 2 });
+    expect(nearestOnPolyline(line, [-5, 0])!.point).toEqual([0, 0]);   // clamped to the end
+    expect(nearestOnPolyline([[1, 1]], [0, 0])).toBeNull();
+    // a vertex inserted on segment 1 goes between vertex 1 and 2 (insertVia at index + 1)
+    expect(insertVia(line, 1 + 1, [10, 6] as [number, number])).toEqual([[0, 0], [10, 0], [10, 6], [10, 10]]);
+    expect(removeAt(line, 1)).toEqual([[0, 0], [10, 10]]);
+    expect(replaceAt(line, 2, [9, 9] as [number, number])).toEqual([[0, 0], [10, 0], [9, 9]]);
+    expect(line).toEqual([[0, 0], [10, 0], [10, 10]]);   // untouched
   });
 });

@@ -14,6 +14,7 @@ import { bounds, createMap, MlMap } from '../../core/map';
 import { Api, errorMessage } from '../../core/api';
 import { haversineM } from '../../core/track-playback';
 import { formatPosition } from '../../core/seamark-icons';
+import { isMarkerEvent, LineEditor } from '../../core/line-editor';
 
 export interface Correction { id: string; kind: 'Block' | 'Passage' | 'Bridge' | 'Lock' | 'OpeningBridge' | 'Fairway' | 'Avoid' | 'Water'; source: 'Manual' | 'Derived'; geometry: Geometry; note: string | null; active: boolean; createdAt: string; clearanceM?: number | null; }
 export const KIND_ICON: Record<Correction['kind'], string> = { Block: 'block', Passage: 'timeline', Bridge: 'vertical_align_top', Lock: 'lock', OpeningBridge: 'open_in_full', Fairway: 'water', Avoid: 'warning', Water: 'waves' };
@@ -95,8 +96,8 @@ const MARKED: ExpressionSpecification = ['any', HOVER, SEL];
             <button mat-stroked-button (click)="startDraw('Passage')"><mat-icon>timeline</mat-icon> {{ 'admin.drawPassage' | translate }}</button>
             <button mat-stroked-button (click)="startDraw('Block')"><mat-icon>block</mat-icon> {{ 'admin.drawBlock' | translate }}</button>
           } @else {
-            <span class="muted">{{ 'admin.drawHint' | translate }} ({{ points().length }})</span>
-            <mat-form-field appearance="outline" subscriptSizing="dynamic" class="full"><mat-label>{{ 'admin.note' | translate }}</mat-label><input matInput [(ngModel)]="note" /></mat-form-field>
+            <span class="muted">{{ (editing() ? 'admin.editGeometryHint' : 'admin.drawHint') | translate }} ({{ points().length }})</span>
+            @if (!editing()) { <mat-form-field appearance="outline" subscriptSizing="dynamic" class="full"><mat-label>{{ 'admin.note' | translate }}</mat-label><input matInput [(ngModel)]="note" /></mat-form-field> }
             <button mat-flat-button (click)="finishDraw()" [disabled]="!canFinish()">{{ 'common.save' | translate }}</button>
             <button mat-button (click)="cancelDraw()">{{ 'common.cancel' | translate }}</button>
           }
@@ -119,6 +120,7 @@ const MARKED: ExpressionSpecification = ['any', HOVER, SEL];
             </dl>
             <div class="row">
               <button mat-flat-button (click)="showOnMap(c)"><mat-icon>center_focus_strong</mat-icon> {{ 'admin.showOnMap' | translate }}</button>
+              @if (editableShape(c) && !drawing()) { <button mat-stroked-button (click)="editGeometry(c)"><mat-icon>edit</mat-icon> {{ 'admin.editGeometry' | translate }}</button> }
               <button mat-button (click)="remove(c)"><mat-icon>delete</mat-icon> {{ 'common.delete' | translate }}</button>
             </div>
           </div>
@@ -172,6 +174,9 @@ export class RoutingCorrections {
   hoverId = signal<string | null>(null);
   selected = signal<Correction | null>(null); noteDraft = '';
   drawing = signal<'Block' | 'Passage' | null>(null); points = signal<[number, number][]>([]); note = '';
+  /** The correction whose line/ring is being corrected (drawing then edits its points; finishing saves it with PUT). */
+  editing = signal<Correction | null>(null);
+  private editor?: LineEditor;
   listHovered = false;
   lengthNm = lengthNm; icon = KIND_ICON; kinds = KINDS; sources = SOURCES; limit = LIMIT;
   private map?: MlMap;
@@ -194,12 +199,9 @@ export class RoutingCorrections {
     map.addLayer({ id: 'corr-points', type: 'circle', source: 'corrections', paint: { 'circle-radius': ['case', MARKED, 8, 5], 'circle-color': ['case', ['==', ['get', 'kind'], 'Lock'], '#6d4c41', ['==', ['get', 'kind'], 'OpeningBridge'], '#00897b', '#7b1fa2'],
       'circle-stroke-color': ['case', SEL, '#ff1744', HOVER, '#ffd600', '#fff'], 'circle-stroke-width': ['case', MARKED, 3, 1.5], 'circle-opacity': ['case', MARKED, 1, ['get', 'active'], 1, 0.4] } });
     this.applyFilter();
-    map.addSource('draft', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    map.addLayer({ id: 'draft-line', type: 'line', source: 'draft', paint: { 'line-color': '#333', 'line-width': 2 } });
-    map.addLayer({ id: 'draft-points', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 5, 'circle-color': '#333' } });
     const featureAt = (e: MapMouseEvent) => map.queryRenderedFeatures(e.point, { layers: ['corr-points', 'corr-lines', 'corr-blocks'] })[0]?.properties?.['id'] as string | undefined;
     map.on('click', (e: MapMouseEvent) => {
-      if (this.drawing()) { this.points.update(p => [...p, [e.lngLat.lng, e.lngLat.lat]]); this.renderDraft(); return; }
+      if (this.drawing()) { if (!isMarkerEvent(e.originalEvent) && !this.editor?.tryInsert(e.point)) this.editor?.append([e.lngLat.lng, e.lngLat.lat]); return; }
       const id = featureAt(e); const c = id ? this.items().find(x => x.id === id) : undefined;
       if (c) this.select(c);
     });
@@ -216,7 +218,7 @@ export class RoutingCorrections {
     setTimeout(() => { map.resize(); this.load(); }, 100);
   }
 
-  ngOnDestroy(): void { clearTimeout(this.loadTimer); this.map?.remove(); }
+  ngOnDestroy(): void { clearTimeout(this.loadTimer); this.editor?.destroy(); this.map?.remove(); }
 
   /** The derived corrections run to hundreds of thousands: only the map's viewport is loaded. */
   load(): void {
@@ -262,23 +264,32 @@ export class RoutingCorrections {
     for (const id of Object.keys(GEOM)) if (map.getLayer(id)) map.setFilter(id, ['all', GEOM[id], f]);
   }
 
-  startDraw(kind: 'Block' | 'Passage'): void { this.hover(null); this.drawing.set(kind); this.points.set([]); this.note = ''; this.map?.getCanvas().style.setProperty('cursor', 'crosshair'); }
-  cancelDraw(): void { this.drawing.set(null); this.points.set([]); this.map?.getCanvas().style.removeProperty('cursor'); this.renderDraft(); }
+  startDraw(kind: 'Block' | 'Passage', points: [number, number][] = []): void {
+    const map = this.map; if (!map) return;
+    this.editor?.destroy(); this.hover(null); this.drawing.set(kind); this.points.set(points); this.note = '';
+    // vertices drag, × / right-click deletes, a click near the line inserts a vertex there (as the harbour map's route)
+    this.editor = new LineEditor(map, { closed: kind === 'Block', colour: '#333', onChange: p => this.points.set(p) });
+    this.editor.set(points);
+    map.getCanvas().style.setProperty('cursor', 'crosshair');
+  }
+  /** Corrects a line or a single-ring polygon in place: its vertices become the editable draft. */
+  editGeometry(c: Correction): void {
+    const g = c.geometry;
+    this.startDraw(g.type === 'Polygon' ? 'Block' : 'Passage', g.type === 'Polygon' ? (g.coordinates[0].slice(0, -1) as [number, number][]) : (g as LineString).coordinates as [number, number][]);
+    this.editing.set(c); this.showOnMap(c);
+  }
+  editableShape = (c: Correction) => c.geometry.type === 'LineString' || (c.geometry.type === 'Polygon' && c.geometry.coordinates.length === 1);
+  cancelDraw(): void { this.drawing.set(null); this.editing.set(null); this.points.set([]); this.map?.getCanvas().style.removeProperty('cursor'); this.editor?.destroy(); this.editor = undefined; }
   canFinish(): boolean { const k = this.drawing(); return !!k && draftGeometry(k, this.points()) !== null; }
   finishDraw(): void {
     const kind = this.drawing(); if (!kind) return;
     const geometry = draftGeometry(kind, this.points()); if (!geometry) return;
+    const c = this.editing();
+    if (c) { this.save(c, { geometry }); this.cancelDraw(); return; }
     this.api.post('/api/admin/routing/corrections', { kind, geometry, note: this.note || null, active: true }).subscribe({ next: () => { this.cancelDraw(); this.load(); }, error: e => this.error.set(errorMessage(e)) });
   }
-  private renderDraft(): void {
-    const src = this.map?.getSource('draft') as GeoJSONSource | undefined; if (!src) return;
-    const pts = this.points(); const kind = this.drawing();
-    const features: FeatureCollection['features'] = pts.map(p => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: p } }));
-    if (pts.length >= 2) features.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: kind === 'Block' && pts.length >= 3 ? [...pts, pts[0]] : pts } });
-    src.setData({ type: 'FeatureCollection', features });
-  }
 
-  private save(c: Correction, patch: Partial<Pick<Correction, 'note' | 'active'>>): void {
+  private save(c: Correction, patch: Partial<Pick<Correction, 'note' | 'active' | 'geometry'>>): void {
     const body = { kind: c.kind, geometry: c.geometry, note: c.note, active: c.active, clearanceM: c.clearanceM ?? null, ...patch };
     this.api.put(`/api/admin/routing/corrections/${c.id}`, body).subscribe({ next: () => this.load(), error: e => this.error.set(errorMessage(e)) });
   }

@@ -85,6 +85,9 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
           <h4>{{ 'admin.corrections' | translate }}</h4>
           <p class="muted">{{ 'admin.correctionsHint' | translate }}</p>
           <a mat-stroked-button routerLink="/admin/corrections">{{ 'admin.editCorrections' | translate }}</a>
+          <h4>{{ 'admin.fb.title' | translate }}</h4>
+          <p class="muted">{{ 'admin.fb.hint' | translate }}</p>
+          <a mat-stroked-button routerLink="/admin/fairway-feedback">{{ 'admin.fb.open' | translate }}</a>
           <ul class="progress">@for (p of r.progress; track p.at) { <li><span class="muted">{{ p.at | date:'HH:mm:ss' }} (+{{ elapsed(r.progress[0].at, p.at) }})</span> [{{ p.phase }}] {{ p.message }}</li> }</ul>
         }
       </mat-card-content></mat-card>

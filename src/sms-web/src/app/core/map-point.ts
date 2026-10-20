@@ -55,3 +55,19 @@ export function joinLegs(legs: RouteLeg[]): { coordinates: [number, number][]; d
   const warnings = legs.flatMap((l, i) => (l.warnings ?? []).filter(w => !(w.kind === 'startOnLand' && i > 0) && !(w.kind === 'endOnLand' && i < legs.length - 1)));
   return { coordinates, distanceNm: Math.round(legs.reduce((s, l) => s + l.distanceNm, 0) * 10) / 10, straight: legs.some(l => l.method === 'straight-line'), warnings };
 }
+
+/** Nearest point on a polyline in plane coordinates (screen pixels): the segment (index of its first vertex), the point and the distance. */
+export function nearestOnPolyline(pts: [number, number][], p: [number, number]): { index: number; point: [number, number]; dist: number } | null {
+  let best: { index: number; point: [number, number]; dist: number } | null = null;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [ax, ay] = pts[i], [bx, by] = pts[i + 1], dx = bx - ax, dy = by - ay, len = dx * dx + dy * dy;
+    const t = len ? Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / len)) : 0;
+    const point: [number, number] = [ax + t * dx, ay + t * dy], dist = Math.hypot(p[0] - point[0], p[1] - point[1]);
+    if (!best || dist < best.dist) best = { index: i, point, dist };
+  }
+  return best;
+}
+/** The list without element i (a deleted vertex). */
+export const removeAt = <T>(list: T[], i: number): T[] => list.filter((_, k) => k !== i);
+/** The list with element i replaced (a moved vertex). */
+export const replaceAt = <T>(list: T[], i: number, v: T): T[] => list.map((x, k) => k === i ? v : x);
