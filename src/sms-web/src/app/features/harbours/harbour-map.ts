@@ -14,7 +14,8 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatSelectModule } from '@angular/material/select';
 import { TranslatePipe } from '@ngx-translate/core';
-import type { GeoJSONSource, MapMouseEvent } from 'maplibre-gl';
+import type { GeoJSONSource, MapLayerMouseEvent, MapMouseEvent } from 'maplibre-gl';
+import { forkJoin } from 'rxjs';
 import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, HarbourService, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
@@ -29,18 +30,60 @@ import { UploadZone } from '../../shared/shared';
 import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
 import { ShipContextService } from '../../core/ship-context';
 import { applyDepthShading, applyHazardFilter } from '../../core/map';
+import { formatDecimal, formatDepthBand, formatNautical, insertVia, joinLegs, LatLng, nearestLeg, PointInfo, RouteLeg } from '../../core/map-point';
 /** Show only the places up to this distance when there are any; otherwise the ones up to the 5 km that the API returns. */
 const NEAR_RADIUS_M = 3000;
 
 /** Service glyphs not covered by the POI icons (Material Symbols). */
 const SERVICE_ICON: Record<string, string> = { power_supply: 'electrical_services', sanitary_dump_station: 'plumbing', waste_disposal: 'delete', internet_access: 'wifi', bus: 'directions_bus', tram: 'tram', train: 'train', ferry: 'directions_boat', chandlery: 'sailing', slipway: 'rowing' };
+/** Marker elements sit inside the map container, so their mouse events reach the map's handlers too. */
+const onMarker = (ev: Event) => !!(ev.target as HTMLElement | null)?.closest?.('.maplibregl-marker');
+/** A small round map marker (clicked point, route start). */
+function dotEl(colour: string): HTMLElement {
+  const el = document.createElement('div');
+  el.style.cssText = `width:12px;height:12px;border-radius:50%;background:${colour};border:2px solid #fff;box-shadow:0 0 3px rgba(0,0,0,.5)`;
+  return el;
+}
+/** A via point of the route: a white dot ringed in the route's blue, with a small × to remove it. */
+function viaEl(removable = false): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'route-via';
+  el.style.cssText = 'width:14px;height:14px;border-radius:50%;background:#fff;border:3px solid #1e88e5;box-shadow:0 0 3px rgba(0,0,0,.4);cursor:grab;position:relative';
+  if (removable) {
+    el.title = 'Ziehen verschiebt, Rechtsklick oder × entfernt';
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = '×'; x.setAttribute('aria-label', 'Wegpunkt entfernen');
+    x.style.cssText = 'position:absolute;left:12px;top:-12px;width:16px;height:16px;padding:0;border:none;border-radius:50%;background:#455a64;color:#fff;font:12px/16px sans-serif;cursor:pointer';
+    el.append(x);
+  }
+  return el;
+}
 const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
 
 @Component({
   imports: [FormsModule, MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, TranslatePipe, UploadZone, MatListModule, RouterLink, WeatherCard, MatSelectModule, MatFormFieldModule, MatInputModule],
   template: `
     <div class="layout">
-      <div #map class="map"></div>
+      <div class="map-wrap">
+        <div #map class="map"></div>
+        @if (point(); as p) {
+          <div class="point-bar" role="region" [attr.aria-label]="'mapPoint.title' | translate">
+            <div class="pos"><b>{{ nautical(p) }}</b> <span class="muted">{{ decimal(p) }}</span>
+              <button mat-icon-button class="copy" (click)="copyPosition(p)" [title]="'mapPoint.copy' | translate" [attr.aria-label]="'mapPoint.copy' | translate"><mat-icon>{{ copied() ? 'check' : 'content_copy' }}</mat-icon></button>
+              <button mat-icon-button class="close" (click)="closePoint()" [attr.aria-label]="'common.close' | translate"><mat-icon>close</mat-icon></button></div>
+            <div class="facts">
+              <span class="depth"><mat-icon inline>waves</mat-icon> {{ depthText() }}</span>
+              @if (bridgeText(); as b) { <span class="bridge"><mat-icon inline>bridge</mat-icon> {{ b }}</span> }
+            </div>
+            <div class="actions">
+              @if (canRouteHere()) { <button mat-flat-button class="route-here" (click)="routeHere()"><mat-icon>route</mat-icon> {{ 'mapPoint.routeTo' | translate }}</button> }
+              <button mat-stroked-button class="route-from" (click)="routeFromHere()"><mat-icon>trip_origin</mat-icon> {{ 'mapPoint.routeFrom' | translate }}</button>
+              @if (start()) { <span class="muted start">{{ 'mapPoint.start' | translate: { name: startName() } }}
+                @if (routeStart()) { <button mat-icon-button class="clear-start" (click)="clearStart()" [title]="'mapPoint.clearStart' | translate" [attr.aria-label]="'mapPoint.clearStart' | translate"><mat-icon>close</mat-icon></button> }</span> }
+            </div>
+          </div>
+        }
+      </div>
       <div class="ship-ctx">
         <mat-icon inline>sailing</mat-icon>
         @if (shipCtx.myShips().length) {
@@ -52,6 +95,10 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
         <label [title]="'ship.minDepthHint' | translate">{{ 'ship.minDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.minDepthM()" (ngModelChange)="shipCtx.manual($event === '' ? null : +$event, shipCtx.warnDepthM(), shipCtx.airDraftM())" /></label>
         <label [title]="'ship.warnDepthHint' | translate">{{ 'ship.warnDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.warnDepthM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), $event === '' ? null : +$event, shipCtx.airDraftM())" /></label>
         <label [title]="'ship.airDraftHint' | translate">{{ 'ship.airDraft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), shipCtx.warnDepthM(), $event === '' ? null : +$event)" /></label>
+        <label [title]="'ship.unknownBridgesHint' | translate">{{ 'ship.unknownBridges' | translate }}
+          <select class="unknown-bridges" [ngModel]="shipCtx.unknownBridges()" (ngModelChange)="shipCtx.unknownBridges.set($event)">
+            <option value="pass">{{ 'ship.unknownBridgesPass' | translate }}</option><option value="avoid">{{ 'ship.unknownBridgesAvoid' | translate }}</option>
+          </select></label>
         @if (shipCtx.hazardDepthM() !== null) { <span class="muted small">{{ 'ship.hazardsHidden' | translate }}</span> }
       </div>
       <aside class="panel" [class.open]="harbour()">
@@ -129,18 +176,22 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     </div>`,
   styles: `
     .layout { flex: 1; display: flex; position: relative; height: calc(100dvh - 64px - 40px); min-height: 420px; } /* fixed height: a tall panel scrolls instead of stretching the map past the viewport (fitBounds then placed places off-screen) */
-    .map { flex: 1; min-height: 60vh; }
+    .map-wrap { flex: 1; position: relative; display: flex; min-width: 0; } .map { flex: 1; min-height: 60vh; }
+    .point-bar { position: absolute; left: 8px; right: 8px; bottom: 28px; z-index: 3; max-width: 640px; margin: 0 auto; background: rgba(255,255,255,.97); border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.3); padding: 4px 44px 8px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+    .point-bar .pos { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; } .point-bar .close { position: absolute; top: 0; right: 0; }
+    .point-bar .facts, .point-bar .actions { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; } .point-bar mat-icon[inline] { vertical-align: middle; }
+    .point-bar .start { display: inline-flex; align-items: center; }
     .panel { width: 0; overflow: hidden; transition: width .2s; background: white; box-shadow: -2px 0 8px rgba(0,0,0,.15); }
     .panel.open { width: 420px; max-width: 100vw; padding: 12px; overflow-y: auto; }
     .panel h2 { margin: 0; font-size: 20px; } .links { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; } .links .pos { font-size: 12px; }
     .review { padding: 6px 0; border-bottom: 1px solid #eee; }
-    .ship-ctx { position: absolute; left: 50px; top: 10px; background: rgba(255,255,255,.95); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.3); padding: 4px 8px; display: flex; gap: 8px; align-items: center; font-size: 12px; z-index: 2; }
+    .ship-ctx { position: absolute; left: 50px; top: 10px; right: 50px; width: fit-content; flex-wrap: wrap; background: rgba(255,255,255,.95); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.3); padding: 4px 8px; display: flex; gap: 8px; align-items: center; font-size: 12px; z-index: 2; }
     .ship-ctx input { width: 44px; } .ship-ctx select { max-width: 140px; } .ship-ctx .small { font-size: 11px; }
     .full-width { width: 100%; }
     .services { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; } .svc { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; } .svc.active { outline: 2px solid #e65100; }
     .places-head { margin: 8px 0 4px; font-size: 14px; font-weight: 600; } .places-head mat-icon { vertical-align: middle; }
     .places { list-style: none; margin: 0 0 8px; padding: 0; max-height: 40vh; overflow-y: auto; font-size: 13px; } .places li { padding: 6px 8px; border-bottom: 1px solid #e0e0e0; cursor: pointer; } .places li:hover, .places li.sel { background: #fff3e0; } .places li.sel { border-left: 3px solid #d50000; } .places .row { white-space: pre-line; } .places .badge { font-weight: 600; white-space: nowrap; color: #c62828; } .places .badge.open { color: #2e7d32; } .places a mat-icon { font-size: 14px; vertical-align: middle; } .svc mat-icon { font-size: 16px; }
-    @media (max-width: 800px) { .layout { flex-direction: column; height: auto; } .map { height: 60vh; flex: none; } .panel.open { width: 100%; } }
+    @media (max-width: 800px) { .layout { flex-direction: column; height: auto; } .map-wrap { height: 60vh; flex: none; } .point-bar { left: 4px; right: 4px; bottom: 4px; } .panel.open { width: 100%; } }
   `,
 })
 export class HarbourMapPage {
@@ -267,13 +318,21 @@ export class HarbourMapPage {
     map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['!=', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 4 } });
     map.addLayer({ id: 'route-on-land', type: 'line', source: 'route', filter: ['==', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 1.5, 'line-dasharray': [1, 2] } });
+    // an invisible wide line over the route: the grab handle for dragging a via point out of it
+    map.addLayer({ id: 'route-hit', type: 'line', source: 'route', filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'onLand'], true]], paint: { 'line-color': '#000000', 'line-width': 14, 'line-opacity': 0.01 } });
     map.addLayer({ id: 'route-line-dashed', type: 'line', source: 'route', filter: ['==', ['get', 'dashed'], true], paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-dasharray': [2, 2] } });
     map.addLayer({ id: 'route-check-depth', type: 'circle', source: 'route', filter: ['==', ['get', 'checkDepth'], true], paint: { 'circle-radius': 5, 'circle-color': '#9c97d6', 'circle-stroke-color': '#34357a', 'circle-stroke-width': 2 } });
     map.addLayer({ id: 'route-label', type: 'symbol', source: 'route', layout: { 'symbol-placement': 'line-center', 'text-field': ['get', 'label'], 'text-size': 12, 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#0d47a1', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
 
     map.on('moveend', () => this.refresh());
     map.on('click', 'harbour-points', e => { const id = e.features?.[0]?.properties?.['id']; if (id) this.select(id); });
-    map.on('click', e => { if (map.queryRenderedFeatures(e.point, { layers: ['harbour-points', 'harbour-clusters'] }).length === 0 && !poiAt(map, e.point)) this.clickPoint(e.lngLat.lat, e.lngLat.lng); });
+    map.on('click', e => {
+      if (onMarker(e.originalEvent)) return;   // a via/start marker, not the map
+      if (map.queryRenderedFeatures(e.point, { layers: ['harbour-points', 'harbour-clusters'] }).length === 0 && !poiAt(map, e.point)) this.clickPoint(e.lngLat.lat, e.lngLat.lng);
+    });
+    map.on('mouseenter', 'route-hit', () => { if (this.editable()) map.getCanvas().style.cursor = 'grab'; });
+    map.on('mouseleave', 'route-hit', () => { if (!this.dragging) map.getCanvas().style.cursor = ''; });
+    map.on('mousedown', 'route-hit', e => this.dragRoute(e));
     map.on('click', 'harbour-clusters', e => { const f = e.features?.[0]; if (f) map.easeTo({ center: (f.geometry as GeoPoint).coordinates as [number, number], zoom: map.getZoom() + 2 }); });
     map.on('mouseenter', 'harbour-points', e => { map.getCanvas().style.cursor = 'pointer'; const id = e.features?.[0]?.properties?.['id']; if (id) this.hoverHarbour(id); });
     map.on('mouseleave', 'harbour-points', () => { map.getCanvas().style.cursor = ''; this.hideRoute(); });
@@ -339,29 +398,139 @@ export class HarbourMapPage {
     this.hovered = id; this.showRoute(p);
   }
 
-  /** Click on open water/land while a harbour is selected: pinned route from the harbour to that point with its distance. */
+  // --- the clicked point (bottom bar) and the routed course start → vias → end ---
+  /** The last clicked map point: coordinates, charted depth and bridges nearby in the bottom bar. */
+  point = signal<LatLng | null>(null);
+  /** Its point info: undefined while loading, null when the API failed. */
+  info = signal<PointInfo | null | undefined>(undefined);
+  /** A start picked with "Route von hier"; without one the selected harbour is the start. */
+  routeStart = signal<LatLng | null>(null);
+  start = computed((): LatLng | null => this.routeStart() ?? this.harbour());
+  startName = computed(() => { const s = this.routeStart(), h = this.harbour(); return s ? formatNautical(s.lat, s.lng, appI18n.lang()) : h?.name ?? ''; });
+  canRouteHere = computed(() => { const s = this.start(), p = this.point(); return !!s && !!p && (s.lat !== p.lat || s.lng !== p.lng); });
+  copied = signal(false);
+  nautical = (p: LatLng) => formatNautical(p.lat, p.lng, appI18n.lang());
+  decimal = (p: LatLng) => formatDecimal(p.lat, p.lng);
+  depthText = computed(() => {
+    const i = this.info(); if (i === undefined) return '…'; if (i === null) return '–';
+    return i.depth ? formatDepthBand(i.depth.minM, i.depth.maxM, appI18n.lang()) : this.translate.instant('mapPoint.noDepth') as string;
+  });
+  /** The nearest bridge within 300 m: "Brücke: 12 m Durchfahrtshöhe · 80 m entfernt". */
+  bridgeText = computed(() => {
+    const b = this.info()?.bridges[0]; if (!b) return null;
+    const kind = b.kind === 'OpeningBridge' ? 'mapPoint.openingBridge' : 'mapPoint.bridge';
+    const clearance = b.clearanceM != null ? this.translate.instant('mapPoint.clearance', { m: b.clearanceM.toLocaleString(appI18n.lang(), { maximumFractionDigits: 1 }) }) : this.translate.instant('mapPoint.clearanceUnknown');
+    return `${this.translate.instant(kind)}: ${clearance} · ${this.translate.instant('mapPoint.away', { m: Math.round(b.distanceM) })}`;
+  });
+  private pointMarker?: maplibregl.Marker;
+  private startMarker?: maplibregl.Marker;
+
+  /** Click on open water/land: the bottom bar for that point (routing waits for "Route hierher"). */
   private clickPoint(lat: number, lng: number): void {
-    const h = this.harbour(); const map = this.map;
-    if (!h || !map) return;
-    const to = { lat, lng };
-    this.pinned = false; this.hovered = null;
-    this.draw([[h.lng, h.lat], [lng, lat]], straightNm(h, to), true);
+    const map = this.map; if (!map) return;
+    const p = { lat, lng };
+    this.point.set(p); this.info.set(undefined); this.copied.set(false);
+    (this.pointMarker ??= new maplibregl.Marker({ element: dotEl('#e65100') })).setLngLat([lng, lat]).addTo(map);
+    this.api.get<PointInfo>('/api/routing/point-info', { lat, lng }).subscribe({
+      next: i => { if (this.point() === p) this.info.set(i); },
+      error: () => { if (this.point() === p) this.info.set(null); },
+    });
+  }
+  closePoint(): void { this.point.set(null); this.pointMarker?.remove(); }
+  copyPosition(p: LatLng): void { navigator.clipboard?.writeText(`${this.nautical(p)} (${this.decimal(p)})`).then(() => this.copied.set(true), () => undefined); }
+  routeFromHere(): void {
+    const p = this.point(), map = this.map; if (!p || !map) return;
+    this.routeStart.set(p);
+    (this.startMarker ??= new maplibregl.Marker({ element: dotEl('#2e7d32') })).setLngLat([p.lng, p.lat]).addTo(map);
+  }
+  clearStart(): void { this.routeStart.set(null); this.startMarker?.remove(); }
+
+  /** The pinned, editable route: start → vias → end, routed leg by leg (legs: each leg's line, for finding the dragged one). */
+  private course: { from: LatLng; to: LatLng; vias: LatLng[]; legs: number[][][] } | null = null;
+  routing = signal(false);
+  private routeSeq = 0;
+  private viaMarkers: maplibregl.Marker[] = [];
+  dragging = false;
+  editable = () => !!this.course?.legs.length && this.pinned && !this.routing();
+
+  /** "Route hierher": a pinned route from the start to the clicked point, the distance in a popup there. */
+  routeHere(): void {
+    const s = this.start(), p = this.point(), map = this.map;
+    if (!s || !p || !map) return;
+    this.hideRoute(true);
+    this.course = { from: { lat: s.lat, lng: s.lng }, to: p, vias: [], legs: [] };
+    this.draw([[s.lng, s.lat], [p.lng, p.lat]], straightNm(s, p), true);
     this.pinned = true;
-    this.pointPopup?.remove();
-    this.pointPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat([lng, lat]).setDOMContent(textEl(`${straightNm(h, to)} sm (Luftlinie) …`)).addTo(map);
+    this.pointPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: false, offset: 8 }).setLngLat([p.lng, p.lat]).setDOMContent(textEl(`${straightNm(s, p)} sm (Luftlinie) …`)).addTo(map);
     this.pointPopup.on('close', () => { if (this.pinned) this.hideRoute(true); });
-    this.api.get<{ distanceNm: number; straightLineNm: number; geometry: { coordinates: number[][] }; method: string; warnings?: RouteWarning[] }>('/api/routing/route', { from: `${h.lat},${h.lng}`, to: `${lat},${lng}`, ...this.shipCtx.routeParams() }).subscribe({
-      next: r => {
-        if (!this.pointPopup?.isOpen()) return;
-        this.pinned = false; this.draw(r.geometry.coordinates.map(c => [c[0], c[1]] as [number, number]), r.distanceNm, r.method === 'straight-line', !!r.warnings?.length, r.warnings); this.pinned = true;
-        this.pointPopup.setDOMContent(textEl(r.method === 'straight-line' ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${r.straightLineNm} sm${routeWarningText(r.warnings)}`));
+    this.recalc();
+  }
+
+  /** Routes every leg of the course (the route API per leg, in parallel), joins them and draws the result; the old line stays faded meanwhile. */
+  private recalc(): void {
+    const c = this.course, map = this.map; if (!c || !map) return;
+    const pts = [c.from, ...c.vias, c.to], seq = ++this.routeSeq, popup = this.pointPopup;
+    const busy = (b: boolean) => { this.routing.set(b); if (map.getLayer('route-line')) map.setPaintProperty('route-line', 'line-opacity', b ? 0.45 : 1); const el = popup?.getElement(); if (el) el.style.opacity = b ? '0.6' : ''; };
+    busy(true);
+    const straight = straightNm(c.from, c.to);
+    forkJoin(pts.slice(1).map((to, i) => this.api.get<RouteLeg>('/api/routing/route', { from: `${pts[i].lat},${pts[i].lng}`, to: `${to.lat},${to.lng}`, ...this.shipCtx.routeParams() }))).subscribe({
+      next: legs => {
+        if (seq !== this.routeSeq || this.course !== c) return;
+        busy(false);
+        const r = joinLegs(legs);
+        c.legs = legs.map(l => l.geometry.coordinates);
+        this.pinned = false; this.draw(r.coordinates, r.distanceNm, r.straight, !!r.warnings.length, r.warnings); this.pinned = true;
+        popup?.setDOMContent(textEl(r.straight ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${straight} sm${routeWarningText(r.warnings)}`));
       },
-      // 422 "no sea route" (the point is too far from navigable water or not connected): no line across land, the reason in the popup
+      // 422 "no sea route" (a point too far from navigable water or not connected): no line across land, the reason in the popup
       error: err => {
-        if (!this.pointPopup?.isOpen()) return;
+        if (seq !== this.routeSeq || this.course !== c) return;
+        busy(false);
+        c.legs = [];
         (map.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
-        this.pointPopup.setDOMContent(textEl(`${errorMessage(err)} (Luftlinie ${straightNm(h, to)} sm)`));
+        popup?.setDOMContent(textEl(`${errorMessage(err)} (Luftlinie ${straight} sm)`));
       },
+    });
+  }
+
+  /** Mouse down on the route line: dragging pulls out a new via point between the two route points of that leg, routed again on release. */
+  private dragRoute(e: MapLayerMouseEvent): void {
+    const c = this.course, map = this.map;
+    if (!c || !map || !this.editable() || e.originalEvent.button !== 0 || onMarker(e.originalEvent)) return;   // a via marker drags itself
+    e.preventDefault();   // no map pan for this gesture
+    const leg = nearestLeg(c.legs, e.lngLat.lng, e.lngLat.lat), canvas = map.getCanvas(), rect = canvas.getBoundingClientRect();
+    const x0 = e.originalEvent.clientX, y0 = e.originalEvent.clientY;
+    let at = e.lngLat, ghost: maplibregl.Marker | undefined;
+    this.dragging = true; canvas.style.cursor = 'grabbing';
+    const move = (ev: MouseEvent) => {
+      if (!ghost && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;   // a click, not a drag
+      at = map.unproject([ev.clientX - rect.left, ev.clientY - rect.top]);
+      (ghost ??= new maplibregl.Marker({ element: viaEl() }).setLngLat(at).addTo(map)).setLngLat(at);
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+      this.dragging = false; canvas.style.cursor = '';
+      ghost?.remove();
+      if (!ghost || this.course !== c) return;
+      c.vias = insertVia(c.vias, leg, { lat: at.lat, lng: at.lng });
+      this.syncVias(); this.recalc();
+    };
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+  }
+
+  /** One draggable marker per via point (drag = move, right-click or × = remove), rebuilt after every change of the list. */
+  private syncVias(): void {
+    for (const m of this.viaMarkers) m.remove();
+    this.viaMarkers = [];
+    const c = this.course, map = this.map; if (!c || !map) return;
+    this.viaMarkers = c.vias.map((v, i) => {
+      const el = viaEl(true);
+      const remove = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); if (this.course !== c) return; c.vias = c.vias.filter((_, k) => k !== i); this.syncVias(); this.recalc(); };
+      el.querySelector('button')?.addEventListener('click', remove);
+      el.addEventListener('contextmenu', remove);
+      const m = new maplibregl.Marker({ element: el, draggable: true }).setLngLat([v.lng, v.lat]).addTo(map);
+      m.on('dragend', () => { if (this.course !== c) return; const p = m.getLngLat(); c.vias = c.vias.map((x, k) => k === i ? { lat: p.lat, lng: p.lng } : x); this.recalc(); });
+      return m;
     });
   }
   private pointPopup?: maplibregl.Popup;
@@ -391,7 +560,11 @@ export class HarbourMapPage {
   }
   hideRoute(force = false): void {
     if (this.pinned && !force) return;
-    if (force) { const p = this.pointPopup; this.pointPopup = undefined; p?.remove(); }
+    if (force) {
+      const p = this.pointPopup; this.pointPopup = undefined; p?.remove();
+      this.course = null; this.routeSeq++; this.syncVias(); this.routing.set(false); this.pinned = false;
+      if (this.map?.getLayer('route-line')) this.map.setPaintProperty('route-line', 'line-opacity', 1);
+    }
     this.hovered = null;
     (this.map?.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
   }

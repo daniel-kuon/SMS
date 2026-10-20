@@ -8,6 +8,9 @@ import { Paged, Ship } from './models';
  */
 export interface ShipContext { id: string | null; name: string; minDepthM: number | null; warnDepthM: number | null; airDraftM: number | null; }
 const KEY = 'sms.shipContext';
+const BRIDGES_KEY = 'sms.unknownBridges';
+/** Bridges without a charted clearance: passed with a warning, or avoided (routing API unknownBridges). */
+export type UnknownBridges = 'pass' | 'avoid';
 /** A ship (or a stored context) with a draft only: minimum depth = draft + this, as the routing API does. */
 const DRAFT_MARGIN_M = 0.5;
 
@@ -19,11 +22,14 @@ export class ShipContextService {
   readonly minDepthM = computed(() => this.ship()?.minDepthM ?? null);
   readonly warnDepthM = computed(() => this.ship()?.warnDepthM ?? null);
   readonly airDraftM = computed(() => this.ship()?.airDraftM ?? null);
+  /** Kept apart from the ship (a preference, not ship data): survives switching or clearing the ship. */
+  readonly unknownBridges = signal<UnknownBridges>(loadBridges());
   /** Hazards deeper than this are hidden: the warning depth, else the minimum depth. */
   readonly hazardDepthM = computed(() => this.warnDepthM() ?? this.minDepthM());
 
   constructor() {
     effect(() => { try { const s = this.ship(); if (s) localStorage.setItem(KEY, JSON.stringify(s)); else localStorage.removeItem(KEY); } catch { /* private mode */ } });
+    effect(() => { const b = this.unknownBridges(); try { localStorage.setItem(BRIDGES_KEY, b); } catch { /* private mode */ } });
     effect(() => { if (this.auth.me()) this.api.get<Paged<Ship>>('/api/ships', { mine: true, pageSize: 100 }).subscribe({ next: p => this.myShips.set(p.items), error: () => this.myShips.set([]) }); else this.myShips.set([]); });
   }
 
@@ -33,7 +39,7 @@ export class ShipContextService {
     this.ship.set(minDepthM === null && warnDepthM === null && airDraftM === null ? null : { id: null, name: '', minDepthM, warnDepthM, airDraftM });
   }
   /** Query parameters the routing API understands. */
-  routeParams(): Record<string, number> { return routeParams(this.ship()); }
+  routeParams(): Record<string, number | string> { return { ...routeParams(this.ship()), unknownBridges: this.unknownBridges() }; }
 }
 
 /** Routing API parameters for a context: minimum and warning depth, air draft ("Durchfahrtshöhe": without it the API assumes a
@@ -60,6 +66,10 @@ export function parseContext(raw: string | null): ShipContext | null {
 }
 
 const round = (m: number) => Math.round(m * 100) / 100;
+
+function loadBridges(): UnknownBridges {
+  try { return localStorage.getItem(BRIDGES_KEY) === 'avoid' ? 'avoid' : 'pass'; } catch { return 'pass'; }
+}
 
 function load(): ShipContext | null {
   try { return parseContext(localStorage.getItem(KEY)); } catch { return null; }

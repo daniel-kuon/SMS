@@ -58,8 +58,10 @@ test('a selected harbour shows the distance to a hovered harbour and to any clic
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
   await nearby;
   await page.waitForTimeout(1500);
-  const route = page.waitForResponse(r => r.url().includes('/api/routing/route?from=') && r.ok(), { timeout: 30_000 });
   await page.locator('.maplibregl-canvas').click({ position: { x: 60, y: 420 } });
+  await expect(page.locator('.point-bar')).toContainText("' N"); // the clicked position, nautical
+  const route = page.waitForResponse(r => r.url().includes('/api/routing/route?from=') && r.ok(), { timeout: 30_000 });
+  await page.locator('.point-bar .route-here').click(); // no one-click routing: the bar's button routes from the selected harbour
   const r = await (await route).json() as { distanceNm: number; method: string };
   await expect(page.locator('.maplibregl-popup-content')).toContainText(`${r.distanceNm} sm`);
   await page.screenshot({ path: process.env['E2E_SHOT2'] ?? 'test-results/click-distance.png' });
@@ -83,6 +85,7 @@ test('ship context hides deep hazards and routes carry the minimum depth', async
   const route = page.waitForRequest(r => r.url().includes('/api/routing/route?') && r.url().includes('minDepth=2.3'), { timeout: 30_000 });
   await page.waitForTimeout(1000);
   await page.locator('.maplibregl-canvas').click({ position: { x: 60, y: 420 } });
+  await page.locator('.point-bar .route-here').click();
   await route;
   await page.reload();
   await expect(page.locator('.ship-ctx input').first()).toHaveValue('2.3'); // remembered
