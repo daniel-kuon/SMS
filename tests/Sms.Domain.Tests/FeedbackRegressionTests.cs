@@ -76,3 +76,47 @@ public class FeedbackRegressionTests
     public void Points_are_not_judged() =>
         Assert.Equal("unchecked", FeedbackRegression.CheckWrong(F.CreatePoint(new Coordinate(11.9, 55)), [Line(55, 11.8, 12)]).Status);
 }
+
+public class CorrectedObjectRegressionTests
+{
+    private static readonly GeometryFactory F = new();
+    private static LineString L(params (double lng, double lat)[] c) => F.CreateLineString(c.Select(p => new Coordinate(p.lng, p.lat)).ToArray());
+    // the derived line makes a detour north (≈ 1.1 km off) in its middle; the correction runs straight along 55° N
+    private static readonly LineString Original = L((11.90, 55), (11.91, 55), (11.915, 55.01), (11.92, 55), (11.93, 55));
+    private static readonly LineString Corrected = L((11.90, 55), (11.93, 55));
+
+    [Fact]
+    public void Satisfied_when_the_new_course_exists_and_the_detour_is_gone()
+    {
+        var c = FeedbackRegression.CheckCorrected(Original, Corrected, [Corrected], [Corrected]);
+        Assert.Equal("corrected", c.Status);
+        Assert.True(c.Satisfied);
+        Assert.Equal(0, c.WrongPartsCoverage);
+        Assert.InRange(c.WrongPartsM, 1500, 2600); // the two legs of the detour beyond 50 m
+    }
+
+    [Fact]
+    public void Not_satisfied_while_the_original_is_still_derived()
+    {
+        var unchanged = FeedbackRegression.CheckCorrected(Original, Corrected, [Original], [Original]);
+        Assert.False(unchanged.Satisfied);
+        Assert.Equal("partly", unchanged.Status); // only the straight ends lie on the corrected line
+        Assert.Equal(1, unchanged.WrongPartsCoverage, 2);
+        var both = FeedbackRegression.CheckCorrected(Original, Corrected, [Original, Corrected], [Original, Corrected]);
+        Assert.Equal("wrongPartsRemain", both.Status);
+        Assert.False(both.Satisfied);
+    }
+
+    [Fact]
+    public void Missing_when_nothing_runs_along_the_correction() =>
+        Assert.Equal("missing", FeedbackRegression.CheckCorrected(Original, Corrected, [], []).Status);
+
+    [Fact]
+    public void An_extension_has_no_wrong_parts()
+    {
+        var longer = L((11.90, 55), (11.95, 55));
+        var c = FeedbackRegression.CheckCorrected(Corrected, longer, [longer], [longer]);
+        Assert.True(c.Satisfied);
+        Assert.Equal(0, c.WrongPartsM);
+    }
+}

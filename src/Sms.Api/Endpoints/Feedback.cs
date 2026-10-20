@@ -55,7 +55,7 @@ public static class FeedbackEndpoints
 
         g.MapGet("/groups", async (SmsDbContext db, CancellationToken ct) => Results.Ok(await db.FeedbackGroups.AsNoTracking().OrderBy(x => x.Status).ThenByDescending(x => x.UpdatedAt)
             .Select(x => new { x.Id, x.Name, x.Description, x.Status, x.CreatedAt, x.CreatedById, x.UpdatedAt, items = x.Items.Count,
-                wrong = x.Items.Count(i => i.Kind == FeedbackKind.WrongObject), missing = x.Items.Count(i => i.Kind == FeedbackKind.MissingFairway) }).ToListAsync(ct)));
+                wrong = x.Items.Count(i => i.Kind == FeedbackKind.WrongObject), missing = x.Items.Count(i => i.Kind == FeedbackKind.MissingFairway), corrected = x.Items.Count(i => i.Kind == FeedbackKind.CorrectedObject) }).ToListAsync(ct)));
         g.MapPost("/groups", async (FeedbackGroupUpsert req, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.Name)) return Invalid("name", "Name fehlt.");
@@ -108,7 +108,7 @@ public static class FeedbackEndpoints
                 item.GroupId = gid;
             }
             item.Kind = req.Kind; item.Note = Blank(req.Note); item.Expectation = Blank(req.Expectation); item.UpdatedById = current.Id;
-            if (req.Geometry is not null && item.ObjectRef is null) item.Geometry = req.Geometry; // a marked object keeps its geometry
+            if (req.Geometry is not null && (item.ObjectRef is null || item.Kind == FeedbackKind.CorrectedObject)) item.Geometry = req.Geometry; // a marked object keeps its geometry, a corrected one takes the new course
             if (Validate(item) is { } error) return error;
             await TouchAsync(db, item.GroupId, ct);
             await db.SaveChangesAsync(ct);
@@ -144,14 +144,14 @@ public static class FeedbackEndpoints
                     unknown = items.Count(r => r.Satisfied is null), items });
             }
             return Results.Ok(new { checkedAt = DateTimeOffset.UtcNow,
-                rules = new { FeedbackRegression.MissingToleranceM, FeedbackRegression.MissingSatisfiedShare, FeedbackRegression.WrongToleranceM, FeedbackRegression.WrongPresentShare, FeedbackRegression.WrongGoneShare },
+                rules = new { corrected = "≥ MissingSatisfiedShare of the corrected line within MissingToleranceM, and < WrongGoneShare of the original's parts farther than MissingToleranceM from it within WrongToleranceM", FeedbackRegression.MissingToleranceM, FeedbackRegression.MissingSatisfiedShare, FeedbackRegression.WrongToleranceM, FeedbackRegression.WrongPresentShare, FeedbackRegression.WrongGoneShare },
                 groups = result });
         });
     }
 
     public sealed record RegressionMatch(Guid Id, string? Note, string Category, double Share);
     public sealed record RegressionRow(Guid Id, FeedbackKind Kind, string? ObjectRef, string? Note, string? Expectation, string Status, bool? Satisfied, double? Coverage,
-        bool? Identical, bool? RefExists, IReadOnlyList<RegressionMatch> Matches);
+        bool? Identical, bool? RefExists, IReadOnlyList<RegressionMatch> Matches, double? WrongPartsCoverage = null, double? WrongPartsM = null);
 
     private static async Task<RegressionRow> CheckAsync(FeedbackItem i, SmsDbContext db, CancellationToken ct)
     {
@@ -163,7 +163,10 @@ public static class FeedbackEndpoints
                 : type == "seamark" && long.TryParse(key, out var sid) ? await db.Seamarks.AnyAsync(s => s.Id == sid, ct) : null;
         if (i.Kind == FeedbackKind.Comment || i.Geometry is null || i.Geometry.Dimension == Dimension.Point) return Row("unchecked", refExists: refExists);
 
-        var env = i.Geometry.EnvelopeInternal.Copy(); env.ExpandBy(0.003); // ≈ 200 m: more than both tolerances
+        var original = i.Kind == FeedbackKind.CorrectedObject ? SnapshotGeometry(i.ObjectSnapshot) : null;
+        if (i.Kind == FeedbackKind.CorrectedObject && original is null) return Row("unchecked", refExists: refExists);
+        var env = i.Geometry.EnvelopeInternal.Copy(); if (original is not null) env.ExpandToInclude(original.EnvelopeInternal);
+        env.ExpandBy(0.003); // ≈ 200 m: more than both tolerances
         var box = Geo.Factory.ToGeometry(env);
         var current = (await db.RoutingCorrections.AsNoTracking().Where(c => c.Kind == CorrectionKind.Passage && c.Active && c.Geometry.Intersects(box))
             .Select(c => new { c.Id, c.Note, c.Source, c.Geometry }).ToListAsync(ct))
@@ -179,6 +182,13 @@ public static class FeedbackEndpoints
         // a wrong object is compared with the current passages of its own category (a derived fairway is not "still there" because an OSM way runs along it)
         var category = SnapshotString(i.ObjectSnapshot, "category");
         var same = category is null ? current : current.Where(c => c.category == category).ToList();
+        if (original is not null)
+        {
+            var k = FeedbackRegression.CheckCorrected(original, i.Geometry, current.Select(c => c.Geometry).ToList(), same.Select(c => c.Geometry).ToList());
+            var matches = current.Select(c => new RegressionMatch(c.Id, c.Note, c.category, Math.Round(FeedbackRegression.Coverage(i.Geometry, [c.Geometry], FeedbackRegression.MissingToleranceM), 3)))
+                .Where(x => x.Share > 0).OrderByDescending(x => x.Share).Take(5).ToList();
+            return Row(k.Status, k.Satisfied, k.Coverage, null, refExists, matches) with { WrongPartsCoverage = Math.Round(k.WrongPartsCoverage, 3), WrongPartsM = k.WrongPartsM };
+        }
         var w = FeedbackRegression.CheckWrong(i.Geometry, same.Select(c => c.Geometry).ToList());
         var best = w.Best is { } b ? new List<RegressionMatch> { new(same[b].Id, same[b].Note, same[b].category, Math.Round(FeedbackRegression.Coverage(i.Geometry, [same[b].Geometry], FeedbackRegression.WrongToleranceM), 3)) } : [];
         return Row(w.Status, w.Satisfied, w.Coverage, w.Identical, refExists, best);
@@ -208,6 +218,8 @@ public static class FeedbackEndpoints
         return i.Kind switch
         {
             FeedbackKind.MissingFairway when i.Geometry is not LineString { NumPoints: >= 2 } => Invalid("geometry", "Ein Fahrwasser braucht eine Linie mit mindestens zwei Punkten."),
+            FeedbackKind.CorrectedObject when i.ObjectRef is null => Invalid("objectRef", "Das korrigierte Objekt fehlt."),
+            FeedbackKind.CorrectedObject when i.Geometry is not LineString { NumPoints: >= 2 } => Invalid("geometry", "Die Korrektur braucht eine Linie mit mindestens zwei Punkten."),
             FeedbackKind.WrongObject when i.ObjectRef is null && i.Geometry is null => Invalid("objectRef", "Objekt oder Geometrie fehlt."),
             FeedbackKind.Comment when i.Note is null => Invalid("note", "Kommentar fehlt."),
             _ => null,
@@ -223,7 +235,10 @@ public static class FeedbackEndpoints
         features = grp.Items.OrderBy(i => i.CreatedAt).Select(i => new
         {
             type = "Feature", id = i.Id, geometry = i.Geometry,
-            properties = new { kind = i.Kind, objectRef = i.ObjectRef, note = i.Note, expectation = i.Expectation, createdAt = i.CreatedAt, snapshot = Parse(i.ObjectSnapshot) },
+            // a corrected object: geometry = the corrected course, originalGeometry = the object as it was derived
+            properties = new { kind = i.Kind, objectRef = i.ObjectRef, note = i.Note, expectation = i.Expectation, createdAt = i.CreatedAt,
+                originalGeometry = i.Kind == FeedbackKind.CorrectedObject && Parse(i.ObjectSnapshot) is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty("geometry", out var og) ? og : (JsonElement?)null,
+                snapshot = Parse(i.ObjectSnapshot) },
         }),
     };
 
@@ -246,6 +261,9 @@ public static class FeedbackEndpoints
         return v.Length == 4 && v.All(double.IsFinite) && v[0] < v[2] && v[1] < v[3] ? (v[0], v[1], v[2], v[3]) : null;
     }
     private static JsonElement? Parse(string? json) => json is null ? null : JsonSerializer.Deserialize<JsonElement>(json);
+    private static Geometry? SnapshotGeometry(string? json) =>
+        Parse(json) is { ValueKind: JsonValueKind.Object } e && e.TryGetProperty("geometry", out var g) && g.ValueKind == JsonValueKind.Object ? g.Deserialize<Geometry>(Json) is { } geo ? Srid(geo) : null : null;
+    private static Geometry Srid(Geometry g) { g.SRID = 4326; return g; }
     private static string? SnapshotString(string? json, string key) =>
         json is not null && Parse(json) is { ValueKind: JsonValueKind.Object } e && e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
     private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();

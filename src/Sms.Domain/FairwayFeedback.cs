@@ -4,7 +4,8 @@ using NetTopologySuite.Geometries.Utilities;
 namespace Sms.Domain;
 
 public enum FeedbackStatus { Open, Resolved }
-public enum FeedbackKind { WrongObject, MissingFairway, Comment }
+/// <summary>CorrectedObject: a derived line redrawn by the admin (Geometry = how it should run, the snapshot keeps the original; the original row is never changed).</summary>
+public enum FeedbackKind { WrongObject, MissingFairway, Comment, CorrectedObject }
 
 /// <summary>Admin feedback on the fairway detection (Fairways.Derive): a named set of examples that belong together, e.g. "Bøgestrøm".</summary>
 public class FeedbackGroup : Entity
@@ -50,13 +51,17 @@ public static class FeedbackRegression
         : note.StartsWith("Enge", StringComparison.Ordinal) ? "narrow"
         : "osm";
 
-    /// <summary>Share (0..1) of the geometry's length within <paramref name="toleranceM"/> of any candidate; a point counts 0 or 1.</summary>
-    public static double Coverage(Geometry g, IReadOnlyList<Geometry> candidates, double toleranceM, double stepM = 10)
+    /// <summary>
+    /// Share (0..1) of the geometry's length within <paramref name="toleranceM"/> of any candidate; a point counts 0 or 1. With
+    /// <paramref name="except"/>, only the parts farther than <paramref name="exceptM"/> from it count (0 when there are none).
+    /// </summary>
+    public static double Coverage(Geometry g, IReadOnlyList<Geometry> candidates, double toleranceM, double stepM = 10, Geometry? except = null, double exceptM = 0)
     {
         if (g.IsEmpty || candidates.Count == 0) return 0;
         var t = LocalMetres(g.Centroid.Coordinate);
         var local = candidates.Select(t.Transform).ToList();
         var samples = Samples(t.Transform(g), stepM);
+        if (except is not null) { var x = t.Transform(except); samples = samples.Where(s => !x.IsWithinDistance(new Point(s.p), exceptM)).ToList(); }
         var total = samples.Sum(s => s.w);
         if (total == 0) return 0;
         var covered = 0.0;
@@ -101,6 +106,26 @@ public static class FeedbackRegression
         var ok = coverage >= MissingSatisfiedShare;
         return new(ok ? "present" : coverage > 0 ? "partly" : "missing", ok, coverage);
     }
+
+    public sealed record CorrectedCheck(string Status, bool Satisfied, double Coverage, double WrongPartsCoverage, double WrongPartsM);
+
+    /// <summary>
+    /// A corrected line: satisfied when current passages run within 50 m along ≥ 80 % of the corrected line ("corrected") and the wrong parts of
+    /// the original – its parts farther than 50 m from the corrected line – are no longer covered by passages of its category (&lt; 20 % within
+    /// 25 m). Otherwise "wrongPartsRemain" (the new course is there, the old detour too), "partly" or "missing".
+    /// </summary>
+    public static CorrectedCheck CheckCorrected(Geometry original, Geometry corrected, IReadOnlyList<Geometry> current, IReadOnlyList<Geometry> currentOfCategory)
+    {
+        var coverage = Coverage(corrected, current, MissingToleranceM);
+        var wrong = Coverage(original, currentOfCategory, WrongToleranceM, except: corrected, exceptM: MissingToleranceM);
+        var wrongM = (1 - Coverage(original, [corrected], MissingToleranceM)) * LengthM(original); // the original's length off the corrected line
+        var present = coverage >= MissingSatisfiedShare;
+        var gone = wrong < WrongGoneShare;
+        return new(present && gone ? "corrected" : present ? "wrongPartsRemain" : coverage > 0 ? "partly" : "missing", present && gone, coverage, wrong, Math.Round(wrongM));
+    }
+
+    /// <summary>Length of the linear parts in metres.</summary>
+    public static double LengthM(Geometry g) => g.IsEmpty ? 0 : LocalMetres(g.Centroid.Coordinate).Transform(g).Length;
 
     /// <summary>Degrees → metres around <paramref name="at"/> (equirectangular).</summary>
     private static AffineTransformation LocalMetres(Coordinate at)

@@ -61,4 +61,38 @@ public class FeedbackTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/api/admin/feedback/groups/{group}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await admin.GetAsync($"/api/admin/feedback/groups/{group}/items")).StatusCode);
     }
+
+    [Fact]
+    public async Task A_corrected_object_keeps_the_original_and_is_checked_against_both_lines()
+    {
+        var (admin, _) = await f.AdminAsync();
+        // the "derived" line detours ≈ 1.1 km north; the correction runs straight
+        var original = Line([12.10, 55.0], [12.11, 55.0], [12.115, 55.01], [12.12, 55.0], [12.13, 55.0]);
+        var corr = (await Json(await admin.PostAsJsonAsync("/api/admin/routing/corrections", new { kind = "Passage", geometry = original, note = "Fahrwasser (5 Tonnenpaare)", active = true }))).GetProperty("id").GetGuid();
+        var group = (await Json(await admin.PostAsJsonAsync("/api/admin/feedback/groups", new { name = "Korrekturen" }))).GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync($"/api/admin/feedback/groups/{group}/items", new { kind = "CorrectedObject", geometry = Line([12.10, 55.0], [12.13, 55.0]) })).StatusCode); // no object
+        var item = await Json(await admin.PostAsJsonAsync($"/api/admin/feedback/groups/{group}/items",
+            new { kind = "CorrectedObject", objectRef = $"correction:{corr}", geometry = Line([12.10, 55.0], [12.12, 55.0]), expectation = "geradeaus" }));
+        var id = item.GetProperty("id").GetGuid();
+        Assert.Equal(2, item.GetProperty("geometry").GetProperty("coordinates").GetArrayLength());
+        Assert.Equal(5, item.GetProperty("snapshot").GetProperty("geometry").GetProperty("coordinates").GetArrayLength());
+
+        // the corrected course is edited later (✎): the item takes it, the correction row stays as it was
+        (await admin.PutAsJsonAsync($"/api/admin/feedback/items/{id}", new { kind = "CorrectedObject", geometry = Line([12.10, 55.0], [12.13, 55.0]), expectation = "geradeaus" })).EnsureSuccessStatusCode();
+        var row = (await admin.GetFromJsonAsync<JsonElement>("/api/admin/routing/corrections?bbox=54.9,12.0,55.1,12.2")).EnumerateArray().Single(c => c.GetProperty("id").GetGuid() == corr);
+        Assert.Equal(5, row.GetProperty("geometry").GetProperty("coordinates").GetArrayLength());
+
+        var export = (await admin.GetFromJsonAsync<JsonElement>($"/api/admin/feedback/groups/{group}/export")).GetProperty("group").GetProperty("features")[0];
+        Assert.Equal(2, export.GetProperty("geometry").GetProperty("coordinates").GetArrayLength());
+        Assert.Equal(5, export.GetProperty("properties").GetProperty("originalGeometry").GetProperty("coordinates").GetArrayLength());
+
+        var check = (await admin.GetFromJsonAsync<JsonElement>($"/api/admin/feedback/regression?group={group}")).GetProperty("groups")[0].GetProperty("items")[0];
+        Assert.False(check.GetProperty("satisfied").GetBoolean()); // still the detour
+        // "re-derived": the straight line replaces the detour
+        (await admin.PutAsJsonAsync($"/api/admin/routing/corrections/{corr}", new { kind = "Passage", geometry = Line([12.10, 55.0], [12.13, 55.0]), note = "Fahrwasser (5 Tonnenpaare)", active = true })).EnsureSuccessStatusCode();
+        check = (await admin.GetFromJsonAsync<JsonElement>($"/api/admin/feedback/regression?group={group}")).GetProperty("groups")[0].GetProperty("items")[0];
+        Assert.Equal("corrected", check.GetProperty("status").GetString());
+        Assert.True(check.GetProperty("satisfied").GetBoolean());
+        Assert.Equal(1, (await admin.GetFromJsonAsync<JsonElement>("/api/admin/feedback/groups")).EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == group).GetProperty("corrected").GetInt32());
+    }
 }

@@ -1,4 +1,4 @@
-import { Buoy, buoysToFc, dedupe, draftLine, exportFileName, FeedbackItem, itemsToFc, LAYERS, metresPerPixel, parseLayers, passagesToFc, snapToBuoy } from './fairway-feedback';
+import { Buoy, buoysToFc, copyLine, dedupe, draftLine, exportFileName, FeedbackItem, isLineKind, itemsToFc, LAYERS, metresPerPixel, originalGeometry, parseLayers, passagesToFc, snapToBuoy } from './fairway-feedback';
 
 describe('fairway feedback drawing helpers', () => {
   it('drops the doubled vertex of a double-click and needs two distinct points', () => {
@@ -40,5 +40,33 @@ describe('fairway feedback data helpers', () => {
     expect(parseLayers(null)).toEqual(LAYERS);
     expect(parseLayers('{')).toEqual(LAYERS);
     expect(parseLayers('["buoys","nope","fairway"]')).toEqual(['fairway', 'buoys']);
+  });
+});
+
+describe('fairway feedback corrected objects', () => {
+  const original = { type: 'LineString' as const, coordinates: [[11.9, 55], [11.915, 55.01], [11.93, 55]] };
+  const corrected: FeedbackItem = { id: 'c', groupId: 'g', kind: 'CorrectedObject', objectRef: 'correction:x', snapshot: { note: 'Fahrwasser (5 Tonnenpaare)', geometry: original },
+    geometry: { type: 'LineString', coordinates: [[11.9, 55], [11.93, 55]] }, note: null, expectation: null, createdAt: '' };
+
+  it('edits a detached copy of the object line', () => {
+    const copy = copyLine(original.coordinates);
+    copy[1][1] = 55;
+    expect(original.coordinates[1]).toEqual([11.915, 55.01]);
+    expect(copyLine([[1, 2, 3]])).toEqual([[1, 2]]); // 2D
+  });
+
+  it('shows the original under the correction and reads it from the snapshot', () => {
+    expect(originalGeometry(corrected)).toEqual(original);
+    expect(originalGeometry({ ...corrected, snapshot: { note: 'x' } })).toBeNull();
+    const fc = itemsToFc([corrected]);
+    expect(fc.features.map(f => [f.properties!['kind'], f.geometry.type])).toEqual([['Original', 'LineString'], ['CorrectedObject', 'LineString']]);
+    expect(itemsToFc([{ ...corrected, kind: 'WrongObject' }]).features.length).toBe(1); // a wrong object is its own original
+  });
+
+  it('treats drawn and corrected lines as editable lines', () => {
+    expect(isLineKind('MissingFairway')).toBe(true);
+    expect(isLineKind('CorrectedObject')).toBe(true);
+    expect(isLineKind('WrongObject')).toBe(false);
+    expect(isLineKind(undefined)).toBe(false);
   });
 });

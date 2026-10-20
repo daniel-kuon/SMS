@@ -29,8 +29,11 @@ export const LAYERS: Layer[] = [...CATEGORIES, 'buoys', 'items'];
 export interface Passage { id: string; source: 'Manual' | 'Derived'; note: string | null; active: boolean; geometry: Geometry; createdAt: string; category: PassageCategory; }
 export interface Buoy { id: number; type: string; category: string | null; name: string | null; colour: string | null; side: 'Port' | 'Starboard' | null; lat: number; lng: number; tags: Record<string, string> | null; }
 export interface Layers { passages: Passage[]; buoys: Buoy[]; truncated: boolean; }
-export type FeedbackKind = 'WrongObject' | 'MissingFairway' | 'Comment';
-export interface FeedbackGroup { id: string; name: string; description: string | null; status: 'Open' | 'Resolved'; createdAt: string; updatedAt: string; items: number; wrong: number; missing: number; }
+export type FeedbackKind = 'WrongObject' | 'MissingFairway' | 'Comment' | 'CorrectedObject';
+export const KIND_ICON: Record<FeedbackKind, string> = { WrongObject: 'report', MissingFairway: 'add_road', Comment: 'chat', CorrectedObject: 'edit_road' };
+/** Kinds whose geometry is a line the admin drew or redrew (editable with the pencil). */
+export const isLineKind = (k: FeedbackKind | null | undefined) => k === 'MissingFairway' || k === 'CorrectedObject';
+export interface FeedbackGroup { id: string; name: string; description: string | null; status: 'Open' | 'Resolved'; createdAt: string; updatedAt: string; items: number; wrong: number; missing: number; corrected: number; }
 export interface FeedbackItem { id: string; groupId: string; kind: FeedbackKind; objectRef: string | null; snapshot: Record<string, unknown> | null; geometry: Geometry | null; note: string | null; expectation: string | null; createdAt: string; }
 export interface RegressionRow { id: string; status: string; satisfied: boolean | null; coverage: number | null; }
 type Pos = [number, number];
@@ -38,7 +41,7 @@ type Selection = { type: 'passage'; p: Passage } | { type: 'buoy'; b: Buoy };
 interface Pending { kind: FeedbackKind; objectRef: string | null; geometry: Geometry | null; title: string; }
 
 /** Phrases offered for "Erwartung" (a datalist: free text stays possible). */
-export const EXPECTATIONS = ['sollte nicht existieren', 'sollte an Tonne … enden', 'sollte hier verbinden', 'sollte dem Tonnenstrich folgen', 'Tonnen gehören zu verschiedenen Fahrwassern', 'Tonne fehlt in der Kette', 'Tonne gehört nicht zum Fahrwasser'];
+export const EXPECTATIONS = ['sollte nicht existieren', 'sollte so verlaufen', 'sollte an Tonne … enden', 'sollte hier verbinden', 'sollte dem Tonnenstrich folgen', 'Tonnen gehören zu verschiedenen Fahrwassern', 'Tonne fehlt in der Kette', 'Tonne gehört nicht zum Fahrwasser'];
 export const MIN_ZOOM = 10;
 const LIMIT = 4000;
 const SNAP_PX = 14;
@@ -47,8 +50,22 @@ const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] };
 
 export const passagesToFc = (list: Passage[]): FeatureCollection => ({ type: 'FeatureCollection', features: list.map(p => ({ type: 'Feature', properties: { id: p.id, category: p.category, label: p.note ?? '', active: p.active }, geometry: p.geometry })) });
 export const buoysToFc = (list: Buoy[]): FeatureCollection => ({ type: 'FeatureCollection', features: list.map(b => ({ type: 'Feature', properties: { id: b.id, side: b.side ?? '', name: b.name ?? '' }, geometry: { type: 'Point', coordinates: [b.lng, b.lat] } })) });
-export const itemsToFc = (list: FeedbackItem[]): FeatureCollection => ({ type: 'FeatureCollection', features: list.filter(i => i.geometry).map(i => ({ type: 'Feature', properties: { id: i.id, kind: i.kind }, geometry: i.geometry! })) });
+/** The object as it was when a corrected item was saved (the snapshot's geometry). */
+export function originalGeometry(i: FeedbackItem): Geometry | null {
+  const g = i.snapshot?.['geometry'] as Geometry | undefined;
+  return g && typeof g === 'object' && 'type' in g ? g : null;
+}
+/** The group's items; a corrected object also brings its original (kind "Original", drawn faint red under the green correction). */
+export const itemsToFc = (list: FeedbackItem[]): FeatureCollection => ({ type: 'FeatureCollection', features: list.flatMap(i => {
+  const original = i.kind === 'CorrectedObject' ? originalGeometry(i) : null;
+  return [
+    ...(original ? [{ type: 'Feature' as const, properties: { id: i.id, kind: 'Original' }, geometry: original }] : []),
+    ...(i.geometry ? [{ type: 'Feature' as const, properties: { id: i.id, kind: i.kind }, geometry: i.geometry }] : []),
+  ];
+}) });
 
+/** A detached copy of a line's positions (2D): the editor works on it, the object it came from stays untouched. */
+export const copyLine = (coords: number[][]): Pos[] => coords.map(c => [c[0], c[1]] as Pos);
 /** Consecutive equal vertices removed (the two clicks of a double-click land on the same spot). */
 export const dedupe = (points: Pos[]): Pos[] => points.filter((p, i) => i === 0 || p[0] !== points[i - 1][0] || p[1] !== points[i - 1][1]);
 export function draftLine(points: Pos[]): LineString | null { const p = dedupe(points); return p.length >= 2 ? { type: 'LineString', coordinates: p } : null; }
@@ -68,7 +85,7 @@ export function parseLayers(raw: string | null): Layer[] {
 }
 export const buoyLabel = (b: Buoy) => b.name || `${b.type} ${b.id}`;
 
-const ITEM_LAYERS = ['fb-items-wrong', 'fb-items-missing', 'fb-items-points'];
+const ITEM_LAYERS = ['fb-items-original', 'fb-items-wrong', 'fb-items-missing', 'fb-items-corrected', 'fb-items-points'];
 
 /**
  * Fahrwasser-Feedback (/admin/fairway-feedback): the derived passages and lateral marks of the viewport; objects the fairway detection got
@@ -95,7 +112,7 @@ const ITEM_LAYERS = ['fb-items-wrong', 'fb-items-missing', 'fb-items-points'];
         <div class="row toolbar">
           @switch (mode()) {
             @case ('draw') {
-              <span class="muted">@if (editing()) { <b>{{ 'admin.fb.editing' | translate }}</b> · } {{ 'admin.fb.drawHint' | translate }} ({{ points().length }})</span>
+              <span class="muted">@if (editing()) { <b>{{ 'admin.fb.editing' | translate }}</b> · } @if (correcting(); as c) { <b>{{ 'admin.fb.correcting' | translate }}: {{ c.note || c.category }}</b> · } {{ 'admin.fb.drawHint' | translate }} ({{ points().length }})</span>
               <mat-checkbox [(ngModel)]="snap">{{ 'admin.fb.snap' | translate }}</mat-checkbox>
               <button mat-flat-button (click)="finishDraw()" [disabled]="!canFinish()">{{ (editing() ? 'common.save' : 'admin.fb.finish') | translate }}</button>
               <button mat-button (click)="cancel()">{{ 'common.cancel' | translate }}</button>
@@ -145,7 +162,8 @@ const ITEM_LAYERS = ['fb-items-wrong', 'fb-items-missing', 'fb-items-points'];
                 @for (t of (s.b.tags ?? {}) | keyvalue; track t.key) { <dt class="tag">{{ t.key }}</dt><dd class="tag">{{ t.value }}</dd> }
               }
             </dl>
-            <div class="row"><button mat-flat-button color="warn" (click)="markWrong(s)"><mat-icon>report</mat-icon> {{ 'admin.fb.markWrong' | translate }}</button>
+            <div class="row wrap"><button mat-flat-button color="warn" (click)="markWrong(s)"><mat-icon>report</mat-icon> {{ 'admin.fb.markWrong' | translate }}</button>
+              @if (s.type === 'passage' && s.p.geometry.type === 'LineString') { <button mat-stroked-button (click)="startDraw(null, s.p)" [title]="'admin.fb.correctHint' | translate"><mat-icon>edit_road</mat-icon> {{ 'admin.fb.correct' | translate }}</button> }
               <button mat-button (click)="zoomTo(s.type === 'passage' ? s.p.geometry : point(s.b))"><mat-icon>center_focus_strong</mat-icon> {{ 'admin.showOnMap' | translate }}</button></div>
           </div>
         }
@@ -156,7 +174,7 @@ const ITEM_LAYERS = ['fb-items-wrong', 'fb-items-missing', 'fb-items-points'];
         <ul class="groups">
           @for (g of groups(); track g.id) {
             <li [class.active]="g.id === groupId()" [class.resolved]="g.status === 'Resolved'" (click)="openGroup(g.id)">
-              <span class="grow">{{ g.name }}</span><span class="muted">{{ g.wrong }} ✗ · {{ g.missing }} ＋ · {{ g.items }}</span>
+              <span class="grow">{{ g.name }}</span><span class="muted">{{ g.wrong }} ✗ · {{ g.corrected }} ✎ · {{ g.missing }} ＋ · {{ g.items }}</span>
               <span class="chip" [class.done]="g.status === 'Resolved'">{{ ('admin.fb.status.' + g.status) | translate }}</span>
             </li>
           } @empty { <li class="muted">{{ 'admin.fb.noGroups' | translate }}</li> }
@@ -180,11 +198,11 @@ const ITEM_LAYERS = ['fb-items-wrong', 'fb-items-missing', 'fb-items-points'];
             <ul class="items">
               @for (i of items(); track i.id) {
                 <li (click)="zoomTo(i.geometry)" [title]="i.snapshot ? (i.snapshot | json) : ''">
-                  <mat-icon [class]="'k-' + i.kind">{{ i.kind === 'WrongObject' ? 'report' : i.kind === 'MissingFairway' ? 'add_road' : 'chat' }}</mat-icon>
+                  <mat-icon [class]="'k-' + i.kind">{{ kindIcon[i.kind] }}</mat-icon>
                   <span class="grow"><b>{{ ('admin.fb.kind.' + i.kind) | translate }}</b>@if (snapshotLabel(i); as l) { · {{ l }} }
                     @if (i.note) { <br />{{ i.note }} } @if (i.expectation) { <br /><i>→ {{ i.expectation }}</i> }
                     @if (regression()[i.id]; as r) { <br /><span class="chip" [class.done]="r.satisfied === true" [class.fail]="r.satisfied === false">{{ ('admin.fb.result.' + r.status) | translate }}@if (r.coverage != null) { · {{ r.coverage * 100 | number:'1.0-0' }} % }</span> }</span>
-                  @if (i.kind === 'MissingFairway') { <button mat-icon-button (click)="startDraw(i); $event.stopPropagation()" [title]="'admin.fb.editLine' | translate"><mat-icon>edit</mat-icon></button> }
+                  @if (isLineKind(i.kind)) { <button mat-icon-button (click)="startDraw(i); $event.stopPropagation()" [title]="'admin.fb.editLine' | translate"><mat-icon>edit</mat-icon></button> }
                   <button mat-icon-button (click)="removeItem(i); $event.stopPropagation()" [title]="'common.delete' | translate"><mat-icon>delete</mat-icon></button>
                 </li>
               } @empty { <li class="muted">{{ 'admin.fb.noItems' | translate }}</li> }
@@ -211,7 +229,7 @@ const ITEM_LAYERS = ['fb-items-wrong', 'fb-items-missing', 'fb-items-points'];
     .groups, .items { list-style: none; padding: 0; margin: 4px 0; font-size: 13px; }
     .groups li, .items li { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-top: 1px solid #eee; cursor: pointer; }
     .groups li.active { background: #e3f2fd; } .groups li.resolved .grow { color: #999; text-decoration: line-through; }
-    .items li { align-items: flex-start; } .items mat-icon { flex: none; } .k-WrongObject { color: #d50000; } .k-MissingFairway { color: #00a000; } .k-Comment { color: #fb8c00; }
+    .items li { align-items: flex-start; } .items mat-icon { flex: none; } .k-WrongObject { color: #d50000; } .k-MissingFairway { color: #00a000; } .k-CorrectedObject { color: #2e7d32; } .k-Comment { color: #fb8c00; }
     .chip { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: #fff3e0; color: #e65100; white-space: nowrap; } .chip.done { background: #e8f5e9; color: #2e7d32; } .chip.fail { background: #ffebee; color: #c62828; }
     @media (max-width: 800px) { .layout { flex-direction: column; height: auto; } .panel { width: 100%; } }`,
 })
@@ -227,6 +245,8 @@ export class FairwayFeedback {
   mode = signal<'draw' | 'comment' | null>(null);
   /** Set while a saved drawn fairway is being corrected (draw mode on its line; finishing saves it back). */
   editing = signal<FeedbackItem | null>(null);
+  /** Set while a copy of a derived passage is being redrawn: finishing saves a CorrectedObject item, the passage itself stays as it is. */
+  correcting = signal<Passage | null>(null);
   points = signal<Pos[]>([]); snap = true;
   pending = signal<Pending | null>(null); formGroup = ''; formGroupName = ''; formNote = ''; formExpectation = '';
   groups = signal<FeedbackGroup[]>([]);
@@ -236,7 +256,7 @@ export class FairwayFeedback {
   items = signal<FeedbackItem[]>([]);
   regression = signal<Record<string, RegressionRow>>({});
   layers = LAYERS; colour = CATEGORY_COLOUR as Partial<Record<Layer, string>>; expectations = EXPECTATIONS; minZoom = MIN_ZOOM;
-  lengthNm = lengthNm; buoyLabel = buoyLabel;
+  lengthNm = lengthNm; buoyLabel = buoyLabel; kindIcon = KIND_ICON; isLineKind = isLineKind;
   private map?: MlMap;
   private loadTimer?: ReturnType<typeof setTimeout>;
   private editor?: LineEditor;
@@ -255,8 +275,10 @@ export class FairwayFeedback {
     map.addLayer({ id: 'fb-pass-label', type: 'symbol', source: 'fb-passages', minzoom: 11,
       layout: { 'symbol-placement': 'line', 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 11, 'text-offset': [0, -0.9] }, paint: { 'text-color': colour, 'text-halo-color': '#fff', 'text-halo-width': 1.5 } });
     map.addLayer({ id: 'fb-buoys', type: 'circle', source: 'fb-buoys', paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 6], 'circle-color': ['match', ['get', 'side'], 'Port', '#d50000', 'Starboard', '#00a000', '#9e9e9e'], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
+    map.addLayer({ id: 'fb-items-original', type: 'line', source: 'fb-items', filter: ['==', ['get', 'kind'], 'Original'], paint: { 'line-color': '#d50000', 'line-width': 6, 'line-opacity': 0.3 } });
     map.addLayer({ id: 'fb-items-wrong', type: 'line', source: 'fb-items', filter: ['all', ['==', ['get', 'kind'], 'WrongObject'], ['!=', ['geometry-type'], 'Point']], paint: { 'line-color': '#d50000', 'line-width': 9, 'line-opacity': 0.45 } });
     map.addLayer({ id: 'fb-items-missing', type: 'line', source: 'fb-items', filter: ['all', ['==', ['get', 'kind'], 'MissingFairway'], ['!=', ['geometry-type'], 'Point']], paint: { 'line-color': '#00c853', 'line-width': 4, 'line-dasharray': [2, 1] } });
+    map.addLayer({ id: 'fb-items-corrected', type: 'line', source: 'fb-items', filter: ['==', ['get', 'kind'], 'CorrectedObject'], layout: { 'line-cap': 'round' }, paint: { 'line-color': '#00a000', 'line-width': 4 } });
     map.addLayer({ id: 'fb-items-points', type: 'circle', source: 'fb-items', filter: ['==', ['geometry-type'], 'Point'],
       paint: { 'circle-radius': 11, 'circle-color': ['case', ['==', ['get', 'kind'], 'Comment'], '#fb8c00', 'rgba(0,0,0,0)'], 'circle-opacity': 0.8, 'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'Comment'], '#fff', '#d50000'], 'circle-stroke-width': 3 } });
     map.addLayer({ id: 'fb-sel-line', type: 'line', source: 'fb-sel', paint: { 'line-color': '#ffd600', 'line-width': 10, 'line-blur': 3, 'line-opacity': 0.8 } }, 'fb-pass-solid');
@@ -298,7 +320,7 @@ export class FairwayFeedback {
     const map = this.map!; const p: Pos = [e.lngLat.lng, e.lngLat.lat];
     if (isMarkerEvent(e.originalEvent)) return; // a vertex handle, × or the insert handle of the line editor
     if (this.mode() === 'draw') { if (!this.editor?.tryInsert(e.point)) this.editor?.append(p); return; }
-    if (this.pending()?.kind === 'MissingFairway' && this.editor?.tryInsert(e.point)) return; // the finished line stays editable
+    if (isLineKind(this.pending()?.kind) && this.editor?.tryInsert(e.point)) return; // the finished line stays editable
     if (this.mode() === 'comment') { this.mode.set(null); map.getCanvas().style.cursor = ''; this.openForm({ kind: 'Comment', objectRef: null, geometry: { type: 'Point', coordinates: p }, title: this.t('admin.fb.kind.Comment') }); return; }
     const f = map.queryRenderedFeatures(e.point, { layers: this.clickable() })[0];
     const id = f?.properties?.['id'];
@@ -349,13 +371,15 @@ export class FairwayFeedback {
   }
 
   // ---- drawing / marking ----
-  startDraw(item: FeedbackItem | null = null): void {
+  /** New line, a saved line item to correct again (pencil), or a copy of a derived passage to correct (the passage itself is never changed). */
+  startDraw(item: FeedbackItem | null = null, correct: Passage | null = null): void {
     const map = this.map; if (!map) return;
-    this.cancel(); this.select(null); this.editing.set(item); this.mode.set('draw');
+    this.cancel(); this.select(null); this.editing.set(item); this.correcting.set(correct); this.mode.set('draw');
     this.editor = new LineEditor(map, { snap: p => this.snapped(p), onChange: pts => this.points.set(pts) });
-    this.points.set(item?.geometry?.type === 'LineString' ? item.geometry.coordinates as Pos[] : []); this.editor.set(this.points());
+    const g = item?.geometry ?? correct?.geometry;
+    this.points.set(g?.type === 'LineString' ? copyLine(g.coordinates as Pos[]) : []); this.editor.set(this.points());
     map.doubleClickZoom.disable(); map.getCanvas().style.setProperty('cursor', 'crosshair');
-    if (item) this.zoomTo(item.geometry);
+    if (g) this.zoomTo(g);
   }
   startComment(): void { this.cancel(); this.select(null); this.pending.set(null); this.mode.set('comment'); this.map?.getCanvas().style.setProperty('cursor', 'crosshair'); }
   canFinish(): boolean { return draftLine(this.points()) !== null; }
@@ -363,12 +387,14 @@ export class FairwayFeedback {
     const line = draftLine(this.points()); if (!line) return;
     this.endMode();
     const item = this.editing();
-    if (item) { // a corrected drawn fairway: saved back right away
+    if (item) { // a saved line corrected again: saved back right away
       this.api.put(`/api/admin/feedback/items/${item.id}`, { kind: item.kind, note: item.note, expectation: item.expectation, geometry: line }).subscribe({
         next: () => { this.cancel(); this.loadItems(); this.flash(this.t('admin.fb.saved')); }, error: e => this.error.set(errorMessage(e)) });
       return;
     }
-    this.openForm({ kind: 'MissingFairway', objectRef: null, geometry: line, title: this.t('admin.fb.kind.MissingFairway') });
+    const c = this.correcting();
+    this.openForm(c ? { kind: 'CorrectedObject', objectRef: `correction:${c.id}`, geometry: line, title: `${this.t('admin.fb.kind.CorrectedObject')}: ${c.note ?? c.category}` }
+      : { kind: 'MissingFairway', objectRef: null, geometry: line, title: this.t('admin.fb.kind.MissingFairway') });
     this.points.set(line.coordinates as Pos[]); this.editor?.set(this.points()); // stays editable until saved or cancelled
   }
   markWrong(s: Selection): void {
@@ -385,14 +411,14 @@ export class FairwayFeedback {
     const p = this.pending(); if (!p || !this.canSave()) return;
     try {
       const groupId = this.formGroup || (await this.call(this.api.post<{ id: string }>('/api/admin/feedback/groups', { name: this.formGroupName.trim() }))).id;
-      const geometry = p.kind === 'MissingFairway' ? draftLine(this.points()) ?? p.geometry : p.objectRef ? null : p.geometry;
+      const geometry = isLineKind(p.kind) ? draftLine(this.points()) ?? p.geometry : p.objectRef ? null : p.geometry;
       await this.call(this.api.post(`/api/admin/feedback/groups/${groupId}/items`, { kind: p.kind, objectRef: p.objectRef, geometry, note: this.formNote, expectation: this.formExpectation }));
       this.cancel(); this.select(null);
       this.openGroup(groupId); this.loadGroups();
       this.flash(this.t('admin.fb.saved'));
     } catch (e) { this.error.set(errorMessage(e)); }
   }
-  cancel(): void { this.endMode(); this.pending.set(null); this.editing.set(null); this.points.set([]); this.editor?.destroy(); this.editor = undefined; }
+  cancel(): void { this.endMode(); this.pending.set(null); this.editing.set(null); this.correcting.set(null); this.points.set([]); this.editor?.destroy(); this.editor = undefined; }
   private endMode(): void { this.mode.set(null); this.map?.doubleClickZoom.enable(); this.map?.getCanvas().style.removeProperty('cursor'); }
 
   // ---- groups ----
@@ -416,7 +442,7 @@ export class FairwayFeedback {
   }
   async createGroup(): Promise<void> {
     const name = this.newGroupName.trim(); if (!name) return;
-    try { const { id } = await this.call(this.api.post<{ id: string }>('/api/admin/feedback/groups', { name })); this.newGroupName = ''; this.groups.update(g => [{ id, name, description: null, status: 'Open', createdAt: '', updatedAt: '', items: 0, wrong: 0, missing: 0 }, ...g]); this.openGroup(id); this.loadGroups(); }
+    try { const { id } = await this.call(this.api.post<{ id: string }>('/api/admin/feedback/groups', { name })); this.newGroupName = ''; this.groups.update(g => [{ id, name, description: null, status: 'Open', createdAt: '', updatedAt: '', items: 0, wrong: 0, missing: 0, corrected: 0 }, ...g]); this.openGroup(id); this.loadGroups(); }
     catch (e) { this.error.set(errorMessage(e)); }
   }
   saveGroup(g: FeedbackGroup, status: FeedbackGroup['status']): void {
