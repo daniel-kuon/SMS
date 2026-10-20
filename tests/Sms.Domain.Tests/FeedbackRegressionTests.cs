@@ -120,3 +120,19 @@ public class CorrectedObjectRegressionTests
         Assert.Equal(0, c.WrongPartsM);
     }
 }
+
+public class BranchedFeedbackRegressionTests
+{
+    private static readonly GeometryFactory F = new();
+
+    [Fact]
+    public void A_drawn_line_with_a_branch_needs_both_branches_covered()
+    {
+        // main line along 55° N, a branch north from its middle (the junction shares the coordinate)
+        var main = F.CreateLineString([new(11.90, 55), new(11.91, 55), new(11.92, 55)]);
+        var branch = F.CreateLineString([new(11.91, 55), new(11.91, 55.01)]);
+        var drawn = F.CreateMultiLineString([main, branch]);
+        Assert.Equal("partly", FeedbackRegression.CheckMissing(drawn, [main]).Status); // the branch is missing
+        Assert.True(FeedbackRegression.CheckMissing(drawn, [main, branch]).Satisfied);
+    }
+}

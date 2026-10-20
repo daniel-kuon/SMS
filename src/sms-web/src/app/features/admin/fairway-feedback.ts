@@ -10,13 +10,14 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { TranslatePipe, TranslateService } from '@ngx-translate/core';
 import { firstValueFrom, Observable } from 'rxjs';
-import type { FeatureCollection, Geometry, LineString, Point } from 'geojson';
+import type { FeatureCollection, Geometry, Point } from 'geojson';
 import type { ExpressionSpecification, GeoJSONSource, MapMouseEvent } from 'maplibre-gl';
 import { bounds, createMap, MlMap } from '../../core/map';
 import { Api, errorMessage } from '../../core/api';
 import { haversineM } from '../../core/track-playback';
 import { formatPosition } from '../../core/seamark-icons';
-import { isMarkerEvent, LineEditor } from '../../core/line-editor';
+import { isMarkerEvent, LineEditor, vertexNear } from '../../core/line-editor';
+import { cleanLines, geometryToLines, Lines, linesToGeometry, vertexCount } from '../../core/line-network';
 import { geometryCoords, lengthNm } from './routing-corrections';
 
 export type PassageCategory = 'fairway' | 'assumed' | 'narrow' | 'osm' | 'manual';
@@ -64,11 +65,6 @@ export const itemsToFc = (list: FeedbackItem[]): FeatureCollection => ({ type: '
   ];
 }) });
 
-/** A detached copy of a line's positions (2D): the editor works on it, the object it came from stays untouched. */
-export const copyLine = (coords: number[][]): Pos[] => coords.map(c => [c[0], c[1]] as Pos);
-/** Consecutive equal vertices removed (the two clicks of a double-click land on the same spot). */
-export const dedupe = (points: Pos[]): Pos[] => points.filter((p, i) => i === 0 || p[0] !== points[i - 1][0] || p[1] !== points[i - 1][1]);
-export function draftLine(points: Pos[]): LineString | null { const p = dedupe(points); return p.length >= 2 ? { type: 'LineString', coordinates: p } : null; }
 /** Ground metres per screen pixel at a latitude and zoom (512 px tiles, as MapLibre). */
 export const metresPerPixel = (lat: number, zoom: number) => 40075016.686 * Math.cos(lat * Math.PI / 180) / (512 * 2 ** zoom);
 /** The nearest buoy within radiusM replaces the clicked position. */
@@ -112,7 +108,7 @@ const ITEM_LAYERS = ['fb-items-original', 'fb-items-wrong', 'fb-items-missing', 
         <div class="row toolbar">
           @switch (mode()) {
             @case ('draw') {
-              <span class="muted">@if (editing()) { <b>{{ 'admin.fb.editing' | translate }}</b> · } @if (correcting(); as c) { <b>{{ 'admin.fb.correcting' | translate }}: {{ c.note || c.category }}</b> · } {{ 'admin.fb.drawHint' | translate }} ({{ points().length }})</span>
+              <span class="muted">@if (editing()) { <b>{{ 'admin.fb.editing' | translate }}</b> · } @if (correcting(); as c) { <b>{{ 'admin.fb.correcting' | translate }}: {{ c.note || c.category }}</b> · } {{ 'admin.fb.drawHint' | translate }} ({{ vertexCount(lines()) }})@if (attach()) { · <b class="attach">{{ 'admin.fb.attachActive' | translate }}</b> }</span>
               <mat-checkbox [(ngModel)]="snap">{{ 'admin.fb.snap' | translate }}</mat-checkbox>
               <button mat-flat-button (click)="finishDraw()" [disabled]="!canFinish()">{{ (editing() ? 'common.save' : 'admin.fb.finish') | translate }}</button>
               <button mat-button (click)="cancel()">{{ 'common.cancel' | translate }}</button>
@@ -222,7 +218,7 @@ const ITEM_LAYERS = ['fb-items-original', 'fb-items-wrong', 'fb-items-missing', 
     .swatch.round, .sw-buoys { width: 10px; height: 10px; border-radius: 50%; background: linear-gradient(90deg, #d50000 50%, #00a000 50%) !important; }
     .swatch.port { background: #d50000 !important; } .swatch.starboard { background: #00a000 !important; } .sw-items { height: 4px; background: repeating-linear-gradient(90deg, #00c853 0 4px, transparent 4px 6px) !important; }
     .sw-assumed, .sw-narrow { opacity: .7; }
-    .hint { color: #e65100; font-size: 12px; } .info { color: #2e7d32; font-size: 13px; margin: 4px 0; } .error { cursor: pointer; }
+    .hint { color: #e65100; font-size: 12px; } .attach { color: #ff6d00; } .info { color: #2e7d32; font-size: 13px; margin: 4px 0; } .error { cursor: pointer; }
     .card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px; margin: 8px 0; } .form { border-color: #1565c0; }
     .details dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 8px 0; } .details dt { color: #666; } .details dd { margin: 0; word-break: break-all; }
     .details .tag { font-size: 11px; } .mono { font-family: monospace; font-size: 11px; }
@@ -247,7 +243,8 @@ export class FairwayFeedback {
   editing = signal<FeedbackItem | null>(null);
   /** Set while a copy of a derived passage is being redrawn: finishing saves a CorrectedObject item, the passage itself stays as it is. */
   correcting = signal<Passage | null>(null);
-  points = signal<Pos[]>([]); snap = true;
+  /** The drawn line and its branches (junctions share the exact coordinate). */
+  lines = signal<Lines>([[]]); attach = signal<Pos | null>(null); snap = true;
   pending = signal<Pending | null>(null); formGroup = ''; formGroupName = ''; formNote = ''; formExpectation = '';
   groups = signal<FeedbackGroup[]>([]);
   groupId = signal<string | null>(storageGet(GROUP_STORAGE));
@@ -256,7 +253,7 @@ export class FairwayFeedback {
   items = signal<FeedbackItem[]>([]);
   regression = signal<Record<string, RegressionRow>>({});
   layers = LAYERS; colour = CATEGORY_COLOUR as Partial<Record<Layer, string>>; expectations = EXPECTATIONS; minZoom = MIN_ZOOM;
-  lengthNm = lengthNm; buoyLabel = buoyLabel; kindIcon = KIND_ICON; isLineKind = isLineKind;
+  lengthNm = lengthNm; buoyLabel = buoyLabel; vertexCount = vertexCount; kindIcon = KIND_ICON; isLineKind = isLineKind;
   private map?: MlMap;
   private loadTimer?: ReturnType<typeof setTimeout>;
   private editor?: LineEditor;
@@ -286,7 +283,15 @@ export class FairwayFeedback {
     this.applyLayers();
 
     map.on('click', (e: MapMouseEvent) => this.click(e));
-    map.on('dblclick', (e: MapMouseEvent) => { if (this.mode() === 'draw') { e.preventDefault(); this.finishDraw(); } });
+    // draw mode: a double-click on a vertex of another passage / feedback line starts a branch there (a vertex of the drawn line: its handle
+    // does that itself); anywhere else it finishes the line
+    map.on('dblclick', (e: MapMouseEvent) => {
+      if (this.mode() !== 'draw') return;
+      e.preventDefault();
+      if (isMarkerEvent(e.originalEvent)) return;
+      const v = vertexNear(map, e.point, ['fb-pass-solid', 'fb-pass-dashed', 'fb-items-missing', 'fb-items-corrected'], id => this.lineGeometry(id));
+      if (v) { this.editor?.undoAppendsAt(e.point); this.editor?.attachAt(v); } else this.finishDraw();
+    });
     map.on('mousemove', (e: MapMouseEvent) => {
       if (this.mode()) return;
       map.getCanvas().style.cursor = map.queryRenderedFeatures(e.point, { layers: this.clickable() }).length ? 'pointer' : '';
@@ -328,6 +333,10 @@ export class FairwayFeedback {
     else if (f) { const x = this.data().passages.find(q => q.id === id); if (x) this.select({ type: 'passage', p: x }); }
     else this.select(null);
   }
+  /** Stored geometry of a passage or feedback line by its feature id (rendered features carry tile-rounded coordinates). */
+  private lineGeometry(id: unknown): Geometry | null {
+    return this.data().passages.find(p => p.id === id)?.geometry ?? this.items().find(i => i.id === id)?.geometry ?? null;
+  }
   private snapped(p: Pos): Pos {
     const map = this.map; if (!this.snap || !map) return p;
     return snapToBuoy(p, this.data().buoys, SNAP_PX * metresPerPixel(p[1], map.getZoom()));
@@ -336,9 +345,9 @@ export class FairwayFeedback {
     if (!this.mode()) return;
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    if (e.key === 'Escape') this.cancel();
+    if (e.key === 'Escape') { if (this.attach()) this.editor?.attachAt(null); else this.cancel(); }
     else if (e.key === 'Enter' && this.mode() === 'draw') this.finishDraw();
-    else if (e.key === 'Backspace' && this.mode() === 'draw') { e.preventDefault(); this.points.set(this.points().slice(0, -1)); this.editor?.set(this.points()); }
+    else if (e.key === 'Backspace' && this.mode() === 'draw') { e.preventDefault(); this.editor?.removeLast(); }
   }
 
   select(s: Selection | null): void {
@@ -375,16 +384,16 @@ export class FairwayFeedback {
   startDraw(item: FeedbackItem | null = null, correct: Passage | null = null): void {
     const map = this.map; if (!map) return;
     this.cancel(); this.select(null); this.editing.set(item); this.correcting.set(correct); this.mode.set('draw');
-    this.editor = new LineEditor(map, { snap: p => this.snapped(p), onChange: pts => this.points.set(pts) });
+    this.editor = new LineEditor(map, { snap: p => this.snapped(p), onChange: l => this.lines.set(l), onAttach: p => this.attach.set(p) });
     const g = item?.geometry ?? correct?.geometry;
-    this.points.set(g?.type === 'LineString' ? copyLine(g.coordinates as Pos[]) : []); this.editor.set(this.points());
+    this.lines.set(geometryToLines(g)); this.editor.set(this.lines()); // a copy: the passage / item keeps its geometry until saved
     map.doubleClickZoom.disable(); map.getCanvas().style.setProperty('cursor', 'crosshair');
     if (g) this.zoomTo(g);
   }
   startComment(): void { this.cancel(); this.select(null); this.pending.set(null); this.mode.set('comment'); this.map?.getCanvas().style.setProperty('cursor', 'crosshair'); }
-  canFinish(): boolean { return draftLine(this.points()) !== null; }
+  canFinish(): boolean { return linesToGeometry(this.lines()) !== null; }
   finishDraw(): void {
-    const line = draftLine(this.points()); if (!line) return;
+    const line = linesToGeometry(this.lines()); if (!line) return;
     this.endMode();
     const item = this.editing();
     if (item) { // a saved line corrected again: saved back right away
@@ -395,7 +404,7 @@ export class FairwayFeedback {
     const c = this.correcting();
     this.openForm(c ? { kind: 'CorrectedObject', objectRef: `correction:${c.id}`, geometry: line, title: `${this.t('admin.fb.kind.CorrectedObject')}: ${c.note ?? c.category}` }
       : { kind: 'MissingFairway', objectRef: null, geometry: line, title: this.t('admin.fb.kind.MissingFairway') });
-    this.points.set(line.coordinates as Pos[]); this.editor?.set(this.points()); // stays editable until saved or cancelled
+    this.lines.set(cleanLines(this.lines())); this.editor?.set(this.lines()); // stays editable until saved or cancelled
   }
   markWrong(s: Selection): void {
     this.openForm(s.type === 'passage'
@@ -411,14 +420,14 @@ export class FairwayFeedback {
     const p = this.pending(); if (!p || !this.canSave()) return;
     try {
       const groupId = this.formGroup || (await this.call(this.api.post<{ id: string }>('/api/admin/feedback/groups', { name: this.formGroupName.trim() }))).id;
-      const geometry = isLineKind(p.kind) ? draftLine(this.points()) ?? p.geometry : p.objectRef ? null : p.geometry;
+      const geometry = isLineKind(p.kind) ? linesToGeometry(this.lines()) ?? p.geometry : p.objectRef ? null : p.geometry;
       await this.call(this.api.post(`/api/admin/feedback/groups/${groupId}/items`, { kind: p.kind, objectRef: p.objectRef, geometry, note: this.formNote, expectation: this.formExpectation }));
       this.cancel(); this.select(null);
       this.openGroup(groupId); this.loadGroups();
       this.flash(this.t('admin.fb.saved'));
     } catch (e) { this.error.set(errorMessage(e)); }
   }
-  cancel(): void { this.endMode(); this.pending.set(null); this.editing.set(null); this.correcting.set(null); this.points.set([]); this.editor?.destroy(); this.editor = undefined; }
+  cancel(): void { this.endMode(); this.pending.set(null); this.editing.set(null); this.correcting.set(null); this.lines.set([[]]); this.attach.set(null); this.editor?.destroy(); this.editor = undefined; }
   private endMode(): void { this.mode.set(null); this.map?.doubleClickZoom.enable(); this.map?.getCanvas().style.removeProperty('cursor'); }
 
   // ---- groups ----

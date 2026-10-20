@@ -14,7 +14,9 @@ import { bounds, createMap, MlMap } from '../../core/map';
 import { Api, errorMessage } from '../../core/api';
 import { haversineM } from '../../core/track-playback';
 import { formatPosition } from '../../core/seamark-icons';
-import { isMarkerEvent, LineEditor } from '../../core/line-editor';
+import { isMarkerEvent, LineEditor, vertexNear } from '../../core/line-editor';
+import { cleanLines, geometryToLines, Lines, vertexCount } from '../../core/line-network';
+import { firstValueFrom } from 'rxjs';
 
 export interface Correction { id: string; kind: 'Block' | 'Passage' | 'Bridge' | 'Lock' | 'OpeningBridge' | 'Fairway' | 'Avoid' | 'Water'; source: 'Manual' | 'Derived'; geometry: Geometry; note: string | null; active: boolean; createdAt: string; clearanceM?: number | null; }
 export const KIND_ICON: Record<Correction['kind'], string> = { Block: 'block', Passage: 'timeline', Bridge: 'vertical_align_top', Lock: 'lock', OpeningBridge: 'open_in_full', Fairway: 'water', Avoid: 'warning', Water: 'waves' };
@@ -96,7 +98,7 @@ const MARKED: ExpressionSpecification = ['any', HOVER, SEL];
             <button mat-stroked-button (click)="startDraw('Passage')"><mat-icon>timeline</mat-icon> {{ 'admin.drawPassage' | translate }}</button>
             <button mat-stroked-button (click)="startDraw('Block')"><mat-icon>block</mat-icon> {{ 'admin.drawBlock' | translate }}</button>
           } @else {
-            <span class="muted">{{ (editing() ? 'admin.editGeometryHint' : 'admin.drawHint') | translate }} ({{ points().length }})</span>
+            <span class="muted">{{ (editing() ? 'admin.editGeometryHint' : 'admin.drawHint') | translate }} ({{ vertexCount(lines()) }})@if (attach()) { · <b class="attach">{{ 'admin.fb.attachActive' | translate }}</b> }</span>
             @if (!editing()) { <mat-form-field appearance="outline" subscriptSizing="dynamic" class="full"><mat-label>{{ 'admin.note' | translate }}</mat-label><input matInput [(ngModel)]="note" /></mat-form-field> }
             <button mat-flat-button (click)="finishDraw()" [disabled]="!canFinish()">{{ 'common.save' | translate }}</button>
             <button mat-button (click)="cancelDraw()">{{ 'common.cancel' | translate }}</button>
@@ -158,7 +160,7 @@ const MARKED: ExpressionSpecification = ['any', HOVER, SEL];
     .panel h2 { margin: 0; font-size: 20px; } .panel h3 { margin: 0; } .head { align-items: center; gap: 8px; }
     .toolbar { align-items: center; flex-wrap: wrap; gap: 8px; margin: 8px 0; } .full { width: 100%; }
     .filter { display: grid; grid-template-columns: 1fr 1fr; } .filter mat-icon { vertical-align: middle; } .sources { border-top: 1px solid #eee; margin-top: 4px; }
-    .hint { color: #e65100; font-size: 12px; }
+    .hint { color: #e65100; font-size: 12px; } .attach { color: #ff6d00; }
     .details dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; align-items: center; font-size: 13px; } .details dt { color: #666; } .details dd { margin: 0; }
     .list { width: 100%; border-collapse: collapse; font-size: 13px; } .list th { text-align: left; color: #666; font-weight: 500; padding: 4px; } .list td { padding: 2px 4px; border-top: 1px solid #eee; }
     .list tbody tr { cursor: pointer; } .list tr.hover td { background: #fff8e1; } .inactive td { color: #999; }
@@ -173,12 +175,12 @@ export class RoutingCorrections {
   visible = computed(() => { const f = this.filter(); return this.items().filter(c => matchesFilter(c, f)); });
   hoverId = signal<string | null>(null);
   selected = signal<Correction | null>(null); noteDraft = '';
-  drawing = signal<'Block' | 'Passage' | null>(null); points = signal<[number, number][]>([]); note = '';
+  drawing = signal<'Block' | 'Passage' | null>(null); lines = signal<Lines>([[]]); attach = signal<[number, number] | null>(null); note = '';
   /** The correction whose line/ring is being corrected (drawing then edits its points; finishing saves it with PUT). */
   editing = signal<Correction | null>(null);
   private editor?: LineEditor;
   listHovered = false;
-  lengthNm = lengthNm; icon = KIND_ICON; kinds = KINDS; sources = SOURCES; limit = LIMIT;
+  lengthNm = lengthNm; vertexCount = vertexCount; icon = KIND_ICON; kinds = KINDS; sources = SOURCES; limit = LIMIT;
   private map?: MlMap;
   private loadTimer?: ReturnType<typeof setTimeout>;
 
@@ -204,6 +206,12 @@ export class RoutingCorrections {
       if (this.drawing()) { if (!isMarkerEvent(e.originalEvent) && !this.editor?.tryInsert(e.point)) this.editor?.append([e.lngLat.lng, e.lngLat.lat]); return; }
       const id = featureAt(e); const c = id ? this.items().find(x => x.id === id) : undefined;
       if (c) this.select(c);
+    });
+    // drawing a passage: a double-click on a vertex of another line starts a branch there (the drawn line's own vertices: their handles)
+    map.on('dblclick', (e: MapMouseEvent) => {
+      if (this.drawing() !== 'Passage' || isMarkerEvent(e.originalEvent)) return;
+      const v = vertexNear(map, e.point, ['corr-lines'], id => this.items().find(c => c.id === id)?.geometry);
+      if (v) { e.preventDefault(); this.editor?.undoAppendsAt(e.point); this.editor?.attachAt(v); }
     });
     map.on('mousemove', (e: MapMouseEvent) => {
       if (this.drawing()) return;
@@ -264,29 +272,41 @@ export class RoutingCorrections {
     for (const id of Object.keys(GEOM)) if (map.getLayer(id)) map.setFilter(id, ['all', GEOM[id], f]);
   }
 
-  startDraw(kind: 'Block' | 'Passage', points: [number, number][] = []): void {
+  startDraw(kind: 'Block' | 'Passage', lines: Lines = [[]]): void {
     const map = this.map; if (!map) return;
-    this.editor?.destroy(); this.hover(null); this.drawing.set(kind); this.points.set(points); this.note = '';
-    // vertices drag, × / right-click deletes, a click near the line inserts a vertex there (as the harbour map's route)
-    this.editor = new LineEditor(map, { closed: kind === 'Block', colour: '#333', onChange: p => this.points.set(p) });
-    this.editor.set(points);
+    this.editor?.destroy(); this.hover(null); this.drawing.set(kind); this.lines.set(lines); this.attach.set(null); this.note = '';
+    // vertices drag, × / right-click deletes, a click near the line inserts a vertex there (as the harbour map's route); passages: a
+    // double-click on a vertex starts a branch there (saved as a passage of its own sharing the junction coordinate)
+    this.editor = new LineEditor(map, { closed: kind === 'Block', colour: '#333', onChange: l => this.lines.set(l), onAttach: p => this.attach.set(p) });
+    this.editor.set(lines);
     map.getCanvas().style.setProperty('cursor', 'crosshair');
   }
   /** Corrects a line or a single-ring polygon in place: its vertices become the editable draft. */
   editGeometry(c: Correction): void {
     const g = c.geometry;
-    this.startDraw(g.type === 'Polygon' ? 'Block' : 'Passage', g.type === 'Polygon' ? (g.coordinates[0].slice(0, -1) as [number, number][]) : (g as LineString).coordinates as [number, number][]);
+    this.startDraw(g.type === 'Polygon' ? 'Block' : 'Passage', g.type === 'Polygon' ? [g.coordinates[0].slice(0, -1).map(c => [c[0], c[1]] as [number, number])] : geometryToLines(g));
     this.editing.set(c); this.showOnMap(c);
   }
   editableShape = (c: Correction) => c.geometry.type === 'LineString' || (c.geometry.type === 'Polygon' && c.geometry.coordinates.length === 1);
-  cancelDraw(): void { this.drawing.set(null); this.editing.set(null); this.points.set([]); this.map?.getCanvas().style.removeProperty('cursor'); this.editor?.destroy(); this.editor = undefined; }
-  canFinish(): boolean { const k = this.drawing(); return !!k && draftGeometry(k, this.points()) !== null; }
-  finishDraw(): void {
-    const kind = this.drawing(); if (!kind) return;
-    const geometry = draftGeometry(kind, this.points()); if (!geometry) return;
+  cancelDraw(): void { this.drawing.set(null); this.editing.set(null); this.lines.set([[]]); this.attach.set(null); this.map?.getCanvas().style.removeProperty('cursor'); this.editor?.destroy(); this.editor = undefined; }
+  /** The geometries to save: a ring, or one LineString per branch (the graph builder takes LineString passages only; branches meeting at the
+   * exact same coordinate share the graph node there). */
+  private drafts(): (LineString | Polygon)[] {
+    const kind = this.drawing(); if (!kind) return [];
+    if (kind === 'Block') { const g = draftGeometry('Block', this.lines()[0] ?? []); return g ? [g] : []; }
+    return cleanLines(this.lines()).map(l => ({ type: 'LineString', coordinates: l }));
+  }
+  canFinish(): boolean { return this.drafts().length > 0; }
+  async finishDraw(): Promise<void> {
+    const kind = this.drawing(); const drafts = this.drafts(); if (!kind || !drafts.length) return;
     const c = this.editing();
-    if (c) { this.save(c, { geometry }); this.cancelDraw(); return; }
-    this.api.post('/api/admin/routing/corrections', { kind, geometry, note: this.note || null, active: true }).subscribe({ next: () => { this.cancelDraw(); this.load(); }, error: e => this.error.set(errorMessage(e)) });
+    try {
+      // an edited correction keeps its first branch, every further branch becomes a new correction of the same kind and note
+      if (c) await firstValueFrom(this.api.put(`/api/admin/routing/corrections/${c.id}`, { kind: c.kind, geometry: drafts[0], note: c.note, active: c.active, clearanceM: c.clearanceM ?? null }));
+      for (const geometry of c ? drafts.slice(1) : drafts)
+        await firstValueFrom(this.api.post('/api/admin/routing/corrections', { kind: c?.kind ?? kind, geometry, note: (c ? c.note : this.note) || null, active: true }));
+      this.cancelDraw(); this.load();
+    } catch (e) { this.error.set(errorMessage(e)); }
   }
 
   private save(c: Correction, patch: Partial<Pick<Correction, 'note' | 'active' | 'geometry'>>): void {

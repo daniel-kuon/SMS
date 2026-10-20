@@ -95,4 +95,19 @@ public class FeedbackTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.True(check.GetProperty("satisfied").GetBoolean());
         Assert.Equal(1, (await admin.GetFromJsonAsync<JsonElement>("/api/admin/feedback/groups")).EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == group).GetProperty("corrected").GetInt32());
     }
+
+    [Fact]
+    public async Task A_drawn_fairway_with_a_branch_is_one_multi_line_item()
+    {
+        var (admin, _) = await f.AdminAsync();
+        var group = (await Json(await admin.PostAsJsonAsync("/api/admin/feedback/groups", new { name = "Abzweig" }))).GetProperty("id").GetGuid();
+        var net = new { type = "MultiLineString", coordinates = new[] { new[] { new[] { 12.30, 55.0 }, new[] { 12.31, 55.0 }, new[] { 12.32, 55.0 } }, new[] { new[] { 12.31, 55.0 }, new[] { 12.31, 55.01 } } } };
+        var item = await Json(await admin.PostAsJsonAsync($"/api/admin/feedback/groups/{group}/items", new { kind = "MissingFairway", geometry = net }));
+        Assert.Equal("MultiLineString", item.GetProperty("geometry").GetProperty("type").GetString());
+        // the two branches as passages sharing the junction (how the corrections editor saves them) satisfy it
+        foreach (var line in new[] { Line([12.30, 55.0], [12.31, 55.0], [12.32, 55.0]), Line([12.31, 55.0], [12.31, 55.01]) })
+            (await admin.PostAsJsonAsync("/api/admin/routing/corrections", new { kind = "Passage", geometry = line, note = "Test", active = true })).EnsureSuccessStatusCode();
+        var check = (await admin.GetFromJsonAsync<JsonElement>($"/api/admin/feedback/regression?group={group}")).GetProperty("groups")[0].GetProperty("items")[0];
+        Assert.True(check.GetProperty("satisfied").GetBoolean());
+    }
 }

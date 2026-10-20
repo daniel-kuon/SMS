@@ -1,12 +1,6 @@
-import { Buoy, buoysToFc, copyLine, dedupe, draftLine, exportFileName, FeedbackItem, isLineKind, itemsToFc, LAYERS, metresPerPixel, originalGeometry, parseLayers, passagesToFc, snapToBuoy } from './fairway-feedback';
+import { Buoy, buoysToFc, exportFileName, FeedbackItem, isLineKind, itemsToFc, LAYERS, metresPerPixel, originalGeometry, parseLayers, passagesToFc, snapToBuoy } from './fairway-feedback';
 
 describe('fairway feedback drawing helpers', () => {
-  it('drops the doubled vertex of a double-click and needs two distinct points', () => {
-    expect(dedupe([[1, 2], [1, 2], [3, 4], [3, 4], [1, 2]])).toEqual([[1, 2], [3, 4], [1, 2]]);
-    expect(draftLine([[1, 2], [1, 2]])).toBeNull();
-    expect(draftLine([[1, 2], [3, 4], [3, 4]])).toEqual({ type: 'LineString', coordinates: [[1, 2], [3, 4]] });
-  });
-
   it('snaps to the nearest buoy within the radius', () => {
     const buoy = (id: number, lat: number, lng: number): Buoy => ({ id, type: 'buoy_lateral', category: 'port', name: null, colour: 'red', side: 'Port', lat, lng, tags: null });
     const buoys = [buoy(1, 55.0005, 11.9), buoy(2, 55.0002, 11.9)];
@@ -47,13 +41,6 @@ describe('fairway feedback corrected objects', () => {
   const original = { type: 'LineString' as const, coordinates: [[11.9, 55], [11.915, 55.01], [11.93, 55]] };
   const corrected: FeedbackItem = { id: 'c', groupId: 'g', kind: 'CorrectedObject', objectRef: 'correction:x', snapshot: { note: 'Fahrwasser (5 Tonnenpaare)', geometry: original },
     geometry: { type: 'LineString', coordinates: [[11.9, 55], [11.93, 55]] }, note: null, expectation: null, createdAt: '' };
-
-  it('edits a detached copy of the object line', () => {
-    const copy = copyLine(original.coordinates);
-    copy[1][1] = 55;
-    expect(original.coordinates[1]).toEqual([11.915, 55.01]);
-    expect(copyLine([[1, 2, 3]])).toEqual([[1, 2]]); // 2D
-  });
 
   it('shows the original under the correction and reads it from the snapshot', () => {
     expect(originalGeometry(corrected)).toEqual(original);

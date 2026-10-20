@@ -217,14 +217,22 @@ public static class FeedbackEndpoints
         if (i.Geometry is not null) i.Geometry.SRID = 4326;
         return i.Kind switch
         {
-            FeedbackKind.MissingFairway when i.Geometry is not LineString { NumPoints: >= 2 } => Invalid("geometry", "Ein Fahrwasser braucht eine Linie mit mindestens zwei Punkten."),
+            FeedbackKind.MissingFairway when !IsLine(i.Geometry) => Invalid("geometry", "Ein Fahrwasser braucht eine Linie mit mindestens zwei Punkten."),
             FeedbackKind.CorrectedObject when i.ObjectRef is null => Invalid("objectRef", "Das korrigierte Objekt fehlt."),
-            FeedbackKind.CorrectedObject when i.Geometry is not LineString { NumPoints: >= 2 } => Invalid("geometry", "Die Korrektur braucht eine Linie mit mindestens zwei Punkten."),
+            FeedbackKind.CorrectedObject when !IsLine(i.Geometry) => Invalid("geometry", "Die Korrektur braucht eine Linie mit mindestens zwei Punkten."),
             FeedbackKind.WrongObject when i.ObjectRef is null && i.Geometry is null => Invalid("objectRef", "Objekt oder Geometrie fehlt."),
             FeedbackKind.Comment when i.Note is null => Invalid("note", "Kommentar fehlt."),
             _ => null,
         };
     }
+
+    /// <summary>A drawn line, or a line with branches (MultiLineString: the branches share the junction coordinate).</summary>
+    private static bool IsLine(Geometry? g) => g switch
+    {
+        LineString { NumPoints: >= 2 } => true,
+        MultiLineString { IsEmpty: false } m => m.Geometries.All(x => x is LineString { NumPoints: >= 2 }),
+        _ => false,
+    };
 
     private static object ItemDto(FeedbackItem i) => new { i.Id, i.GroupId, i.Kind, i.ObjectRef, snapshot = Parse(i.ObjectSnapshot), i.Geometry, i.Note, i.Expectation, i.CreatedAt, i.CreatedById };
 
