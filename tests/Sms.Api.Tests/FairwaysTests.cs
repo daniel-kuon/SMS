@@ -139,11 +139,13 @@ public class FairwaysTests
         var safe = new FairwayMark(54.40 - 300 / WaterGraphTiler.MPerDegLat, 10.15, MarkSide.SafeWater);
         var beyond = Channel(3, lng0: 10.165, lat0: 54.385 - 0.009).ToList();
         var fairways = Fairways.Derive([.. approach, safe, .. beyond], F);
-        Assert.Equal(2, fairways.Count);
-        var app = fairways.Single(fw => fw.Line.Coordinates.Any(c => Math.Abs(c.X - 10.15) < 1e-6 && c.Y > 54.40));
-        Assert.Equal(3, app.Pairs);
-        Assert.Contains(app.Line.Coordinates, c => c.Equals2D(new Coordinate(safe.Lng, safe.Lat))); // the line ends at the mark
-        Assert.DoesNotContain(app.Line.Coordinates, c => c.X > 10.16);
+        Assert.Equal(2, fairways.Count(fw => fw.Pairs > 0));
+        var app = fairways.Where(fw => fw.Line.Coordinates.Any(c => Math.Abs(c.X - 10.15) < 1e-6 && c.Y >= 54.40 - 1e-9)).ToList();
+        Assert.Equal(3, app.Sum(fw => fw.Pairs));
+        // the approach ends at the mark: its last hop is a line of its own (no pairs, so no channel zone round the end hop)
+        var end = Assert.Single(app, fw => fw.Line.Coordinates.Any(c => c.Equals2D(new Coordinate(safe.Lng, safe.Lat))));
+        Assert.Equal(0, end.Pairs);
+        Assert.DoesNotContain(app.SelectMany(fw => fw.Line.Coordinates), c => c.X > 10.16);
         // junction: a through fairway running east passes a safe-water mark between its pairs; an approach from the north ends there
         static List<FairwayMark> East(double lng0, int n) => Enumerable.Range(0, n).SelectMany(i => new[]
         {
@@ -154,8 +156,9 @@ public class FairwaysTests
         var all = Fairways.Derive([.. East(10.0, 4), .. East(10.052, 4), junction, .. branch], F, Shallow);
         var through = all.Single(fw => fw.Pairs == 8);
         Assert.True(through.Line.Coordinates.Min(c => c.X) < 10.01 && through.Line.Coordinates.Max(c => c.X) > 10.07, "one line past the mark");
-        var spur = all.Single(fw => fw.Pairs == 3);
-        Assert.True(spur.Line.Coordinates[0].Equals2D(new Coordinate(junction.Lng, junction.Lat)) || spur.Line.Coordinates[^1].Equals2D(new Coordinate(junction.Lng, junction.Lat)));
+        Assert.Single(all, fw => fw.Pairs == 3);
+        var spurEnd = Assert.Single(all, fw => fw.Pairs == 0);
+        Assert.True(spurEnd.Line.Coordinates[0].Equals2D(new Coordinate(junction.Lng, junction.Lat)) || spurEnd.Line.Coordinates[^1].Equals2D(new Coordinate(junction.Lng, junction.Lat)));
     }
 
     [Fact]
@@ -195,6 +198,38 @@ public class FairwaysTests
         Assert.Equal(4, lines.Sum(l => l.Singles)); // the bend is no mark
         // without a water path the fairway ends before the headland
         Assert.True(Fairways.Derive(marks, F, water with { Path = null }).SelectMany(l => l.Line.Coordinates).Max(c => c.Y) < 54.48);
+    }
+
+    [Fact]
+    public void Harbour_entrance_lights_pair_up_and_join_the_fairway_beside_them()
+    {
+        // Kalvehave: F.R and Fl.G on the pier heads 120 m apart, the entrance 800 m north-east of a channel running north;
+        // the lit pair (no buoys) joins the channel; a lone red light elsewhere is no mark
+        var marks = Channel(5);
+        marks.Add(new FairwayMark(54.4130, 10.1580, MarkSide.Port, Light: true));
+        marks.Add(new FairwayMark(54.4122, 10.1595, MarkSide.Starboard, Light: true));
+        marks.Add(new FairwayMark(54.3900, 10.1700, MarkSide.Port, Light: true));
+        var lines = Fairways.Derive(marks, F);
+        var entrance = new Coordinate((10.1580 + 10.1595) / 2, (54.4130 + 54.4122) / 2);
+        Assert.Contains(lines, l => l.Line.Coordinates.Any(c => c.Equals2D(entrance)));
+        Assert.DoesNotContain(lines.SelectMany(l => l.Line.Coordinates), c => Math.Abs(c.X - 10.17) < 1e-3);
+        // a light and a buoy never pair
+        Assert.Null(Fairways.SideOf("light_minor", null, "white"));
+        Assert.Equal(MarkSide.Port, Fairways.SideOf("light_minor", null, "red"));
+    }
+
+    [Fact]
+    public void A_line_of_mostly_cardinals_is_no_fairway()
+    {
+        // cardinal marks round a harbour (Helgoland Südhafen) with two port marks among them: no line
+        var marks = new List<FairwayMark>
+        {
+            new(54.400, 10.150, MarkSide.Port), new(54.404, 10.150, MarkSide.West), new(54.408, 10.150, MarkSide.West),
+            new(54.412, 10.150, MarkSide.East), new(54.416, 10.150, MarkSide.West), new(54.420, 10.150, MarkSide.Port),
+        };
+        Assert.Empty(Fairways.Derive(marks, F));
+        // the same with lateral marks for most of them is a fairway
+        Assert.NotEmpty(Fairways.Derive(marks.Select((m, k) => k is 2 or 4 ? m with { Side = MarkSide.Port } : m).ToList(), F));
     }
 
     [Fact]

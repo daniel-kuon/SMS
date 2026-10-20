@@ -7,7 +7,8 @@ namespace Sms.Infrastructure.Routing;
 
 /// <summary>Port/Starboard: lateral marks (IALA A); North…West: cardinal marks, safe water on that side; SafeWater: mid-channel/landfall marks.</summary>
 public enum MarkSide { Port, Starboard, North, East, South, West, SafeWater }
-public sealed record FairwayMark(double Lat, double Lng, MarkSide Side);
+/// <param name="Light">A red or green minor light (pier head): pairs only with another light, across a harbour entrance.</param>
+public sealed record FairwayMark(double Lat, double Lng, MarkSide Side, bool Light = false);
 /// <param name="Singles">Unpaired marks (single lateral, cardinal or safe-water marks) the chain runs past.</param>
 public sealed record Fairway(LineString Line, int Pairs, int Singles = 0);
 /// <summary>Water checks for a hop a → b (X = lng, Y = lat). Clear: no land between water on it. Deep: charted depth all along
@@ -31,15 +32,16 @@ public sealed record FairwayWater(Func<Coordinate, Coordinate, bool> Clear, Func
 /// it on a straight course). Cleanup: leading single marks after the last pair kept only ≥ 2 and ending lateral; out-and-back
 /// corners (> 90°) cut where the straight hop is clear and deep; an end heading for another line ≤ gapMaxM ahead joins it
 /// (T-junction); line ends running along a better line are cut back, lines mostly along one dropped; single lateral marks moved
-/// half a pair width (≤ 150 m) towards the channel; stretches of ≥ 2 single marks become lines of their own (no channel zone in
-/// the graph build). A wide gap between single lateral marks whose straight hop crosses ≥ 300 m of land may bend through deep
-/// water (<see cref="FairwayWater.Path"/>); land within 100 m of an OSM waterway or inside a Water correction counts as water.
+/// half a pair width (≤ 150 m) towards the channel; stretches of ≥ 2 single marks, and single marks or junction hops at a line's
+/// end, become lines of their own (no channel zone in the graph build, which takes lines with ≥ 2 pairs). Red/green minor lights
+/// pair only with each other (pier heads at a harbour entrance); a lone pair counts when it joins a line. A wide gap between single lateral marks whose straight hop crosses ≥ 300 m of land may bend through deep
+/// water (<see cref="FairwayWater.Path"/>); land inside a Water correction counts as water.
 /// ponytail: greedy chaining, no buoy sequence numbers or fairway areas; special-purpose marks are not used (none tagged as fairway
 /// marks); marks too sparse to chain without crossing land (Grønsund between Bogø and Falster) stay unchained.
 /// </summary>
 public static class Fairways
 {
-    public const double CardinalOffsetM = 100, CardinalDangerM = 300, HeadingBaseM = 300, LandMaxM = 50, WaterwayCorridorM = 100, PathLandM = 300;
+    public const double CardinalOffsetM = 100, CardinalDangerM = 300, HeadingBaseM = 300, LandMaxM = 50, PathLandM = 300;
     /// <summary>In the note of every derived line with pairs; a stretch of single marks only ("Fahrwasser (k Einzeltonnen)") lacks
     /// it and gets no ×3 channel zone in the graph build (RoutingGraphBuilder, SeaRouter's smoother zone).</summary>
     public const string PairedNote = "Tonnenpaare";
@@ -47,7 +49,7 @@ public static class Fairways
     public static string Note(Fairway f) => f.Pairs == 0 ? $"Fahrwasser ({f.Singles} Einzeltonnen)"
         : f.Singles > 0 ? $"Fahrwasser ({f.Pairs} {PairedNote}, {f.Singles} Einzeltonnen)" : $"Fahrwasser ({f.Pairs} {PairedNote})";
     /// <summary>The seamark types <see cref="SideOf"/> maps.</summary>
-    public static readonly string[] MarkTypes = ["buoy_lateral", "beacon_lateral", "buoy_cardinal", "beacon_cardinal", "buoy_safe_water", "beacon_safe_water"];
+    public static readonly string[] MarkTypes = ["buoy_lateral", "beacon_lateral", "buoy_cardinal", "beacon_cardinal", "buoy_safe_water", "beacon_safe_water", "light_minor"];
 
     /// <summary>Maps an OSM seamark type/category (lateral marks without a category: their colour, IALA A) to a side, or null.</summary>
     public static MarkSide? SideOf(string type, string? category, string? colour = null) => type switch
@@ -61,6 +63,7 @@ public static class Fairways
         },
         "buoy_cardinal" or "beacon_cardinal" => category switch { "north" => MarkSide.North, "east" => MarkSide.East, "south" => MarkSide.South, "west" => MarkSide.West, _ => null },
         "buoy_safe_water" or "beacon_safe_water" => MarkSide.SafeWater,
+        "light_minor" => colour switch { "red" => MarkSide.Port, "green" => MarkSide.Starboard, _ => null }, // colour: the light's
         _ => null,
     };
 
@@ -86,7 +89,7 @@ public static class Fairways
             for (var s = 0; s < starboard.Count; s++)
             {
                 var d = RoutingGraphBuilder.Haversine(port[p].Lat, port[p].Lng, starboard[s].Lat, starboard[s].Lng);
-                if (d <= pairMaxM) candidates.Add((d, p, s));
+                if (d <= pairMaxM && port[p].Light == starboard[s].Light) candidates.Add((d, p, s));
             }
         var usedP = new HashSet<int>(); var usedS = new HashSet<int>();
         var pts = new List<Pt>();
@@ -97,7 +100,8 @@ public static class Fairways
             pts.Add(new Pt(new Coordinate((port[p].Lng + starboard[s].Lng) / 2, (port[p].Lat + starboard[s].Lat) / 2), null, port[p], starboard[s]));
         }
         // 2. single points: unpaired lateral marks on the mark (moved towards the channel once chained), cardinals on their safe side
-        foreach (var m in port.Where((_, i) => !usedP.Contains(i)).Concat(starboard.Where((_, i) => !usedS.Contains(i)))) pts.Add(new Pt(At(m), m.Side));
+        // (a light without its partner is no fairway mark)
+        foreach (var m in port.Where((_, i) => !usedP.Contains(i)).Concat(starboard.Where((_, i) => !usedS.Contains(i))).Where(m => !m.Light)) pts.Add(new Pt(At(m), m.Side));
         var dLat = CardinalOffsetM / WaterGraphTiler.MPerDegLat;
         foreach (var m in marks.Where(m => m.Side is not (MarkSide.Port or MarkSide.Starboard)))
         {
@@ -133,6 +137,22 @@ public static class Fairways
         // pass 3: chains of single marks only, joining the others where they meet them (safe-water marks are never chain points)
         for (var seed = 0; seed < pts.Count; seed++)
             if (!used[seed] && pts[seed].Side != MarkSide.SafeWater) Grow(seed, Step.All);
+        // the single marks the trimming will take off the chain ends go back into the pool, and passes 2 and 3 run once more:
+        // a fairway's dangling tail must not keep the marks of the approach beside it (Masnedsund's beside Vordingborg's)
+        for (var ci = 0; ci < chains.Count; ci++)
+        {
+            if (chains[ci] is not { } chain) continue;
+            var before = chain.ToList();
+            Untips(ci);
+            Trim(chain); chain.Reverse(); Trim(chain); chain.Reverse();
+            if (chain.Count == 1 && !pts[chain[0]].Pair) chain.Clear(); // a lone single mark is no chain to join
+            foreach (var i in before.Except(chain)) { used[i] = false; chainOf[i] = -1; }
+            if (chain.Count == 0) chains[ci] = null; else Tips(ci);
+        }
+        foreach (var ci in Enumerable.Range(0, chains.Count).Where(i => chains[i] is not null).OrderByDescending(i => chains[i]!.Count).ToList())
+            while (chains[ci] is not null && Extend(ci, Step.All)) { }
+        for (var seed = 0; seed < pts.Count; seed++)
+            if (!used[seed] && !pts[seed].Via && pts[seed].Side != MarkSide.SafeWater) Grow(seed, Step.All);
 
         var cands = new List<List<int>>();
         foreach (var chain in chains)
@@ -157,7 +177,9 @@ public static class Fairways
             foreach (var atEnd in (ReadOnlySpan<bool>)[true, false])
             {
                 var tip = atEnd ? line[^1] : line[0];
-                if (pts[tip].Side == MarkSide.SafeWater || Heading(line, atEnd) is not { } h) continue;
+                // a lone pair (a lit harbour entrance) looks both ways along its axis
+                var axis = line.Count == 1 && pts[tip].Pair ? (atEnd ? pts[tip].B : (-pts[tip].B.x, -pts[tip].B.y)) : ((double x, double y)?)null;
+                if (pts[tip].Side == MarkSide.SafeWater || (axis ?? Heading(line, atEnd)) is not { } h) continue;
                 var ours = NearestPair(line, atEnd);
                 // not into an approach buoyed away from ours (Bogø's end onto Stubbekøbing's approach)
                 bool Away(int q) => ours >= 0 && cands[owner[q]].Where(j => pts[j].Pair).Select(j => (int?)j).MinBy(j => Dist(q, j!.Value)) is { } theirs && Diverges(ours, theirs);
@@ -186,15 +208,16 @@ public static class Fairways
                 if (all.Count == 0 || !all[^1].Equals2D(c)) all.Add(c);
             if (all.Count < 2) continue;
             keptLines.Add([.. all]);
-            // stretches of ≥ 2 single marks in a row become lines of their own (no pairs), sharing the pair at either end with the
-            // paired pieces: the graph build puts its ×3 channel zone round paired lines only (Fairways.SingleMarkNote)
+            // stretches of ≥ 2 single marks in a row, and any at an end of the line (a T-junction hop too), become lines of their
+            // own (no pairs), sharing the pair at either end with the paired pieces: the graph build puts its ×3 channel zone round
+            // lines with ≥ 2 pairs only (Fairways.PairedNote) – a junction hop or a lone pair would close the water round it
             var pair = cut.Select(x => x.i >= 0 && pts[x.i].Pair).ToArray();
             var start = 0;
             for (var k = 0; k < cut.Count;)
             {
                 var run = 0;
                 while (k + run < cut.Count && !pair[k + run]) run++;
-                if (run >= 2 || run == cut.Count)
+                if (run >= 2 || run >= 1 && (k == 0 || k + run == cut.Count))
                 {
                     int a = Math.Max(0, k - 1), b = Math.Min(cut.Count - 1, k + run);
                     if (a > start) Emit(cut[start..(a + 1)]);
@@ -207,7 +230,6 @@ public static class Fairways
         }
         return result;
 
-        // ≥ 2 pairs, 1 pair and 2 single marks, or ≥ 4 single marks (3 at a junction or a safe-water end) of which ≥ 2 lateral
         void Emit(List<(int i, Coordinate c)> piece)
         {
             var coords = new List<Coordinate>();
@@ -216,18 +238,22 @@ public static class Fairways
             if (coords.Count < 2) return;
             var ls = f.CreateLineString(coords.ToArray());
             ls.SRID = 4326;
-            // a single-mark stretch counts its singles only (the pairs at its ends belong to the paired pieces)
-            var singleRun = piece.Count(x => x.i >= 0 && pts[x.i].Pair) <= 2 && piece.Skip(1).SkipLast(1).All(x => x.i < 0 || !pts[x.i].Pair) && piece.Count(x => !(x.i >= 0 && pts[x.i].Pair)) >= 2;
+            // a single-mark stretch counts its single marks only (a lone pair: as one mark); its end pairs belong to the paired pieces
             int pairs = piece.Count(x => x.i >= 0 && pts[x.i].Pair), own = piece.Count(x => x.i >= 0 && !pts[x.i].Via);
-            result.Add(singleRun ? new Fairway(ls, 0, own - pairs) : new Fairway(ls, pairs, own - pairs));
+            var singleRun = pairs < 2 || piece.Count > 2 && piece.Skip(1).SkipLast(1).All(x => x.i < 0 || !pts[x.i].Pair);
+            result.Add(singleRun ? new Fairway(ls, 0, Math.Max(1, own - pairs)) : new Fairway(ls, pairs, own - pairs));
         }
 
+        // ≥ 2 pairs, 1 pair and 2 single marks or a junction (a lit harbour entrance off a fairway), or ≥ 4 single marks (3 at a
+        // junction or a safe-water end), at least half and ≥ 2 of them lateral (not a ring of cardinals round a harbour)
         bool Accepted(List<(int i, Coordinate c)> items)
         {
             var own = items.Where(x => x.i >= 0 && !pts[x.i].Via).Select(x => pts[x.i]).ToList();
             int pairs = own.Count(p => p.Pair), singles = own.Count - pairs;
             var joined = items.Count > 0 && (items[0].i < 0 || items[^1].i < 0 || own[0].Side == MarkSide.SafeWater || own[^1].Side == MarkSide.SafeWater);
-            return pairs >= 2 || pairs == 1 && singles >= 2 || pairs == 0 && singles >= (joined ? 3 : 4) && own.Count(p => p.Side is MarkSide.Port or MarkSide.Starboard) >= 2;
+            var laterals = own.Count(p => p.Side is MarkSide.Port or MarkSide.Starboard);
+            return pairs >= 2 || pairs == 1 && (singles >= 2 || items[0].i < 0 || items[^1].i < 0)
+                || pairs == 0 && singles >= (joined ? 3 : 4) && laterals >= 2 && 2 * laterals >= singles;
         }
 
         // a new chain from a seed; its first hops had no heading to keep, so an end hop that turns more than a later hop of that
@@ -425,6 +451,9 @@ public static class Fairways
         {
             var p = pts[i];
             if (p.Side is not (MarkSide.Port or MarkSide.Starboard)) return p.C;
+            // a mark at the end of a bend through deep water stays put: the bend was found from the mark (Stockholm → Sandhamn)
+            var at0 = line.IndexOf(i);
+            if (at0 > 0 && pts[line[at0 - 1]].Via || at0 < line.Count - 1 && pts[line[at0 + 1]].Via) return p.C;
             var kn = Enumerable.Range(0, line.Count).Where(k => pts[line[k]].Pair).Select(k => (int?)k).MinBy(k => Dist(i, line[k!.Value]));
             var near = kn is { } n ? pts[line[n]] : null;
             var width = near is null ? 100 : RoutingGraphBuilder.Haversine(near.P!.Lat, near.P.Lng, near.S!.Lat, near.S.Lng);
@@ -487,7 +516,8 @@ public static class Fairways
     {
         var marks = new List<FairwayMark>();
         await using (var cmd = new NpgsqlCommand("""
-            SELECT "Type", "Category", "Colour", ST_Y(g), ST_X(g) FROM (SELECT "Type", "Category", "Colour", ST_Transform("Location", 4326) g FROM "Seamarks"
+            SELECT "Type", "Category", "Colour", ST_Y(g), ST_X(g) FROM (SELECT "Type", "Category",
+              CASE WHEN "Type" = 'light_minor' THEN "TagsJson"->>'seamark:light:colour' ELSE "Colour" END "Colour", ST_Transform("Location", 4326) g FROM "Seamarks"
             WHERE "Type" = ANY(@types) AND "Location" && ST_Transform(ST_MakeEnvelope(@w, @s, @e, @n, 4326), 3857)) x
             """, conn))
         {
@@ -495,7 +525,7 @@ public static class Fairways
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
                 if (SideOf(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2)) is { } side)
-                    marks.Add(new FairwayMark(r.GetDouble(3), r.GetDouble(4), side));
+                    marks.Add(new FairwayMark(r.GetDouble(3), r.GetDouble(4), side, r.GetString(0) == "light_minor"));
         }
         var land = new STRtree<IndexedPointInAreaLocator>(); var depth = new STRtree<IndexedPointInAreaLocator>();
         bool hasTables;
@@ -522,35 +552,22 @@ public static class Fairways
                 """, land);
             await Load("SELECT geom FROM routing_depth WHERE geom && ST_MakeEnvelope(@w, @s, @e, @n, 4326)", depth);
         }
-        // water that routing_land draws as land: inland Water corrections, and the corridor of the imported OSM waterways (canals,
-        // rivers: "… (n OSM-Wege)" passages): Teltowkanal, the Schlei narrows
-        var waterAreas = new STRtree<IndexedPointInAreaLocator>(); var waterways = new STRtree<Geometry>();
+        // water that routing_land draws as land: inland Water corrections (Teltowkanal). Not the corridor of the imported OSM
+        // waterways: "waterway=fairway" lines run through skerries, and land next to them is land (Stockholm → Sandhamn)
+        var waterAreas = new STRtree<IndexedPointInAreaLocator>();
         await using (var cmd = new NpgsqlCommand("""
-            SELECT "Kind", "Geometry" FROM "RoutingCorrections" WHERE "Active" AND "Geometry" && ST_MakeEnvelope(@w, @s, @e, @n, 4326)
-              AND ("Kind" = 'Water' OR "Kind" = 'Passage' AND "Note" LIKE '%OSM-Wege)')
+            SELECT "Geometry" FROM "RoutingCorrections" WHERE "Active" AND "Kind" = 'Water' AND "Geometry" && ST_MakeEnvelope(@w, @s, @e, @n, 4326)
             """, conn) { CommandTimeout = 600 })
         {
             Box(cmd, box);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
-            {
-                var g = r.GetFieldValue<Geometry>(1);
-                if (r.GetString(0) == "Water")
-                    foreach (var poly in g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : [])
-                        waterAreas.Insert(poly.EnvelopeInternal, new IndexedPointInAreaLocator(poly));
-                else waterways.Insert(g.EnvelopeInternal, g);
-            }
+                foreach (var poly in r.GetFieldValue<Geometry>(0) is var g && g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : [])
+                    waterAreas.Insert(poly.EnvelopeInternal, new IndexedPointInAreaLocator(poly));
         }
-        land.Build(); depth.Build(); waterAreas.Build(); waterways.Build();
-        var corridor = WaterwayCorridorM / WaterGraphTiler.MPerDegLat;
+        land.Build(); depth.Build(); waterAreas.Build();
         bool In(STRtree<IndexedPointInAreaLocator> tree, Coordinate c) => tree.Query(new Envelope(c)).Any(l => l.Locate(c) != Location.Exterior);
-        bool OnLand(Coordinate c)
-        {
-            if (!In(land, c) || In(waterAreas, c)) return false;
-            var env = new Envelope(c); env.ExpandBy(corridor / 0.5, corridor);
-            var pt = Geo.Factory.CreatePoint(c);
-            return !waterways.Query(env).Any(w => w.IsWithinDistance(pt, corridor));
-        }
+        bool OnLand(Coordinate c) => In(land, c) && !In(waterAreas, c);
         bool Clear(Coordinate a, Coordinate b)
         {
             var n = Math.Max(1, (int)Math.Ceiling(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / 10));
