@@ -2,7 +2,7 @@
 // usage: dotnet run --project tools/RouteBench -c Release -- "Host=localhost;Port=…;Database=sms;Username=postgres;Password=…" [geojson-out-dir]
 //        [routes "lat1,lng1,lat2,lng2,draft[,minDepth[,warnDepth[,airDraft[,avoidUnknownBridges]]]]" …]   (0 = none; minDepth replaces draft + margin; 1 = avoid)
 //        or as third argument "backfill-adjacent": DepthLimits' coastal no-data rule (adjacent_depth_m) for the active graph version, without a rebuild
-//        or "derive-fairways" s,w,n,e: dry run of the buoy-chain derivation (stored vs derived lines)
+//        or "derive-fairways" s,w,n,e ["derived-only"]: dry run of the buoy-chain derivation (stored vs derived lines), in 2° chunks like the admin runs it
 //        env SMS_BENCH_PASSAGES=file: routes on the active graph plus the passage lines in the file ("lat,lng lat,lng …" per line), a rebuild simulated
 //        or "backfill-floor": floor_m (coastal water without data, derived channels "Enge" and their links) for the active graph version, without a rebuild
 //        or "import-bridges" s,w,n,e: road/railway bridges without a clearance over routing water from Overpass (as the admin endpoint import-bridges)
@@ -169,16 +169,25 @@ if (args.Length > 3 && args[2] == "derive-fairways")
     // dry run of the derive-fairways endpoint for a bbox s,w,n,e: the derived lines next to the stored "Fahrwasser" passages, nothing written
     using var scope = sp.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+    // a bbox larger than 2° is cut into 2° chunks, each read with the endpoint's margin and keeping the lines whose centroid it owns
     var b = args[3].Split(',').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
-    var rows = await db.Database.SqlQueryRaw<MarkRow>("""
-        SELECT "Type", "Category", ST_Y(g) AS "Lat", ST_X(g) AS "Lng" FROM (SELECT "Type", "Category", ST_Transform("Location", 4326) g FROM "Seamarks" WHERE "Type" IN ('buoy_lateral', 'beacon_lateral')) x
-        WHERE g && ST_MakeEnvelope({1}, {0}, {3}, {2}, 4326)
-        """, b[0], b[1], b[2], b[3]).ToListAsync();
-    var marks = rows.Select(m => (side: Fairways.SideOf(m.Type, m.Category), m)).Where(x => x.side != null).Select(x => new LateralMark(x.m.Lat, x.m.Lng, x.side!.Value)).ToList();
-    var stored = await db.RoutingCorrections.Where(c => c.Active && c.Kind == Sms.Domain.CorrectionKind.Passage && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => new { c.Geometry, c.Note }).ToListAsync();
-    var box = new NetTopologySuite.Geometries.Envelope(b[1], b[3], b[0], b[2]);
-    foreach (var s in stored.Where(s => box.Contains(s.Geometry.EnvelopeInternal))) Console.WriteLine($"stored {s.Note}: " + string.Join(" ", s.Geometry.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
-    foreach (var f in Fairways.Derive(marks, Geo.Factory)) Console.WriteLine($"derived {f.Pairs} pairs {f.Singles} singles: " + string.Join(" ", f.Line.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
+    if (args.Length <= 4 || args[4] != "derived-only")
+    {
+        var stored = await db.RoutingCorrections.Where(c => c.Active && c.Kind == Sms.Domain.CorrectionKind.Passage && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => new { c.Geometry, c.Note }).ToListAsync();
+        var box = new NetTopologySuite.Geometries.Envelope(b[1], b[3], b[0], b[2]);
+        foreach (var s in stored.Where(s => box.Contains(s.Geometry.EnvelopeInternal))) Console.WriteLine($"stored {s.Note}: " + string.Join(" ", s.Geometry.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
+    }
+    for (var s0 = b[0]; s0 < b[2]; s0 += 2)
+        for (var w0 = b[1]; w0 < b[3]; w0 += 2)
+        {
+            double s = s0, w = w0, n = Math.Min(s0 + 2, b[2]), e = Math.Min(w0 + 2, b[3]);
+            var mLat = 0.15; var mLng = mLat / Math.Max(0.2, Math.Cos((s + n) / 2 * Math.PI / 180));
+            await db.Database.OpenConnectionAsync();
+            var (marks, water) = await Fairways.InputsAsync((Npgsql.NpgsqlConnection)db.Database.GetDbConnection(), new NetTopologySuite.Geometries.Envelope(w - mLng, e + mLng, s - mLat, n + mLat), default);
+            var extent = Geo.Factory.ToGeometry(new NetTopologySuite.Geometries.Envelope(w, e, s, n));
+            foreach (var f in Fairways.Derive(marks, Geo.Factory, water).Where(f => extent.Intersects(f.Line.Centroid)))
+                Console.WriteLine($"derived {f.Pairs} pairs {f.Singles} singles: " + string.Join(" ", f.Line.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
+        }
     return;
 }
 if (Environment.GetEnvironmentVariable("SMS_BENCH_PASSAGES") is { Length: > 0 } extraFile)
@@ -247,4 +256,3 @@ for (var run = 0; run < runs; run++)
 GC.Collect();
 Console.WriteLine($"managed heap after load: {(GC.GetTotalMemory(true) - before) >> 20} MB above start, process working set {Process.GetCurrentProcess().WorkingSet64 >> 20} MB");
 
-sealed class MarkRow { public string Type { get; set; } = ""; public string? Category { get; set; } public double Lat { get; set; } public double Lng { get; set; } }

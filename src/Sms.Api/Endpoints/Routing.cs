@@ -19,7 +19,7 @@ public static class RoutingEndpoints
 {
     public const string Disclaimer = "Entfernungen sind Schätzwerte und nicht zur Navigation geeignet.";
     public const string Attribution = "© OpenStreetMap-Mitwirkende, OpenSeaMap";
-    /// <summary>derive-fairways reads lateral marks this far (degrees of latitude) beyond its bbox: more than Fairways' 6 km bridge.</summary>
+    /// <summary>derive-fairways reads marks this far (degrees of latitude) beyond its bbox: more than Fairways' 5 km wide hop.</summary>
     public const double DeriveMarginDeg = 0.15;
 
     public static void MapRouting(this IEndpointRouteBuilder api)
@@ -443,13 +443,10 @@ public static class RoutingEndpoints
             // derived whole and belongs to one chunk (2° chunks cut the Mönsterås fairway at 16.5 E into two chains, the one-sided
             // stretch between them was never bridged, and lines crossing a border were never replaced)
             var marginLat = DeriveMarginDeg; var marginLng = DeriveMarginDeg / Math.Max(0.2, Math.Cos((s + n) / 2 * Math.PI / 180));
-            var sw = SeamarkEndpoints.ToMercator(s - marginLat, w - marginLng); var ne = SeamarkEndpoints.ToMercator(n + marginLat, e + marginLng);
-            var box = Geo.Factory.ToGeometry(new Envelope(sw.X, ne.X, sw.Y, ne.Y)); box.SRID = 3857;
-            var rows = await db.Seamarks.AsNoTracking().Where(m => (m.Type == "buoy_lateral" || m.Type == "beacon_lateral") && m.Location.Within(box)).Select(m => new { m.Type, m.Category, m.Location }).ToListAsync(ct);
-            var marks = rows.Select(m => (side: Fairways.SideOf(m.Type, m.Category), pos: Fairways.FromMercator(m.Location.X, m.Location.Y))).Where(m => m.side != null)
-                .Select(m => new LateralMark(m.pos.lat, m.pos.lng, m.side!.Value)).ToList();
+            await db.Database.OpenConnectionAsync(ct);
+            var (marks, water) = await Fairways.InputsAsync((Npgsql.NpgsqlConnection)db.Database.GetDbConnection(), new Envelope(w - marginLng, e + marginLng, s - marginLat, n + marginLat), ct);
             var extent = Geo.Factory.ToGeometry(new Envelope(w, e, s, n)); extent.SRID = 4326;
-            var fairways = Fairways.Derive(marks, Geo.Factory).Where(f => extent.Intersects(f.Line.Centroid)).ToList();
+            var fairways = Fairways.Derive(marks, Geo.Factory, water).Where(f => extent.Intersects(f.Line.Centroid)).ToList();
             var old = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Geometry.Centroid.Intersects(extent)).ToListAsync(ct);
             db.RoutingCorrections.RemoveRange(old);
             foreach (var f in fairways)
