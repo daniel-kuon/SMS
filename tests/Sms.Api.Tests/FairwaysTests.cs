@@ -203,15 +203,23 @@ public class FairwaysTests
     [Fact]
     public void Harbour_entrance_lights_pair_up_and_join_the_fairway_beside_them()
     {
-        // Kalvehave: F.R and Fl.G on the pier heads 120 m apart, the entrance 800 m north-east of a channel running north;
+        // Kalvehave: F.R and Fl.G on the pier heads 110 m apart, the entrance facing a channel running north 580 m west of it;
         // the lit pair (no buoys) joins the channel; a lone red light elsewhere is no mark
         var marks = Channel(5);
-        marks.Add(new FairwayMark(54.4130, 10.1580, MarkSide.Port, Light: true));
-        marks.Add(new FairwayMark(54.4122, 10.1595, MarkSide.Starboard, Light: true));
+        marks.Add(new FairwayMark(54.4095, 10.1590, MarkSide.Port, Light: true));
+        marks.Add(new FairwayMark(54.4085, 10.1590, MarkSide.Starboard, Light: true));
         marks.Add(new FairwayMark(54.3900, 10.1700, MarkSide.Port, Light: true));
         var lines = Fairways.Derive(marks, F);
-        var entrance = new Coordinate((10.1580 + 10.1595) / 2, (54.4130 + 54.4122) / 2);
+        var entrance = new Coordinate(10.1590, (54.4095 + 54.4085) / 2);
         Assert.Contains(lines, l => l.Line.Coordinates.Any(c => c.Equals2D(entrance)));
+        // with water behind the entrance the line leads on 150 m into the harbour (its end inside, not in the mouth: Glückstadt)
+        var harbour = new FairwayWater((_, _) => true, (_, _) => true, null, c => true);
+        Assert.Contains(Fairways.Derive(marks, F, harbour).SelectMany(l => l.Line.Coordinates), c => c.X > 10.160);
+        // two buoys 1.4 km off the channel stay a lone pair, no spur to them (Marstrand: a 1.8 km spur to a lone pair); as lights
+        // they are a harbour entrance and get one
+        var far = Channel(5).Concat(marks.Skip(10).Take(2).Select(m => m with { Lng = m.Lng + 0.012, Light = false })).ToList();
+        Assert.DoesNotContain(Fairways.Derive(far, F).SelectMany(l => l.Line.Coordinates), c => c.X > 10.16);
+        Assert.Contains(Fairways.Derive(far.Select(m => m.Lng > 10.16 ? m with { Light = true } : m).ToList(), F).SelectMany(l => l.Line.Coordinates), c => c.X > 10.16);
         Assert.DoesNotContain(lines.SelectMany(l => l.Line.Coordinates), c => Math.Abs(c.X - 10.17) < 1e-3);
         // a light and a buoy never pair
         Assert.Null(Fairways.SideOf("light_minor", null, "white"));
