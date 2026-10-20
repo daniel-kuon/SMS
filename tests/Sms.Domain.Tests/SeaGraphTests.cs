@@ -291,6 +291,50 @@ public class SeaGraphTests
         Assert.Null(graph.Component(a, 2));
         Assert.Equal([lone], graph.Component(lone, 10));
     }
+
+    [Fact]
+    public void Strict_search_closes_uncertain_water_outside_the_harbour_approach()
+    {
+        // a → b straight across the 1.83-3.66 m band (2.6 km, ×3 = 7.8 km), or round via a detour through deep water (2 × 6.8 km): the
+        // cost rule takes the band, the strict search the detour; without the detour the strict search finds nothing (the router falls back)
+        var g = new G();
+        int a = g.Node(0, 0), m = g.Node(4, 0), b = g.Node(8, 0), c = g.Node(12, 0), detour = g.Node(6, -6);
+        var band = g.Edge(m, b, depth: 1.8288f);
+        g.Edge(a, m); g.Edge(m, detour, depth: 5.4864f); g.Edge(detour, b); g.Edge(b, c);
+        var graph = g.Build();
+        var limits = new SeaGraph.Limits(DepthLimitM: 1.8288, MinDepthM: 2.0, UncertainFactor: 3);
+        SeaGraph.End A = new(g.C(a), a), C = new(g.C(c), c);
+        Assert.DoesNotContain(g.C(detour), graph.Route(A, C, limits)!.Points);
+        Assert.Contains(g.C(detour), graph.Route(A, C, limits with { StrictDepth = true })!.Points);
+        // in the harbour approach (ExemptDeg around an end, here around c) it stays open at the cost rule
+        Assert.DoesNotContain(g.C(detour), graph.Route(A, C, limits with { StrictDepth = true, ExemptDeg = 0.05 })!.Points);
+        // the fallback route's uncertain edges (where it warns): the band, not the approach
+        var fallback = graph.Route(A, C, limits)!;
+        Assert.Equal([band], graph.UncertainEdges(fallback.Edges!, limits, A, C));
+        Assert.Empty(graph.UncertainEdges(fallback.Edges!, limits with { ExemptDeg = 0.05 }, A, C));
+        // a buoyed channel (no floor) and open water without data stay open
+        g.Depth[band] = float.NaN;
+        Assert.DoesNotContain(g.C(detour), g.Build().Route(A, C, limits with { StrictDepth = true })!.Points);
+        // no other way: closed
+        var only = new G();
+        int p = only.Node(0, 0), q = only.Node(4, 0), r = only.Node(8, 0), s = only.Node(12, 0);
+        only.Edge(p, q); only.Edge(q, r, depth: 1.8288f); only.Edge(r, s);
+        Assert.Null(only.Build().Route(new(only.C(p), p), new(only.C(s), s), limits with { StrictDepth = true }));
+        Assert.NotNull(only.Build().Route(new(only.C(p), p), new(only.C(s), s), limits));
+    }
+
+    [Fact]
+    public void Bridges_of_unknown_clearance_are_passed_or_avoided()
+    {
+        var g = new G();
+        int a = g.Node(0, 0), b = g.Node(4, 0), up = g.Node(2, 1), down = g.Node(2, -3);
+        var under = g.Edge(a, up); g.Edge(up, b); g.Edge(a, down); g.Edge(down, b);
+        var unknown = new bool[g.S.Count]; unknown[under] = true;
+        var graph = new SeaGraph([.. g.X], [.. g.Y], [.. g.S], [.. g.T], [.. g.Cost], [.. g.Depth], [.. g.Clear], [.. g.GeomStart, g.Geom.Count / 2], [.. g.Geom], int.MaxValue, unknownBridge: unknown);
+        Assert.True(graph.UnknownBridge(under));
+        Assert.Contains(g.C(up), graph.Route(new(g.C(a), a), new(g.C(b), b), new(AirDraftM: 15))!.Points);
+        Assert.Contains(g.C(down), graph.Route(new(g.C(a), a), new(g.C(b), b), new(AirDraftM: 15, AvoidUnknownBridges: true))!.Points);
+    }
 }
 
 public class StringPullTests

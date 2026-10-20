@@ -111,4 +111,40 @@ public class ObstaclesTests
         Assert.Null(Waterways.Clearance(new Dictionary<string, string> { ["maxheight"] = "default" }));
         Assert.Equal(3.8, Waterways.Clearance(new Dictionary<string, string> { ["maxheight"] = "3.8" }));
     }
+
+    [Fact]
+    public void A_fixed_bridge_without_a_clearance_marks_its_edges_unknown()
+    {
+        var canal = new[] { Edge(1, 2, 9.70, 54.30, 9.72, 54.30), Edge(2, 3, 9.72, 54.30, 9.74, 54.30) };
+        var road = F.CreateLineString([new Coordinate(9.73, 54.29), new Coordinate(9.73, 54.31)]); // crosses the second edge
+        var lined = Obstacles.Apply(canal, [((Geometry)road, Sms.Domain.CorrectionKind.Bridge, (double?)null)], 1852, 926, 60);
+        Assert.False(lined[0].UnknownBridge); Assert.True(lined[1].UnknownBridge); Assert.Null(lined[1].ClearanceM);
+        // an opening bridge without a clearance is unlimited when open, a known clearance is no unknown
+        Assert.False(Obstacles.Apply([canal[1]], [((Geometry)road, Sms.Domain.CorrectionKind.OpeningBridge, (double?)null)], 1852, 926, 60)[0].UnknownBridge);
+        Assert.False(Obstacles.Apply([canal[1]], [((Geometry)road, Sms.Domain.CorrectionKind.Bridge, 12.0)], 1852, 926, 60)[0].UnknownBridge);
+        // a point without a clearance: within MatchM only, also with the area mode's 1.5 km match (which a known clearance keeps)
+        var point = F.CreatePoint(new Coordinate(9.71, 54.305)); // ~550 m north of the first edge
+        var area = Obstacles.Apply([canal[0]], [((Geometry)point, Sms.Domain.CorrectionKind.Bridge, (double?)null)], 1852, 926, 1500);
+        Assert.False(area[0].UnknownBridge);
+        Assert.Equal(10, Obstacles.Apply([canal[0]], [((Geometry)point, Sms.Domain.CorrectionKind.Bridge, 10.0)], 1852, 926, 1500)[0].ClearanceM);
+        Assert.True(Obstacles.Apply([canal[0]], [((Geometry)F.CreatePoint(new Coordinate(9.71, 54.3003)), Sms.Domain.CorrectionKind.Bridge, (double?)null)], 1852, 926, 1500)[0].UnknownBridge);
+        // the same crossing with a known clearance as well (a charted point next to the OSM road line): the known one counts
+        var both = Obstacles.Apply([canal[1]], [((Geometry)road, Sms.Domain.CorrectionKind.Bridge, (double?)null), ((Geometry)F.CreatePoint(new Coordinate(9.7302, 54.30)), Sms.Domain.CorrectionKind.Bridge, 40.0)], 1852, 926, 60);
+        Assert.False(both[0].UnknownBridge); Assert.Equal(40, both[0].ClearanceM);
+        // the flag survives the contraction of a canal into one edge
+        Assert.True(PassageContraction.Contract(lined, new HashSet<long> { 1, 3 }, _ => false).Single().UnknownBridge);
+    }
+
+    [Fact]
+    public void Span_points_are_matched_by_index_as_before()
+    {
+        // a long bridge line with a charted span point next to it, and one far away: one window with the span's clearance, the rest impassable
+        var line = F.CreateLineString([new Coordinate(11.00, 55.30), new Coordinate(11.10, 55.30)]);
+        var span = F.CreatePoint(new Coordinate(11.05, 55.3005)); // 55 m off the line
+        var far = F.CreatePoint(new Coordinate(11.05, 55.40));
+        var pieces = Obstacles.WithSpans([((Geometry)line, Sms.Domain.CorrectionKind.Bridge, (double?)null), ((Geometry)span, Sms.Domain.CorrectionKind.Bridge, 65.0), ((Geometry)far, Sms.Domain.CorrectionKind.Bridge, 3.0)]);
+        Assert.Single(pieces, p => p.geom is not Point && p.clearanceM == 65);
+        Assert.Single(pieces, p => p.geom is not Point && p.clearanceM == 0);
+        Assert.Equal([span.Coordinate], Obstacles.SpanPoints([((Geometry)line, Sms.Domain.CorrectionKind.Bridge, (double?)null), ((Geometry)span, Sms.Domain.CorrectionKind.Bridge, 65.0), ((Geometry)far, Sms.Domain.CorrectionKind.Bridge, 3.0)]));
+    }
 }

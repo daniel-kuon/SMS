@@ -65,8 +65,11 @@ public static class RoutingEndpoints
 
         // minDepth: routes avoid bands whose middle lies below it (as given); warnDepth: "checkDepth" warnings where a band's floor lies below it;
         // draft (old clients, ships without the two settings): minDepth = draft + margin, no warnings
-        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, double? draft, double? minDepth, double? warnDepth, bool? debug, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
+        // unknownBridges=pass (default: passed, "bridgeUnknown" warning) | avoid (closed unless no other route): fixed bridges without a charted clearance
+        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, double? draft, double? minDepth, double? warnDepth, string? unknownBridges, bool? debug, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
         {
+            if (unknownBridges is not (null or "pass" or "avoid")) return Invalid("unknownBridges", "unknownBridges=pass oder avoid.");
+            var avoid = unknownBridges == "avoid";
             RouteResult? r = null;
             Point? a = null, b = null;
             var min = router.MinDepth(draft ?? (minDepth is > 0 ? null : router.DefaultDraftM), minDepth); // no ship given: route for a typical yacht, not for a dinghy
@@ -76,12 +79,12 @@ public static class RoutingEndpoints
                 a = await db.Harbours.AsNoTracking().Where(h => h.Id == f).Select(h => h.Location).FirstOrDefaultAsync(ct);
                 b = await db.Harbours.AsNoTracking().Where(h => h.Id == t).Select(h => h.Location).FirstOrDefaultAsync(ct);
                 if (a is null || b is null) return Results.NotFound();
-                r = await router.RouteAsync(f, t, ct, airDraft, min, warn);
+                r = await router.RouteAsync(f, t, ct, airDraft, min, warn, avoid);
             }
             else if (TryParsePoint(from, out var pa) && TryParsePoint(to, out var pb))
             {
                 a = pa; b = pb;
-                r = await router.RouteAsync(pa, pb, ct, airDraft, min, warn);
+                r = await router.RouteAsync(pa, pb, ct, airDraft, min, warn, avoid);
             }
             else return Invalid("from", "fromHarbour/toHarbour oder from=lat,lng&to=lat,lng angeben.");
 
@@ -275,6 +278,18 @@ public static class RoutingEndpoints
             foreach (var l in lines) db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = Srid(l), Active = true, CreatedById = current.Id, Note = $"Enge (abgeleitet, {LengthNm(l):0.0} sm)" });
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { landPieces = land.Count, created = lines.Count, removed = old.Count, totalNm = Math.Round(lines.Sum(LengthNm), 1) });
+        });
+        // fixed road/railway bridges without a charted clearance over water the graph uses (Waterways.ImportUnknownBridgesAsync): replaces
+        // those of the bbox; the next rebuild marks the edges under them, routes pass them with a "bridgeUnknown" warning or avoid them
+        admin.MapPost("/import-bridges", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, ILogger<SeaRouter> log, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var b = bbox.Split(',').Select(x => double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : double.NaN).ToArray();
+            if (b.Length != 4 || b.Any(double.IsNaN)) return Invalid("bbox", "bbox=south,west,north,east");
+            using var doc = await Overpass.QueryAsync(http, cfg, string.Format(Waterways.OverpassBridgeQuery, bbox), ct, log);
+            if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
+            var (candidates, created, removed) = await Waterways.ImportUnknownBridgesAsync(doc, db, current.Id, new Envelope(b[1], b[3], b[0], b[2]), ct);
+            return Results.Ok(new { candidates, created, removed });
         });
         // assumed passages: where a ferry line or recommended track crosses the routing land (the coastline closes a strait boats pass,
         // Baggensstäket) or runs through coast-zone water the graph cannot connect, and buoy gaps (lateral marks on both sides of a
@@ -481,7 +496,7 @@ public static class RoutingEndpoints
         if (replaceExisting && env is not null)
         {
             var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-            old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge") || c.Note.StartsWith("Annahme")))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
+            old = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge") || c.Note.StartsWith("Annahme")))) || (c.Kind == CorrectionKind.Bridge && !(c.Note != null && c.Note.StartsWith(Waterways.UnknownBridgeNote))) || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct);
         }
         // a waterway chain that crosses the bbox edge was merged from more ways by the neighbouring chunk's import: it is kept
         // (deleting it and re-adding only this chunk's part cut the Stockholm fairway off from Danvikskanalen and the Hammarby lock),

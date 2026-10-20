@@ -1,10 +1,12 @@
 // Times SeaRouter point → point routes against the dev database without the API: graph load (first route), then warm runs.
 // usage: dotnet run --project tools/RouteBench -c Release -- "Host=localhost;Port=…;Database=sms;Username=postgres;Password=…" [geojson-out-dir]
-//        [routes "lat1,lng1,lat2,lng2,draft[,minDepth[,warnDepth[,airDraft]]]" …]   (0 = none; minDepth replaces draft + margin)
+//        [routes "lat1,lng1,lat2,lng2,draft[,minDepth[,warnDepth[,airDraft[,avoidUnknownBridges]]]]" …]   (0 = none; minDepth replaces draft + margin; 1 = avoid)
 //        or as third argument "backfill-adjacent": DepthLimits' coastal no-data rule (adjacent_depth_m) for the active graph version, without a rebuild
 //        or "derive-fairways" s,w,n,e: dry run of the buoy-chain derivation (stored vs derived lines)
 //        env SMS_BENCH_PASSAGES=file: routes on the active graph plus the passage lines in the file ("lat,lng lat,lng …" per line), a rebuild simulated
 //        or "backfill-floor": floor_m (coastal water without data, derived channels "Enge" and their links) for the active graph version, without a rebuild
+//        or "import-bridges" s,w,n,e: road/railway bridges without a clearance over routing water from Overpass (as the admin endpoint import-bridges)
+//        or "backfill-bridges": unknown_bridge (edges under a fixed bridge without a clearance, Obstacles.Apply) for the active graph version, without a rebuild
 using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -119,6 +121,49 @@ if (args.Length > 2 && args[2] == "backfill-floor")
     return;
 }
 
+if (args.Length > 3 && args[2] == "import-bridges")
+{
+    using var scope = sp.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+    var b = args[3].Split(',').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(6) };
+    http.DefaultRequestHeaders.UserAgent.ParseAdd("SMS-RouteBench/1.0");
+    HttpResponseMessage? resp = null;
+    foreach (var url in new[] { "https://overpass-api.de/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter", "https://overpass.kumi.systems/api/interpreter" })
+    {
+        resp = await http.PostAsync(url, new FormUrlEncodedContent([new("data", string.Format(Waterways.OverpassBridgeQuery, args[3]))]));
+        if (resp.IsSuccessStatusCode) break;
+        Console.WriteLine($"{url}: {(int)resp.StatusCode}");
+    }
+    resp!.EnsureSuccessStatusCode();
+    using var doc = await System.Text.Json.JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+    var (candidates, created, removed) = await Waterways.ImportUnknownBridgesAsync(doc, db, null, new NetTopologySuite.Geometries.Envelope(b[1], b[3], b[0], b[2]), default);
+    Console.WriteLine($"{candidates} plain bridges in the bbox, {created} over routing water imported, {removed} replaced");
+    return;
+}
+
+if (args.Length > 2 && args[2] == "backfill-bridges")
+{
+    // Obstacles.Apply's UnknownBridge rule on the active version: edges crossing an unknown-clearance bridge piece (after chains and charted
+    // spans), or within Obstacles.MatchM of such a point
+    using var scope = sp.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+    var conn = (Npgsql.NpgsqlConnection)db.Database.GetDbConnection(); await conn.OpenAsync();
+    var version = Convert.ToInt32(await new Npgsql.NpgsqlCommand("SELECT value::int FROM routing_meta WHERE key = 'active_version'", conn).ExecuteScalarAsync());
+    var raw = (await db.RoutingCorrections.Where(c => c.Active && (c.Kind == Sms.Domain.CorrectionKind.Bridge || c.Kind == Sms.Domain.CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync())
+        .Select(c => (c.Geometry is NetTopologySuite.Geometries.LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+    var pieces = Obstacles.WithSpans(raw).Where(p => p.kind == Sms.Domain.CorrectionKind.Bridge && p.clearanceM is null).Select(p => { p.geom.SRID = 4326; return p.geom.AsBinary(); }).ToArray();
+    await new Npgsql.NpgsqlCommand($"ALTER TABLE routing_edge ADD COLUMN IF NOT EXISTS unknown_bridge boolean NOT NULL DEFAULT false; UPDATE routing_edge SET unknown_bridge = false WHERE graph_version = {version} AND unknown_bridge", conn) { CommandTimeout = 3600 }.ExecuteNonQueryAsync();
+    var cmd = new Npgsql.NpgsqlCommand($@"UPDATE routing_edge e SET unknown_bridge = true FROM (SELECT ST_SetSRID(ST_GeomFromWKB(w), 4326) AS g FROM unnest(@w::bytea[]) w) p
+        WHERE e.graph_version = {version} AND e.geom && ST_Expand(p.g, 0.001)
+          AND (CASE WHEN GeometryType(p.g) = 'POINT' THEN ST_DWithin(e.geom::geography, p.g::geography, {Obstacles.MatchM}) ELSE ST_Intersects(e.geom, p.g) END)", conn) { CommandTimeout = 3600 };
+    cmd.Parameters.AddWithValue("w", pieces);
+    var marked = await cmd.ExecuteNonQueryAsync();
+    var known = await new Npgsql.NpgsqlCommand($"UPDATE routing_edge SET unknown_bridge = false WHERE graph_version = {version} AND unknown_bridge AND clearance_m IS NOT NULL", conn) { CommandTimeout = 3600 }.ExecuteNonQueryAsync();
+    Console.WriteLine($"v{version}: {pieces.Length} unknown-clearance bridge pieces, {marked} edges marked, {known} of them unmarked again (a known clearance on the edge)");
+    return;
+}
+
 if (args.Length > 3 && args[2] == "derive-fairways")
 {
     // dry run of the derive-fairways endpoint for a bbox s,w,n,e: the derived lines next to the stored "Fahrwasser" passages, nothing written
@@ -175,15 +220,15 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_PASSAGES") is { Length: > 0 } 
     Console.WriteLine($"simulation: {added} passage edges added from {extraFile}");
 }
 
-(string name, double lat1, double lng1, double lat2, double lng2, double draft, double? minDepth, double? warnDepth, double? airDraft)[] routes =
+(string name, double lat1, double lng1, double lat2, double lng2, double draft, double? minDepth, double? warnDepth, double? airDraft, bool avoidUnknownBridges)[] routes =
 [
-    ("1 Grömitz → IJsselmeer", 54.13532689555557, 10.947591658888884, 52.981277113025385, 5.246755642840981, 1.5, null, null, null),
-    ("2 Grömitz → Jade (Block area)", 54.13532689555557, 10.947591658888884, 53.604536351699096, 8.212714462108408, 2, null, null, null),
-    ("3 Grömitz → Kiel Canal", 54.13532689555557, 10.947591658888884, 54.370083589266216, 10.084013717414763, 1.5, null, null, null),
+    ("1 Grömitz → IJsselmeer", 54.13532689555557, 10.947591658888884, 52.981277113025385, 5.246755642840981, 1.5, null, null, null, false),
+    ("2 Grömitz → Jade (Block area)", 54.13532689555557, 10.947591658888884, 53.604536351699096, 8.212714462108408, 2, null, null, null, false),
+    ("3 Grömitz → Kiel Canal", 54.13532689555557, 10.947591658888884, 54.370083589266216, 10.084013717414763, 1.5, null, null, null, false),
 ];
 // further arguments replace the list: "lat1,lng1,lat2,lng2,draft[,minDepth[,warnDepth[,airDraft]]]" each (one run, geometry printed)
 var custom = args.Skip(2).Select(a => a.Split(',').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray()).ToList();
-if (custom.Count > 0) routes = custom.Select((v, i) => ($"{i + 1} custom", v[0], v[1], v[2], v[3], v[4], v.Length > 5 && v[5] > 0 ? v[5] : (double?)null, v.Length > 6 && v[6] > 0 ? v[6] : (double?)null, v.Length > 7 && v[7] > 0 ? v[7] : (double?)null)).ToArray();
+if (custom.Count > 0) routes = custom.Select((v, i) => ($"{i + 1} custom", v[0], v[1], v[2], v[3], v[4], v.Length > 5 && v[5] > 0 ? v[5] : (double?)null, v.Length > 6 && v[6] > 0 ? v[6] : (double?)null, v.Length > 7 && v[7] > 0 ? v[7] : (double?)null, v.Length > 8 && v[8] > 0)).ToArray();
 var runs = custom.Count > 0 ? 1 : 3;
 var before = GC.GetTotalMemory(true);
 for (var run = 0; run < runs; run++)
@@ -192,10 +237,10 @@ for (var run = 0; run < runs; run++)
         using var scope = sp.CreateScope();
         var router = scope.ServiceProvider.GetRequiredService<SeaRouter>();
         var sw = Stopwatch.StartNew();
-        var res = await router.RouteAsync(Geo.Point(r.lat1, r.lng1), Geo.Point(r.lat2, r.lng2), default, r.airDraft, router.MinDepth(r.draft > 0 ? r.draft : null, r.minDepth), r.warnDepth);
+        var res = await router.RouteAsync(Geo.Point(r.lat1, r.lng1), Geo.Point(r.lat2, r.lng2), default, r.airDraft, router.MinDepth(r.draft > 0 ? r.draft : null, r.minDepth), r.warnDepth, r.avoidUnknownBridges);
         var t = sw.ElapsedMilliseconds;
         Console.WriteLine($"run {run} {r.name}: {t} ms, {(res is null ? "no route (straight line)" : $"{res.DistanceNm} nm, {res.Geometry.NumPoints} pts, {string.Join(' ', res.Timings!.Select(kv => $"{kv.Key}={kv.Value}"))}")}");
-        if (custom.Count > 0 && res is not null) Console.WriteLine("  " + string.Join(" ", res.Geometry.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))) + string.Concat((res.Warnings ?? []).Select(w => FormattableString.Invariant($"  [{w.Kind}: {w.Note} @{w.Lat},{w.Lng}{(w.Kind == "checkDepth" ? $" {w.DistanceM} m" : "")}]"))));
+        if (custom.Count > 0 && res is not null) Console.WriteLine("  " + string.Join(" ", res.Geometry.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))) + string.Concat((res.Warnings ?? []).Select(w => FormattableString.Invariant($"  [{w.Kind}: {w.Note} @{w.Lat},{w.Lng}{(w.Kind is "checkDepth" or "uncertainDepth" ? $" {w.DistanceM} m" : "")}]"))));
         if (run == 1 && res is not null && outDir is not null)
             await File.WriteAllTextAsync(Path.Combine(outDir, $"route{r.name[0]}.json"), "[" + string.Join(",", res.Geometry.Coordinates.Select(c => FormattableString.Invariant($"[{c.X:F6},{c.Y:F6}]"))) + "]");
     }

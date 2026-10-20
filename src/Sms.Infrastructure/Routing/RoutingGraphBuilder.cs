@@ -548,7 +548,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     private static async Task WriteEdgesAsync(NpgsqlConnection conn, int version, IReadOnlyList<GraphEdge> edges, CancellationToken ct)
     {
         if (edges.Count == 0) return;
-        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed, adjacent_depth_m, floor_m) FROM STDIN (FORMAT BINARY)", ct);
+        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed, adjacent_depth_m, floor_m, unknown_bridge) FROM STDIN (FORMAT BINARY)", ct);
         foreach (var e in edges)
         {
             await w.StartRowAsync(ct);
@@ -562,6 +562,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             await w.WriteAsync(e.Assumed, NpgsqlDbType.Boolean, ct);
             if (e.AdjacentDepthM is { } ad) await w.WriteAsync(ad, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
             if (e.FloorM is { } cf) await w.WriteAsync(cf, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
+            await w.WriteAsync(e.UnknownBridge, NpgsqlDbType.Boolean, ct);
         }
         await w.CompleteAsync(ct);
     }

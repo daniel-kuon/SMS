@@ -12,7 +12,9 @@ using NetTopologySuite.Geometries;
 
 namespace Sms.Api;
 
-public sealed record PbfImportRequest(string Url, bool Seamarks = true, bool Harbours = true, bool Waterways = true, string? Bbox = null, bool Pois = true, double PoiRadiusKm = 3);
+/// <param name="Bridges">Road/railway bridges without a charted clearance over routing water (Waterways.ImportUnknownBridgesAsync): every bridge way of the
+/// extract is scanned, so a Europe run holds a few million short ways in pass 1 - best with a Bbox.</param>
+public sealed record PbfImportRequest(string Url, bool Seamarks = true, bool Harbours = true, bool Waterways = true, string? Bbox = null, bool Pois = true, double PoiRadiusKm = 3, bool Bridges = false);
 public sealed record PbfProgress(string Phase, string Message, DateTimeOffset At);
 
 /// <summary>
@@ -158,7 +160,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         var poiNear = scanPoiNear ?? (req.Pois ? await HarbourIndexAsync(req.PoiRadiusKm * 1000, ct) : null);
         // derived waterways/bridges/locks inside the extract's extent are replaced once, before the batches (a per-batch
         // replacement would delete what earlier batches just added); never again on a resume
-        if (req.Waterways && startAt == 0)
+        if ((req.Waterways || req.Bridges) && startAt == 0)
         {
             var env = new Envelope();
             foreach (var el in elements)
@@ -170,8 +172,8 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
             if (!env.IsNull)
             {
                 var extent = Geo.Factory.ToGeometry(env); extent.SRID = 4326;
-                var removed = await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge") || c.Note.StartsWith("Annahme")))) || c.Kind == CorrectionKind.Bridge || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || c.Kind == CorrectionKind.Pier || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct);
-                Add("derivedReplaced", removed);
+                if (req.Waterways) Add("derivedReplaced", await db.RoutingCorrections.Where(c => ((c.Kind == CorrectionKind.Passage && !(c.Note != null && (c.Note.StartsWith("Fahrwasser") || c.Note.StartsWith("Enge") || c.Note.StartsWith("Annahme")))) || (c.Kind == CorrectionKind.Bridge && !(c.Note != null && c.Note.StartsWith(Waterways.UnknownBridgeNote))) || c.Kind == CorrectionKind.Lock || c.Kind == CorrectionKind.OpeningBridge || c.Kind == CorrectionKind.Fairway || c.Kind == CorrectionKind.Avoid || c.Kind == CorrectionKind.Pier || (c.Kind == CorrectionKind.Block && c.Note != null && c.Note.StartsWith("Sperrgebiet"))) && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct));
+                if (req.Bridges) Add("unknownBridgesReplaced", (await Waterways.ImportUnknownBridgesAsync(JsonDocument.Parse("{\"elements\":[]}"), db, userId, env, ct)).removed);
             }
         }
         const int batch = 4000;
@@ -197,6 +199,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
                 Add("piers", await RoutingEndpoints.AddPiersAsync(Filter(doc, Waterways.IsPier), db, userId, ct));
                 Add("waterways", r.Created); Add("bridges", r.Bridges); Add("locks", r.Locks); Add("fairwayAreas", r.FairwayAreas); Add("noGoAreas", r.NoGoAreas);
             }
+            if (req.Bridges) Add("unknownBridges", (await Waterways.ImportUnknownBridgesAsync(Filter(doc, Waterways.IsPlainBridge), db, userId, null, ct)).created);
             db.ChangeTracker.Clear();
             if (progressFile is not null) await File.WriteAllTextAsync(progressFile, JsonSerializer.Serialize(new Checkpoint(i + batch, totals)), ct);
             Report("import", $"{Math.Min(i + batch, elements.Count)}/{elements.Count} elements imported ({sw.Elapsed:hh\\:mm\\:ss})");
@@ -212,6 +215,7 @@ public sealed class PbfImportJob(IServiceScopeFactory scopes, IHttpClientFactory
         if (req.Seamarks && d.ContainsKey("seamark:type")) return "seamark";
         if (req.Harbours && IsHarbour(d)) return "harbour";
         if (req.Waterways && (IsWaterway(d) || IsObstacle(d) || Waterways.IsPier(d))) return "waterway";
+        if (req.Bridges && Waterways.IsPlainBridge(d)) return "bridge";
         if (req.Pois && IsPoi(d)) return "poi";
         return null;
     }

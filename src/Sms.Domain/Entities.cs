@@ -45,6 +45,8 @@ public class Ship : Entity
     public decimal? MinDepthM { get; set; }
     /// <summary>Routes warn "Tiefe prüfen" where they cross a depth band whose floor lies below this (null = no warnings).</summary>
     public decimal? WarnDepthM { get; set; }
+    /// <summary>Fixed bridges without a charted clearance: passed with a warning (default) or avoided unless no other route exists.</summary>
+    public UnknownBridgePolicy UnknownBridges { get; set; } = UnknownBridgePolicy.Pass;
     public string? SailNumber { get; set; }
     public string? CallSign { get; set; }
     public string? Mmsi { get; set; }
@@ -407,7 +409,8 @@ public class RoutingCorrection : Entity
     public Geometry Geometry { get; set; } = null!;
     public string? Note { get; set; }
     public bool Active { get; set; } = true;
-    /// <summary>Bridge: vertical clearance in metres (null = unknown, no restriction). Passages under it are closed for ships with a larger air draft.</summary>
+    /// <summary>Bridge: vertical clearance in metres. Passages under it are closed for ships with a larger air draft. Null = unknown: a fixed
+    /// bridge is then passed with a "bridgeUnknown" warning or avoided (Ship.UnknownBridges); an opening bridge is unlimited when open.</summary>
     public double? ClearanceM { get; set; }
 }
 

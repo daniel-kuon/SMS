@@ -1,6 +1,8 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using NetTopologySuite.Geometries;
 using NetTopologySuite.Operation.Linemerge;
+using Sms.Domain;
 
 namespace Sms.Infrastructure.Routing;
 
@@ -298,6 +300,60 @@ public static class Waterways
             result.Add(new Obstacle(isLock && !isBridge, lat, lng, isBridge ? (opening ? OpenClearance(tags) : Clearance(tags)) : null, tags.GetValueOrDefault("name") ?? tags.GetValueOrDefault("seamark:name"), isBridge && opening, line));
         }
         return result;
+    }
+
+    /// <summary>Road and railway bridges: the candidates for fixed bridges without a charted clearance (Öknöström, H 635).</summary>
+    public const string OverpassBridgeQuery = """[out:json][timeout:300];(way["bridge"]["bridge"!="no"]["highway"]({0});way["bridge"]["bridge"!="no"]["railway"]({0}););out geom;""";
+    /// <summary>Note prefix of the derived Bridge corrections without a clearance (ImportUnknownBridgesAsync); the waterway import keeps them.</summary>
+    public const string UnknownBridgeNote = "Brücke ohne Höhenangabe";
+
+    /// <summary>A road or railway bridge the waterway import does not take as an obstacle (no seamark bridge, no charted clearance, not movable).</summary>
+    public static bool IsPlainBridge(IReadOnlyDictionary<string, string> tags) =>
+        tags.TryGetValue("bridge", out var b) && b != "no" && (tags.ContainsKey("highway") || tags.ContainsKey("railway")) && tags.GetValueOrDefault("seamark:type") != "bridge"
+        && !tags.ContainsKey("seamark:bridge:clearance_height") && !tags.ContainsKey("seamark:bridge:clearance_height_closed") && !IsOpening(tags);
+
+    /// <summary>
+    /// Fixed bridges of unknown clearance: the plain road/railway bridge ways of an Overpass-style document (<see cref="IsPlainBridge"/>) that
+    /// cross water the routing graph uses - a passage or inland water area they intersect, or open water (not the active graph's land, inside
+    /// its region) at their midpoint; a bridge over a creek or a river the graph does not know stays out. They become derived Bridge corrections
+    /// without a clearance (note <see cref="UnknownBridgeNote"/>), replacing those inside <paramref name="replace"/> (null: none replaced).
+    /// The graph picks them up at the next build.
+    /// </summary>
+    public static async Task<(int candidates, int created, int removed)> ImportUnknownBridgesAsync(JsonDocument doc, SmsDbContext db, Guid? userId, Envelope? replace, CancellationToken ct)
+    {
+        var bridges = new List<(LineString line, string? name)>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (el.GetProperty("type").GetString() != "way" || !el.TryGetProperty("geometry", out var geom) || !el.TryGetProperty("tags", out var t)) continue;
+            var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+            if (!IsPlainBridge(tags)) continue;
+            var coords = geom.EnumerateArray().Select(c => new Coordinate(c.GetProperty("lon").GetDouble(), c.GetProperty("lat").GetDouble())).ToArray();
+            if (coords.Length < 2 || coords[0].Equals2D(coords[^1])) continue;
+            bridges.Add((new LineString(coords) { SRID = 4326 }, tags.GetValueOrDefault("bridge:name") ?? tags.GetValueOrDefault("name") ?? tags.GetValueOrDefault("ref")));
+        }
+        var removed = 0;
+        if (replace is not null)
+        {
+            var extent = Geo.Factory.ToGeometry(replace); extent.SRID = 4326;
+            removed = await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Bridge && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith(UnknownBridgeNote) && c.Geometry.Intersects(extent)).ExecuteDeleteAsync(ct);
+        }
+        if (bridges.Count == 0) return (0, 0, removed);
+        var meta = (await db.Database.SqlQueryRaw<string>("SELECT string_agg(value, ';' ORDER BY key) AS \"Value\" FROM routing_meta WHERE key IN ('active_version', 'region')").ToListAsync(ct)).FirstOrDefault() ?? "";
+        var parts = meta.Split(';');
+        var version = parts.Length == 2 && int.TryParse(parts[0], out var v) ? v : 0;
+        var region = version > 0 ? parts[1].Split(',').Select(x => double.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray() : [0, 0, 0, 0];
+        var wkb = bridges.Select(b => b.line.AsBinary()).ToArray();
+        var onWater = (await db.Database.SqlQueryRaw<long>("""
+            SELECT b.i AS "Value" FROM unnest({0}::bytea[]) WITH ORDINALITY AS b(w, i), LATERAL (SELECT ST_SetSRID(ST_GeomFromWKB(b.w), 4326) AS g) x, LATERAL (SELECT ST_LineInterpolatePoint(x.g, 0.5) AS m) p
+            WHERE EXISTS (SELECT 1 FROM "RoutingCorrections" c WHERE c."Active" AND c."Kind" IN ('Passage', 'Water') AND c."Geometry" && x.g AND ST_Intersects(c."Geometry", x.g))
+               OR ({1} > 0 AND p.m && ST_MakeEnvelope({2}, {3}, {4}, {5}, 4326)
+                   AND NOT EXISTS (SELECT 1 FROM routing_land l WHERE l.graph_version = {1} AND l.geom && p.m AND ST_Intersects(l.geom, p.m)))
+            """, wkb, version, region[0], region[1], region[2], region[3]).ToListAsync(ct)).Select(i => (int)i - 1).ToList();
+        foreach (var i in onWater)
+            db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Bridge, Source = CorrectionSource.Derived, Geometry = bridges[i].line, ClearanceM = null, Active = true, CreatedById = userId,
+                Note = $"{UnknownBridgeNote}{(bridges[i].name is { Length: > 0 } n ? " – " + n : "")}" });
+        await db.SaveChangesAsync(ct);
+        return (bridges.Count, onWater.Count, removed);
     }
 
     private static readonly HashSet<string> OpeningCategories = ["opening", "bascule", "swing", "lift", "drawbridge", "folding", "retractable", "submersible", "transporter"];

@@ -44,4 +44,16 @@ public class WaterwaysTests
         Assert.Contains(merged, m => m.Name == "Branch");
         Assert.All(merged, m => Assert.Contains(m.Line.Coordinates, co => co.Equals2D(new Coordinate(10.1, 54))));
     }
+
+    [Fact]
+    public void Plain_road_bridges_are_the_unknown_clearance_candidates()
+    {
+        Assert.True(Waterways.IsPlainBridge(Tags(("bridge", "yes"), ("highway", "secondary"), ("ref", "H 635"))));   // Öknöström
+        Assert.True(Waterways.IsPlainBridge(Tags(("bridge", "viaduct"), ("railway", "rail"))));
+        Assert.False(Waterways.IsPlainBridge(Tags(("bridge", "no"), ("highway", "secondary"))));
+        Assert.False(Waterways.IsPlainBridge(Tags(("bridge", "yes"), ("waterway", "canal"))));                       // an aqueduct
+        Assert.False(Waterways.IsPlainBridge(Tags(("bridge", "yes"), ("highway", "primary"), ("seamark:bridge:clearance_height", "18"))));   // the waterway import's
+        Assert.False(Waterways.IsPlainBridge(Tags(("bridge", "movable"), ("highway", "primary"), ("bridge:movable", "bascule"))));
+        Assert.False(Waterways.IsPlainBridge(Tags(("bridge", "yes"), ("highway", "primary"), ("seamark:type", "bridge"))));
+    }
 }

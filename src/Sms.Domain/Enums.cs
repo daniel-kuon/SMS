@@ -23,6 +23,8 @@ public enum ProfileVisibility { Public, Registered }
 /// <summary>Water: an inland water body (lake, IJsselmeer) that the coastline-based land polygons count as land.</summary>
 public enum CorrectionKind { Block, Passage, Bridge, Lock, OpeningBridge, Fairway, Avoid, Water, Pier }
 public enum CorrectionSource { Manual, Derived }
+/// <summary>How routes treat fixed bridges without a charted clearance: passed with a warning, or avoided unless no other route exists.</summary>
+public enum UnknownBridgePolicy { Pass, Avoid }
 
 /// <summary>16 compass points (spec 08).</summary>
 public enum WindDirection { N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW }

@@ -22,7 +22,11 @@ export interface Ship {
   cruisingSpeedKn: number; description: string | null; visibility: Visibility; photoUrl: string | null; members: ShipMember[]; myRole: ShipRole | null;
   /** Routes avoid water whose depth band lies below this (null: draft + 0.5 m); warnings where a band's floor lies below warnDepthM (null: none). */
   minDepthM?: number | null; warnDepthM?: number | null;
+  /** Fixed bridges without a charted clearance: passed with a "bridgeUnknown" warning, or avoided unless no other route exists. */
+  unknownBridges?: 'Pass' | 'Avoid';
 }
+/** Routing API parameter for a ship's unknown-clearance bridge setting (the API's default is "pass"). */
+export const unknownBridgesParam = (ship: Pick<Ship, 'unknownBridges'>): Record<string, string> => ship.unknownBridges === 'Avoid' ? { unknownBridges: 'avoid' } : {};
 export interface ShipStats { nauticalMiles: number; engineHours: number; entries: number; harbours: number; trips: number; }
 
 export type CrewRole = 'Skipper' | 'Crew';
@@ -38,7 +42,10 @@ export interface Leg { id: string; order: number; alternative: number; fromHarbo
 /** A route assumption the chart data does not show (kind "assumedPassage": a strait the coastline closes, passed along a ferry line or buoy gap).
  *  Kind "startOnLand"/"endOnLand": the clicked point (lat/lng) lies on land, the route starts/ends at the nearest navigable water (snapped*, distanceM away).
  *  Kind "checkDepth": the route crosses water charted below the ship's warning depth at lat/lng (distanceM: length of that stretch).
- *  Kind "bridge": asked without an air draft, the route passes under a fixed bridge at lat/lng (distanceM: its charted clearance). */
+ *  Kind "bridge": asked without an air draft, the route passes under a fixed bridge at lat/lng (distanceM: its charted clearance).
+ *  Kind "bridgeUnknown": the route passes under a fixed bridge without a charted clearance at lat/lng.
+ *  Kind "uncertainDepth": no route leads through definitely deep water and buoyed channels only; this one crosses water whose band floor lies
+ *  below the minimum depth at lat/lng (distanceM: length of that stretch). */
 export interface RouteWarning { kind: string; lat: number; lng: number; note: string; snappedLat?: number | null; snappedLng?: number | null; distanceM?: number | null; }
 /** " · ⚠ <notes>" for a route's warnings (the same note once, with a count), "" without any. */
 export function routeWarningText(warnings?: RouteWarning[] | null): string {

@@ -7,6 +7,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatDialog, MatDialogModule, MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, errorMessage } from '../../core/api';
 import { Paged, Ship } from '../../core/models';
@@ -40,7 +41,7 @@ export class ShipListPage {
 }
 
 @Component({
-  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, TranslatePipe, VisibilityPicker, HarbourSelect, RichEditor],
+  imports: [FormsModule, MatDialogModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule, TranslatePipe, VisibilityPicker, HarbourSelect, RichEditor],
   template: `
     <h2 mat-dialog-title>{{ data?.name ?? ('ship.new' | translate) }}</h2>
     <mat-dialog-content class="form-grid">
@@ -53,6 +54,9 @@ export class ShipListPage {
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.airDraft' | translate }}</mat-label><input matInput type="number" step="0.01" [(ngModel)]="m.airDraftM" /></mat-form-field>
       <mat-form-field appearance="outline" class="full" subscriptSizing="dynamic"><mat-label>{{ 'ship.minDepth' | translate }}</mat-label><input matInput type="number" step="0.1" min="0" [(ngModel)]="m.minDepthM" /><mat-hint>{{ 'ship.minDepthHint' | translate }}</mat-hint></mat-form-field>
       <mat-form-field appearance="outline" class="full" subscriptSizing="dynamic"><mat-label>{{ 'ship.warnDepth' | translate }}</mat-label><input matInput type="number" step="0.1" min="0" [(ngModel)]="m.warnDepthM" /><mat-hint>{{ 'ship.warnDepthHint' | translate }}</mat-hint></mat-form-field>
+      <mat-form-field appearance="outline" class="full" subscriptSizing="dynamic"><mat-label>{{ 'ship.unknownBridges' | translate }}</mat-label>
+        <mat-select [(ngModel)]="m.unknownBridges"><mat-option value="Pass">{{ 'ship.unknownBridgesPass' | translate }}</mat-option><mat-option value="Avoid">{{ 'ship.unknownBridgesAvoid' | translate }}</mat-option></mat-select>
+        <mat-hint>{{ 'ship.unknownBridgesHint' | translate }}</mat-hint></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.sailNumber' | translate }}</mat-label><input matInput [(ngModel)]="m.sailNumber" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.callSign' | translate }}</mat-label><input matInput [(ngModel)]="m.callSign" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.mmsi' | translate }}</mat-label><input matInput [(ngModel)]="m.mmsi" /></mat-form-field>
@@ -65,7 +69,7 @@ export class ShipListPage {
 })
 export class ShipEditDialog {
   data = inject<Ship | null>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api);
-  m = { name: this.data?.name ?? '', type: this.data?.type ?? '', lengthM: this.data?.lengthM ?? null, beamM: this.data?.beamM ?? null, draftM: this.data?.draftM ?? null, airDraftM: this.data?.airDraftM ?? null, minDepthM: this.data?.minDepthM ?? null, warnDepthM: this.data?.warnDepthM ?? null,
+  m = { name: this.data?.name ?? '', type: this.data?.type ?? '', lengthM: this.data?.lengthM ?? null, beamM: this.data?.beamM ?? null, draftM: this.data?.draftM ?? null, airDraftM: this.data?.airDraftM ?? null, minDepthM: this.data?.minDepthM ?? null, warnDepthM: this.data?.warnDepthM ?? null, unknownBridges: this.data?.unknownBridges ?? 'Pass',
     sailNumber: this.data?.sailNumber ?? '', callSign: this.data?.callSign ?? '', mmsi: this.data?.mmsi ?? '', homeHarbourId: this.data?.homeHarbourId ?? null, cruisingSpeedKn: this.data?.cruisingSpeedKn ?? 5,
     description: this.data?.description ?? '', visibility: this.data?.visibility ?? 'Public' as const };
   error = signal('');

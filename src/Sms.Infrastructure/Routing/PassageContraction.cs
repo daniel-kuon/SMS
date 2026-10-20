@@ -6,7 +6,7 @@ namespace Sms.Infrastructure.Routing;
 /// Merges chains of passage edges through degree-2 vertices into one edge per junction-to-junction stretch. A vertex is a
 /// junction when it is kept explicitly (passage ends, vertices with a link), belongs to the water graph, or has a number of
 /// passage edges other than two. The merged edge carries the concatenated geometry, the summed cost and the strictest depth
-/// and clearance (and channel floor) of its parts. A vertex where an assumed stretch meets an ordinary one stays a junction (the flag is per edge).
+/// and clearance (and channel floor) of its parts, and whether any part passes under a bridge of unknown clearance. A vertex where an assumed stretch meets an ordinary one stays a junction (the flag is per edge).
 /// </summary>
 public static class PassageContraction
 {
@@ -26,7 +26,7 @@ public static class PassageContraction
             {
                 if (consumed[first]) continue;
                 // walk from start through degree-2 vertices until the next junction
-                var coords = new List<Coordinate>(); var cost = 0.0; double? clearance = null, depth = null, floor = null;
+                var coords = new List<Coordinate>(); var cost = 0.0; double? clearance = null, depth = null, floor = null; var unknownBridge = false;
                 var node = start; var idx = first;
                 while (true)
                 {
@@ -39,13 +39,14 @@ public static class PassageContraction
                     if (e.ClearanceM is { } c) clearance = clearance is { } cur ? Math.Min(cur, c) : c;
                     if (e.MinDepthM is { } d) depth = depth is { } cd ? Math.Min(cd, d) : d;
                     if (e.FloorM is { } f) floor = floor is { } cf ? Math.Min(cf, f) : f;
+                    unknownBridge |= e.UnknownBridge;
                     node = forward ? e.Target : e.Source;
                     if (Junction(node)) break;
                     var next = incident[node].First(j => j != idx);
                     if (consumed[next]) break; // a loop back onto itself
                     idx = next;
                 }
-                if (coords.Count >= 2) result.Add(new GraphEdge(start, node, cost, edges[0].Geom.Factory.CreateLineString(coords.ToArray()), clearance, depth, edges[first].Assumed, FloorM: floor));
+                if (coords.Count >= 2) result.Add(new GraphEdge(start, node, cost, edges[0].Geom.Factory.CreateLineString(coords.ToArray()), clearance, depth, edges[first].Assumed, FloorM: floor, UnknownBridge: unknownBridge));
             }
         }
         // cycles without any junction (a closed ring of channel pieces): kept as they are

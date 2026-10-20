@@ -234,7 +234,7 @@ public static class TripEndpoints
                 if (known.TryGetValue((l.FromHarbourId, l.ToHarbourId), out var k)) { leg.RouteGeometry = k.RouteGeometry; leg.DistanceNm = k.DistanceNm; }
                 else
                 {
-                    var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct, (double?)trip.Ship.AirDraftM, router.MinDepth((double?)trip.Ship.DraftM, (double?)trip.Ship.MinDepthM)); // low bridges and shallows stay closed for this ship
+                    var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct, (double?)trip.Ship.AirDraftM, router.MinDepth((double?)trip.Ship.DraftM, (double?)trip.Ship.MinDepthM), avoidUnknownBridges: trip.Ship.UnknownBridges == UnknownBridgePolicy.Avoid); // low bridges and shallows stay closed for this ship
                     var meters = route is null ? await db.Harbours.Where(h => h.Id == l.FromHarbourId).Select(h => h.Location.Distance(db.Harbours.First(x => x.Id == l.ToHarbourId).Location)).FirstOrDefaultAsync(ct) : 0;
                     leg.DistanceNm = route?.DistanceNm ?? Math.Round((decimal)meters / 1852m, 1); leg.RouteGeometry = route?.Geometry;
                 }

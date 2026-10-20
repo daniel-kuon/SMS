@@ -5,6 +5,7 @@ using OsmSharp;
 using OsmSharp.Streams;
 using OsmSharp.Tags;
 using Sms.Api;
+using Sms.Infrastructure.Routing;
 
 namespace Sms.Api.Tests;
 
@@ -30,12 +31,44 @@ public class PbfImportTests(ApiFixture f) : IClassFixture<ApiFixture>
             W(200, [20, 21, 22], ("waterway", "canal"), ("name", "PBF-Kanal"), ("CEMT", "IV")),
             W(300, [20, 21], ("highway", "residential")),
         };
+        return Pbf(geos);
+    }
+
+    private static byte[] Pbf(params OsmGeo[] geos)
+    {
         using var ms = new MemoryStream();
         var target = new PBFOsmStreamTarget(ms);
         target.Initialize();
         foreach (var g in geos) if (g is Node n) target.AddNode(n); else target.AddWay((Way)g);
         target.Flush(); target.Close();
         return ms.ToArray();
+    }
+
+    [Fact]
+    public async Task Road_bridges_over_routing_water_become_bridges_of_unknown_clearance()
+    {
+        var job = f.Services.GetRequiredService<PbfImportJob>();
+        var (admin, adminId) = await f.AdminAsync();
+        byte[] Extract() => Pbf(
+            N(50, 55.40, 9.60), N(51, 55.40, 9.64), N(52, 55.399, 9.62), N(53, 55.401, 9.62), N(54, 55.45, 9.60), N(55, 55.45, 9.601),
+            W(500, [50, 51], ("waterway", "canal"), ("name", "Brückenkanal"), ("CEMT", "IV")),
+            W(501, [52, 53], ("highway", "secondary"), ("bridge", "yes"), ("ref", "H 635")),   // across the canal
+            W(502, [54, 55], ("highway", "track"), ("bridge", "yes")));                       // over a creek the graph does not know
+        using (var s1 = new MemoryStream(Extract()))
+        {
+            var totals = await job.ImportStreamAsync(new PBFOsmStreamSource(s1), new PbfImportRequest("memory", Seamarks: false, Harbours: false, Pois: false, Bridges: true), adminId, CancellationToken.None);
+            Assert.Equal(1, totals["unknownBridges"]);
+        }
+        async Task<List<JsonElement>> Unknown() => (await admin.GetFromJsonAsync<JsonElement>("/api/admin/routing/corrections?bbox=55.3,9.5,55.5,9.7")).EnumerateArray()
+            .Where(c => c.GetProperty("kind").GetString() == "Bridge" && c.GetProperty("note").GetString()!.StartsWith(Waterways.UnknownBridgeNote)).ToList();
+        var bridge = Assert.Single(await Unknown());
+        Assert.Equal("Brücke ohne Höhenangabe – H 635", bridge.GetProperty("note").GetString());
+        Assert.Equal(JsonValueKind.Null, bridge.GetProperty("clearanceM").ValueKind);
+        // a waterway import of the same extent replaces its own derived bridges, not these; a bridge import again replaces them (no duplicates)
+        using (var s2 = new MemoryStream(Extract())) await job.ImportStreamAsync(new PBFOsmStreamSource(s2), new PbfImportRequest("memory", Seamarks: false, Harbours: false, Pois: false), adminId, CancellationToken.None);
+        Assert.Single(await Unknown());
+        using (var s3 = new MemoryStream(Extract())) await job.ImportStreamAsync(new PBFOsmStreamSource(s3), new PbfImportRequest("memory", Seamarks: false, Harbours: false, Pois: false, Waterways: false, Bridges: true), adminId, CancellationToken.None);
+        Assert.Single(await Unknown());
     }
 
     [Fact]

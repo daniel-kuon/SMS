@@ -13,6 +13,7 @@ namespace Sms.Domain;
 /// virtually at the projected point (an end on a canal follows the canal instead of jumping to the nearest junction).
 /// Edges between two passage vertices (ids ≥ firstPassageNode) are "fixed": their geometry is kept by the smoothing.
 /// Assumed edges (AssumedPassages: a ferry line or buoy gap across the coastline land) are reported per path, or closed by the limits.
+/// Edges under a fixed bridge without a charted clearance (UnknownBridge) are passed, or closed by Limits.AvoidUnknownBridges.
 /// </summary>
 public sealed class SeaGraph
 {
@@ -28,6 +29,7 @@ public sealed class SeaGraph
     private readonly bool[]? _assumed;
     private readonly float[]? _adjacent;
     private readonly float[]? _floor;
+    private readonly bool[]? _unknownBridge;
     private readonly STRtree<int> _passages = new();
 
     /// <summary>Lower bound of cost per metre over all edges (the heuristic's scale).</summary>
@@ -47,9 +49,10 @@ public sealed class SeaGraph
     /// (<see cref="DepthBands.Effective"/>; null = no such data).</param>
     /// <param name="floor">Per edge of a derived channel ("Enge", no buoys) that the depth limit leaves open: the floor of the band it
     /// runs through (or, without data in the coastal strip, of the band next to it), NaN = none. Counts for <see cref="Floor"/> only.</param>
-    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null, float[]? adjacent = null, float[]? floor = null)
+    /// <param name="unknownBridge">Per edge: passes under a fixed bridge without a charted clearance (null = none).</param>
+    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null, float[]? adjacent = null, float[]? floor = null, bool[]? unknownBridge = null)
     {
-        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed; _adjacent = adjacent; _floor = floor;
+        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed; _adjacent = adjacent; _floor = floor; _unknownBridge = unknownBridge;
         int n = x.Length, m = src.Length;
         _adjStart = new int[n + 1];
         for (var e = 0; e < m; e++) { _adjStart[src[e] + 1]++; _adjStart[tgt[e] + 1]++; }
@@ -79,10 +82,11 @@ public sealed class SeaGraph
     }
 
     /// <summary>Approximate bytes held (arrays and the snap index).</summary>
-    public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + (_adjacent?.Length ?? 0) * 4L + (_floor?.Length ?? 0) * 4L + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
+    public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + (_adjacent?.Length ?? 0) * 4L + (_floor?.Length ?? 0) * 4L + (_unknownBridge?.Length ?? 0) + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
 
     public bool IsPassage(int e) => _src[e] >= _firstPassage && _tgt[e] >= _firstPassage;
     public bool IsAssumed(int e) => _assumed is not null && _assumed[e];
+    public bool UnknownBridge(int e) => _unknownBridge is not null && _unknownBridge[e];
     /// <summary>A straight link between a passage vertex and a water node (the builder lets these cross up to 50 m of land, a mole or pier).</summary>
     public bool IsLink(int e) => (_src[e] >= _firstPassage) != (_tgt[e] >= _firstPassage) && _geomStart[e] == _geomStart[e + 1];
     /// <summary>A straight edge between two passage vertices that is not an assumed passage: a gap link between two channel pieces
@@ -97,6 +101,8 @@ public sealed class SeaGraph
         var d = Depth(e); var c = _floor?[e] ?? float.NaN;
         return float.IsNaN(d) ? c : float.IsNaN(c) ? d : Math.Min(d, c);
     }
+    /// <summary>The edge's band floor lies below the minimum depth: not definitely deep enough (a buoyed channel, open water without data never is).</summary>
+    public bool Uncertain(int e, double minDepthM) => Floor(e) is var f && !float.IsNaN(f) && f < (float)minDepthM;
     /// <summary>Bridge clearance of the edge, NaN = none.</summary>
     public float Clearance(int e) => _clear[e];
     /// <summary>The edge has no charted depth of its own and counts with the band next to it.</summary>
@@ -199,7 +205,10 @@ public sealed class SeaGraph
     /// <param name="MinDepthM">The ship's minimum depth: an edge whose band floor (<see cref="Floor"/>) lies below it is not definitely deep
     /// enough – the band's middle may pass (DepthLimitM), its floor does not – and costs ×UncertainFactor, so a buoyed channel (no floor)
     /// wins wherever one leads; water whose floor reaches it, open water without data and the channel itself cost as before.</param>
-    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000, double? MinDepthM = null, double UncertainFactor = 1);
+    /// <param name="StrictDepth">Such uncertain edges are closed outside the harbour approach (the router's first search; it falls back
+    /// to the ×UncertainFactor rule only when nothing else leads there).</param>
+    /// <param name="AvoidUnknownBridges">Edges under a fixed bridge without a charted clearance are closed.</param>
+    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000, double? MinDepthM = null, double UncertainFactor = 1, bool StrictDepth = false, bool AvoidUnknownBridges = false);
     /// <summary>A route end projected onto a passage edge: on segment Segment of its geometry, at Fraction of its length.</summary>
     public sealed record Snap(int Edge, int Segment, double Fraction, Coordinate Point, double DistanceM);
     /// <summary>A route end: the clicked point and either a node or a snap onto an edge.</summary>
@@ -257,6 +266,7 @@ public sealed class SeaGraph
         if (l.NoAssumed && IsAssumed(e)) return double.PositiveInfinity;
         var cl = _clear[e];
         if (l.AirDraftM is { } ad && !float.IsNaN(cl) && cl < ad) return double.PositiveInfinity;
+        if (l.AvoidUnknownBridges && UnknownBridge(e)) return double.PositiveInfinity;
         double c = _cost[e]; var d = Depth(e);
         if (l.Penalized is { } pen && pen.Contains(e)) c += l.PenaltyM;
         // compared as floats: the depths are stored as floats, and (float)1.8288 < 1.8288 closed the band floor itself (the whole
@@ -267,10 +277,18 @@ public sealed class SeaGraph
             c *= ShallowFactor;
         }
         // "Tonnen first": water whose band floor lies below the minimum depth is uncertain (×UncertainFactor, on top of ShallowFactor in the
-        // harbour approach), so the buoyed channel is left only where the water is definitely deep enough
-        if (l.MinDepthM is { } md && l.UncertainFactor != 1 && Floor(e) is var f && !float.IsNaN(f) && f < (float)md) c *= l.UncertainFactor;
+        // harbour approach), so the buoyed channel is left only where the water is definitely deep enough; strict: closed outside the approach
+        if (l.MinDepthM is { } md && l.UncertainFactor != 1 && Uncertain(e, md))
+        {
+            if (l.StrictDepth && !Exempt(e, l, from, to)) return double.PositiveInfinity;
+            c *= l.UncertainFactor;
+        }
         return c;
     }
+
+    /// <summary>The edges of a path the strict search closes (uncertain water outside the harbour approach): where a fallback route warns.</summary>
+    public List<int> UncertainEdges(IEnumerable<int> edges, Limits l, End from, End to) =>
+        l.MinDepthM is { } md ? edges.Distinct().Where(e => Uncertain(e, md) && !Exempt(e, l, from, to)).ToList() : [];
 
     // the harbour approach: edges at the end nodes or within ExemptDeg (planar degrees, like ST_DWithin on 4326) of an end point
     private bool Exempt(int e, Limits l, End from, End to)

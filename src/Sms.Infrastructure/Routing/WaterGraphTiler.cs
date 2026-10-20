@@ -11,7 +11,8 @@ public sealed record GraphNode(long Id, double X, double Y, bool IsMin);
 /// <param name="FloorM">Not a limit, only whether the water is definitely deep enough (SeaGraph.Floor): for a derived channel ("Enge") the
 /// depth limit leaves open, the floor of the band it runs through or next to it; for coastal water without any band in reach
 /// DepthLimits.UnknownCoastalFloorM.</param>
-public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null, bool Assumed = false, double? AdjacentDepthM = null, double? FloorM = null);
+/// <param name="UnknownBridge">Passes under a fixed bridge without a charted clearance (Obstacles.Apply): passed with a warning or avoided, per ship.</param>
+public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null, bool Assumed = false, double? AdjacentDepthM = null, double? FloorM = null, bool UnknownBridge = false);
 public sealed record GraphTile(Envelope Envelope, double StartDegLng, double StartDegLat);
 
 /// <summary>
