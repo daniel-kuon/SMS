@@ -249,8 +249,13 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         // only buoy chains: a ×3 band around the OSM waterway lines too (tried in v50 for the Schlei) covered whole firths such as the
         // Kiel Förde, and as a smoother obstacle it left zigzags and a U-turn off Laboe; the Schlei problem was missing water (water=fjord)
         // (paired lines only: a stretch of single marks in deep skerry water says nothing about shallows beside it, Fairways.Note)
-        var fairways = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Note.Contains(Fairways.PairedNote)).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
-        var fairwayAreas = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Fairway).Select(c => c.Geometry).ToListAsync(ct)).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
+        // (not the wide corridors of a river such as the Elbe, Fairways.WideNote: the water beside them is the river, and the ×3
+        // band reached into Cuxhaven's harbour mouth, where the route then rode the pier and ferry passages in a loop)
+        var fairways = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Note.Contains(Fairways.PairedNote) && !c.Note.Contains(Fairways.WideNote)).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList();
+        static List<Polygon> Polygons(List<Geometry> gs) => gs.SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
+        var allAreas = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Fairway).Select(c => new { c.Geometry, c.Note }).ToListAsync(ct);
+        var fairwayAreas = Polygons(allAreas.Where(a => a.Note == null || !a.Note.Contains(Fairways.WideNote)).Select(a => a.Geometry).ToList()); // channel zone
+        var buoyedAreas = Polygons(allAreas.Select(a => a.Geometry).ToList()); // buoyed water for the depth limits
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         var depthsByTile = new System.Collections.Concurrent.ConcurrentDictionary<string, List<(Geometry, double)>>();
         static string result_tile_key(Envelope e) => $"{e.MinX:0.####},{e.MinY:0.####}";
@@ -263,7 +268,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var nearLand = NearLand(linkLand);
         if (o.Mode == "areas")
         {
-            (gridNodeCount, gridEdgeCount, nextId, waterNodes) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, harbours.Select(h => h.Location.Coordinate).ToList(), landKey, sw, nearLand, ct);
+            (gridNodeCount, gridEdgeCount, nextId, waterNodes) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, buoyedAreas, harbours.Select(h => h.Location.Coordinate).ToList(), landKey, sw, nearLand, ct);
         }
         else
         {
@@ -298,7 +303,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                     foreach (var n in result.Nodes) { await w.StartRowAsync(c); await w.WriteAsync(version, NpgsqlDbType.Integer, c); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, c); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, c); }
                     await w.CompleteAsync(c);
                 }
-                await WriteEdgesAsync(conn, version, DepthLimits.Apply(Avoid.Apply(ChannelPreference.Apply(result.Edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), avoids, o.AvoidPenaltyFactor), depthsByTile.TryRemove(result_tile_key(WaterGraphTiler.WithMargin(result.Tile)), out var tileDepths) ? tileDepths : [], nearLand, fairwayAreas), c);
+                await WriteEdgesAsync(conn, version, DepthLimits.Apply(Avoid.Apply(ChannelPreference.Apply(result.Edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), avoids, o.AvoidPenaltyFactor), depthsByTile.TryRemove(result_tile_key(WaterGraphTiler.WithMargin(result.Tile)), out var tileDepths) ? tileDepths : [], nearLand, buoyedAreas), c);
                 foreach (var h in harbourIndex.Query(result.Tile.Envelope))
                     if (result.Nearest(h.X, h.Y, accessDeg) is { } near) access.Add((h.Id, near.Id, Haversine(h.Y, h.X, near.Y, near.X)));
                 if (result.Nodes.Count > 0 || tileNo % 25 == 0)
@@ -573,7 +578,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     /// harbours and passage ends + corners of shallow banks → visibility edges, decorated like grid edges (channel preference, depth).
     /// </summary>
     private async Task<(long nodes, long edges, long nextId, List<GraphNode> waterNodes)> BuildAreasAsync(NpgsqlConnection conn, SmsDbContext db, int version, Envelope region, RoutingOptions o,
-        IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Coordinate> harbourPoints, string landKey, Stopwatch sw, Func<Coordinate, double, bool> nearLand, CancellationToken ct)
+        IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Polygon> buoyedAreas, IReadOnlyList<Coordinate> harbourPoints, string landKey, Stopwatch sw, Func<Coordinate, double, bool> nearLand, CancellationToken ct)
     {
         // a visibility leg through a sound passes under its bridge: clearance, lock and opening costs apply here as on passages;
         // a long bridge with charted spans is passable at the spans only, so the span points become anchors (legs through them)
@@ -593,7 +598,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         edges = ChannelPreference.Apply(edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor);
         Tick(); Report("areas", $"channel preference applied ({sw.Elapsed:hh\\:mm\\:ss})");
-        edges = DepthLimits.Apply(Avoid.Apply(edges, avoids, o.AvoidPenaltyFactor), depths, nearLand, fairwayAreas);
+        edges = DepthLimits.Apply(Avoid.Apply(edges, avoids, o.AvoidPenaltyFactor), depths, nearLand, buoyedAreas);
         Tick(); Report("areas", $"depth limits applied ({sw.Elapsed:hh\\:mm\\:ss})");
         edges = Obstacles.Apply(edges, Obstacles.WithSpans(bridgesRaw), o.LockPenaltyM, o.BridgeOpeningPenaltyM, o.BridgeMatchAreaM); // a bridge over a sound is a point, the leg may pass a few hundred metres from it
         Tick(); Report("areas", $"bridges and locks applied, writing {nodes.Count} nodes and {edges.Count} edges ({sw.Elapsed:hh\\:mm\\:ss})");

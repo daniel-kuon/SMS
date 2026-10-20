@@ -628,8 +628,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var o = builder.Options;
         if (o.ChannelPreferenceM > 0)
         {
-            var fairways = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Note.Contains(Fairways.PairedNote)).Select(c => c.Geometry).ToListAsync()).OfType<LineString>().ToList(); // same set as the builder's channel zone
-            var fairwayAreas = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Fairway).Select(c => c.Geometry).ToListAsync()).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
+            var fairways = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Note.Contains(Fairways.PairedNote) && !c.Note.Contains(Fairways.WideNote)).Select(c => c.Geometry).ToListAsync()).OfType<LineString>().ToList(); // same set as the builder's channel zone
+            var fairwayAreas = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Fairway && !(c.Note != null && c.Note.Contains(Fairways.WideNote))).Select(c => c.Geometry).ToListAsync()).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
             if (fairways.Count > 0)
             {
                 var corridorDeg = 150 / WaterGraphTiler.MPerDegLat;

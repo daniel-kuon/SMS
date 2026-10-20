@@ -454,7 +454,7 @@ public static class RoutingEndpoints
             foreach (var f in fairways)
             {
                 db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Passage, Source = CorrectionSource.Derived, Geometry = f.Line, Note = Fairways.Note(f), Active = true, CreatedById = current.Id });
-                if (f.Area is { } area) db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Fairway, Source = CorrectionSource.Derived, Geometry = area, Note = $"{Fairways.AreaNote}, {f.Pairs} {Fairways.PairedNote})", Active = true, CreatedById = current.Id });
+                if (f.Area is { } area) db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Fairway, Source = CorrectionSource.Derived, Geometry = area, Note = $"{Fairways.AreaNote}, {f.Pairs} {Fairways.PairedNote}{(f.Wide ? ", " + Fairways.WideNote : "")})", Active = true, CreatedById = current.Id });
             }
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { marks = marks.Count, created = fairways.Count, areas = fairways.Count(f => f.Area is not null), removed = old.Count, lines = fairways.Select(f => new { f.Pairs, points = f.Line.NumPoints, lengthNm = Math.Round(LengthNm(f.Line), 1) }) });
