@@ -79,6 +79,9 @@ public sealed class SeaGraph
     public bool IsAssumed(int e) => _assumed is not null && _assumed[e];
     /// <summary>A straight link between a passage vertex and a water node (the builder lets these cross up to 50 m of land, a mole or pier).</summary>
     public bool IsLink(int e) => (_src[e] >= _firstPassage) != (_tgt[e] >= _firstPassage) && _geomStart[e] == _geomStart[e + 1];
+    /// <summary>A straight edge between two passage vertices that is not an assumed passage: a gap link between two channel pieces
+    /// (the builder links ends up to 200 m apart without a land test) or a two-point channel or fairway piece.</summary>
+    public bool IsStraightPassage(int e) => IsPassage(e) && _geomStart[e] == _geomStart[e + 1] && !IsAssumed(e);
     public int Source(int e) => _src[e];
     public int Target(int e) => _tgt[e];
     /// <summary>The edges at a node.</summary>

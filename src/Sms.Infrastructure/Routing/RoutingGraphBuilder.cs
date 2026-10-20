@@ -786,7 +786,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         {
             if (!accept(n)) continue;
             var lenM = Haversine(p.Y, p.X, n.Y, n.X);
-            if (lenM < 300) return n;
+            // no shortcut for short links: a gap link of 172 m between two channel pieces crossed an islet (Marstrand, 57.8218 N)
             var seg = Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)]);
             // a harbour point sits on its pier and a channel end on the shore: crossing a mole or pier is fine, crossing a field is not.
             // Sampled every 25 m with the prepared point-in-polygon test (an exact overlay against a mainland tile took minutes per node)
@@ -795,7 +795,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             // Two shapes of land crossing are fine: up to 50 m anywhere (a mole or pier), or a leading stretch of up to 1.5 km (the harbour's
             // own basin or creek, which the coastline polygons count as land, plus its mole or dike). Land after water on the way is a field
             // or a spit (150 m let the Schleimünde links cross the Lotseninsel, so routes cut through the island instead of using the mole gap).
-            var steps = (int)Math.Ceiling(lenM / 25); var onLand = 0; var leading = 0; var trailing = 0; var water = false; var middle = false;
+            var steps = Math.Max(2, (int)Math.Ceiling(lenM / 25)); var onLand = 0; var leading = 0; var trailing = 0; var water = false; var middle = false;
             for (var k = 1; k < steps; k++)
             {
                 var q = Geo.Factory.CreatePoint(new Coordinate(p.X + (n.X - p.X) * k / steps, p.Y + (n.Y - p.Y) * k / steps));
