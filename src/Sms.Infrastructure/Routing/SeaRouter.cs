@@ -973,6 +973,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // the 64 nearest nodes only, against the land clipped to their box, in memory (in SQL, on all nodes of the 40 km box and
         // against the whole 146 000-point Dutch land polygon, it took 8 s next to the IJsselmeer)
         SnapRow? row = null;
+        var visible = false;
         if (!onLand)
         {
             var near = await db.Database.SqlQueryRaw<SnapRow>("""
@@ -989,9 +990,26 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 var prepared = land.Where(l => !l.Geom.IsEmpty).Select(l => PreparedGeometryFactory.Prepare(l.Geom)).ToList();
                 row = near.OrderBy(n => n.Isolated).ThenBy(n => n.Metres)
                     .FirstOrDefault(n => { var leg = Geo.Factory.CreateLineString([p.Coordinate, new Coordinate(n.X, n.Y)]); return !prepared.Any(g => g.Intersects(leg)); });
+                visible = row is not null;
+                // none in sight (a harbour basin round a bend): the node whose leg crosses the least land, not the nearest grid node
+                // (Glückstadt: a grid node north of the mouth, 414 m of land, beat the fairway's end inside the basin, 65 m)
+                if (row is null)
+                {
+                    var cos = Math.Cos(p.Y * Math.PI / 180);
+                    double LandM(SnapRow n)
+                    {
+                        var leg = Geo.Factory.CreateLineString([p.Coordinate, new Coordinate(n.X, n.Y)]);
+                        return land.Where(l => !l.Geom.IsEmpty && l.Geom.EnvelopeInternal.Intersects(leg.EnvelopeInternal)).Sum(l =>
+                        {
+                            try { var x = l.Geom.Intersection(leg); return x.IsEmpty ? 0 : Math.Sqrt(Math.Pow(x.EnvelopeInternal.Width * cos, 2) + Math.Pow(x.EnvelopeInternal.Height, 2)) * WaterGraphTiler.MPerDegLat; }
+                            catch (TopologyException) { return double.MaxValue / 4; }
+                        });
+                    }
+                    var least = near.Where(n => !n.Isolated).Select(n => (n, m: LandM(n))).OrderBy(x => x.m).ThenBy(x => x.n.Metres).FirstOrDefault();
+                    if (least.n is not null && least.m <= ShortLandM) row = least.n;
+                }
             }
         }
-        var visible = row is not null;
         row ??= await db.Database.SqlQueryRaw<SnapRow>("""
             SELECT id AS "Id", ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint({1}, {2}), 4326)) AS "Metres", ST_X(geom) AS "X", ST_Y(geom) AS "Y", false AS "Isolated"
             FROM routing_node WHERE graph_version = {0} AND geom && ST_MakeEnvelope({1} - {3}, {2} - {4}, {1} + {3}, {2} + {4}, 4326)
