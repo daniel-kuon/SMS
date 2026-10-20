@@ -19,7 +19,7 @@ import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Harbour, HarbourMarker, HarbourService, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
 import { Location } from '@angular/common';
-import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, rowValueEl, ServiceSpot, setPoiFocus, setServiceActive, setServiceHighlight, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
+import { createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, rowValueEl, ServiceSpot, setPoiFocus, setServiceActive, setServiceHighlight, setServicePath, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
 import { formatServiceDistance } from '../../core/service-distance';
 import { googleRouteUrl, PlaceRow, placeRows, ServicePlace } from '../../core/service-place';
@@ -49,9 +49,10 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
             @for (s of shipCtx.myShips(); track s.id) { <option [value]="s.id">{{ s.name }}</option> }
           </select>
         }
-        <label>{{ 'ship.draft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.draftM()" (ngModelChange)="shipCtx.manual($event === '' ? null : +$event, shipCtx.airDraftM())" /></label>
-        <label>{{ 'ship.airDraft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.draftM(), $event === '' ? null : +$event)" /></label>
-        @if (shipCtx.draftM() !== null) { <span class="muted small">{{ 'ship.hazardsHidden' | translate }}</span> }
+        <label [title]="'ship.minDepthHint' | translate">{{ 'ship.minDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.minDepthM()" (ngModelChange)="shipCtx.manual($event === '' ? null : +$event, shipCtx.warnDepthM(), shipCtx.airDraftM())" /></label>
+        <label [title]="'ship.warnDepthHint' | translate">{{ 'ship.warnDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.warnDepthM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), $event === '' ? null : +$event, shipCtx.airDraftM())" /></label>
+        <label>{{ 'ship.airDraft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), shipCtx.warnDepthM(), $event === '' ? null : +$event)" /></label>
+        @if (shipCtx.hazardDepthM() !== null) { <span class="muted small">{{ 'ship.hazardsHidden' | translate }}</span> }
       </div>
       <aside class="panel" [class.open]="harbour()">
         @if (harbour(); as h) {
@@ -69,7 +70,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
           @if (h.vhfChannel) { <div>{{ 'harbour.vhf' | translate }}: {{ h.vhfChannel }}</div> }
           @if (services().length) {
             <div class="services" [attr.aria-label]="'harbour.services' | translate">@for (s of services(); track s.kind) {
-              <span class="chip svc" role="button" tabindex="0" [class.active]="activeService() === s.kind" (click)="toggleService(s)" (keydown.enter)="toggleService(s)" [title]="('harbour.svc.' + s.kind | translate) + (s.name ? ': ' + s.name : '')"><mat-icon inline>{{ serviceIcon(s.kind) }}</mat-icon> {{ distance(s.distanceM) }}</span>
+              <span class="chip svc" role="button" tabindex="0" [class.active]="activeService() === s.kind" (click)="toggleService(s)" (keydown.enter)="toggleService(s)" [title]="('harbour.svc.' + s.kind | translate) + (s.name ? ': ' + s.name : '')"><mat-icon inline>{{ serviceIcon(s.kind) }}</mat-icon> {{ distance(s.distanceM, s.walkM) }}</span>
             }</div>
             @if (places().length) {
               <h4 class="places-head"><mat-icon inline>{{ serviceIcon(activeService() ?? '') }}</mat-icon> {{ placesHead() }}</h4>
@@ -160,10 +161,11 @@ export class HarbourMapPage {
   position = (h: HarbourMarker) => formatPosition(h.lat, h.lng);
   skipperGuideUrl = (h: HarbourMarker) => `https://www.skipperguide.de/index.php?search=${encodeURIComponent(h.name)}`;
   /** Nearest services (computed server-side); until they are computed the harbour's own facility flags, on site. */
-  services = computed(() => { const h = this.harbour(); return !h ? [] : h.services?.length ? h.services : Object.keys(h.facilities).filter(k => h.facilities[k]).map(kind => ({ kind, distanceM: 0, name: null, poiId: null })); });
+  services = computed((): HarbourService[] => { const h = this.harbour(); return !h ? [] : h.services?.length ? h.services : Object.keys(h.facilities).filter(k => h.facilities[k]).map(kind => ({ kind, distanceM: 0, name: null, poiId: null })); });
   serviceIcon = (kind: string) => SERVICE_ICON[kind] ?? POI_ICON[kind] ?? 'check';
   private translate = inject(TranslateService);
-  distance = (m: number) => formatServiceDistance(m, appI18n.lang(), this.translate.instant('harbour.onSite') as string);
+  /** The walk when known ("350 m zu Fuß"), else the straight distance. */
+  distance = (m: number, walkM?: number | null) => formatServiceDistance(walkM ?? m, appI18n.lang(), this.translate.instant('harbour.onSite') as string, walkM != null ? this.translate.instant('harbour.onFoot') as string : undefined);
   activeService = signal<string | null>(null);
   /** The places of the active service, nearest first, as the side-panel list shows them. */
   places = signal<{ id: number; name: string; dist: string; rows: PlaceRow[]; route: string }[]>([]);
@@ -184,9 +186,10 @@ export class HarbourMapPage {
       if (this.activeService() !== s.kind || this.harbour() !== h || !this.map) return;
       const lang = appI18n.lang(), t = (k: string) => this.translate.instant('harbour.' + k) as string;
       const labels = { hours: t('openingHours'), cuisine: t('cuisine'), website: t('website'), phone: t('phone'), address: t('address') };
-      const within3 = r.filter(p => p.distanceM <= NEAR_RADIUS_M), shown = within3.length ? within3 : r;   // places within 3 km if there are any, else up to 5 km
+      const within3 = r.filter(p => (p.walkM ?? p.distanceM) <= NEAR_RADIUS_M), shown = within3.length ? within3 : r;   // places within 3 km if there are any, else up to 5 km
       this.placesHead.set(this.translate.instant('harbour.placesHeading', { label, count: shown.length, km: within3.length ? NEAR_RADIUS_M / 1000 : 5 }) as string);
-      const view = shown.map(p => ({ p, name: p.name ?? label, dist: this.distance(p.distanceM), rows: placeRows(p, lang, labels), route: googleRouteUrl(h, p) }));
+      const view = shown.map(p => ({ p, name: p.name ?? label, dist: this.distance(p.distanceM, p.walkM), rows: placeRows(p, lang, labels), route: googleRouteUrl(h, p) }));
+      this.walkFrom = h; this.walkAsked.clear();
       this.places.set(view.map(v => ({ id: v.p.id, name: v.name, dist: v.dist, rows: v.rows, route: v.route })));
       this.placesEmpty.set(!shown.length);
       setServiceHighlight(this.map, view.map((v): ServiceSpot => ({
@@ -206,8 +209,22 @@ export class HarbourMapPage {
       })), h, i => this.pickPlace(i));
     });
   }
-  /** Hover on a list item (null = leave): its icon grows and the line from the harbour is drawn; the picked one stays highlighted. */
-  focusPlace(i: number | null): void { if (this.map) setServiceActive(this.map, i ?? this.selected()); }
+  /** Hover on a list item (null = leave): its icon grows and the line from the harbour is drawn – straight and dashed until the walking path (GET /api/pois/walk) is there; the picked one stays highlighted. */
+  focusPlace(i: number | null): void {
+    const map = this.map, k = i ?? this.selected();
+    if (!map) return;
+    setServiceActive(map, k);
+    const p = k === null ? undefined : this.places()[k], from = this.walkFrom, kind = this.activeService();
+    if (k === null || !p || !from || this.walkAsked.has(p.id)) return;
+    this.walkAsked.add(p.id);
+    this.api.get<{ walkM: number; coordinates: [number, number][] }>('/api/pois/walk', { lat: from.lat, lng: from.lng, poiId: p.id }).subscribe({
+      next: w => { if (this.map && this.activeService() === kind && this.places()[k]?.id === p.id) setServicePath(this.map, k, w.coordinates); },   // shows up if k is still the active one
+      error: () => undefined,   // 404: no path, the straight line stays
+    });
+  }
+  /** The harbour the listed places were looked up from, and the places whose walking path was already asked for. */
+  private walkFrom: HarbourMarker | null = null;
+  private walkAsked = new Set<number>();
   selectPlace(i: number): void { this.selected.set(i); this.focusPlace(i); }
   /** An icon was clicked on the map: highlight and scroll the list item into view. */
   private pickPlace(i: number): void {
@@ -227,7 +244,7 @@ export class HarbourMapPage {
   constructor() {
     effect(() => { const id = this.id(); if (id) this.load(id); else this.harbour.set(null); });
     effect(() => { const h = this.harbour(); if (this.map) setPoiFocus(this.map, h?.id ? h : null); untracked(() => { if (this.activeService()) this.clearService(); }); });
-    effect(() => { const draft = this.shipCtx.draftM(); if (this.map) { applyHazardFilter(this.map, draft); applyDepthShading(this.map, draft); } });
+    effect(() => { const min = this.shipCtx.minDepthM(), warn = this.shipCtx.warnDepthM(), hazard = this.shipCtx.hazardDepthM(); if (this.map) { applyHazardFilter(this.map, hazard); applyDepthShading(this.map, min, warn); } });
   }
   pickShip(id: string): void { this.shipCtx.select(this.shipCtx.myShips().find(s => s.id === id) ?? null); }
 
@@ -251,6 +268,7 @@ export class HarbourMapPage {
     map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['!=', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 4 } });
     map.addLayer({ id: 'route-on-land', type: 'line', source: 'route', filter: ['==', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 1.5, 'line-dasharray': [1, 2] } });
     map.addLayer({ id: 'route-line-dashed', type: 'line', source: 'route', filter: ['==', ['get', 'dashed'], true], paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-dasharray': [2, 2] } });
+    map.addLayer({ id: 'route-check-depth', type: 'circle', source: 'route', filter: ['==', ['get', 'checkDepth'], true], paint: { 'circle-radius': 5, 'circle-color': '#9c97d6', 'circle-stroke-color': '#34357a', 'circle-stroke-width': 2 } });
     map.addLayer({ id: 'route-label', type: 'symbol', source: 'route', layout: { 'symbol-placement': 'line-center', 'text-field': ['get', 'label'], 'text-size': 12, 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#0d47a1', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
 
     map.on('moveend', () => this.refresh());
@@ -260,7 +278,7 @@ export class HarbourMapPage {
     map.on('mouseenter', 'harbour-points', e => { map.getCanvas().style.cursor = 'pointer'; const id = e.features?.[0]?.properties?.['id']; if (id) this.hoverHarbour(id); });
     map.on('mouseleave', 'harbour-points', () => { map.getCanvas().style.cursor = ''; this.hideRoute(); });
     map.on('contextmenu', e => this.contextMenu(e));
-    applyHazardFilter(map, this.shipCtx.draftM()); applyDepthShading(map, this.shipCtx.draftM());
+    applyHazardFilter(map, this.shipCtx.hazardDepthM()); applyDepthShading(map, this.shipCtx.minDepthM(), this.shipCtx.warnDepthM());
     this.refresh();
     const h = this.harbour();
     if (h) { setPoiFocus(map, h.id ? h : null); this.revealHarbour(h); }
@@ -365,7 +383,10 @@ export class HarbourMapPage {
     const map = this.map; if (!map) return;
     const onLand = (warnings ?? []).filter(w => (w.kind === 'startOnLand' || w.kind === 'endOnLand') && w.snappedLat != null && w.snappedLng != null)
       .map(w => ({ type: 'Feature' as const, properties: { onLand: true }, geometry: { type: 'LineString' as const, coordinates: [[w.snappedLng!, w.snappedLat!], [w.lng, w.lat]] } }));
-    (map.getSource('route') as GeoJSONSource).setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { label: `${nm} sm${warned ? ' ⚠' : ''}`, dashed }, geometry: { type: 'LineString', coordinates: coords } }, ...onLand] });
+    // "Tiefe prüfen": a lavender dot where the route crosses water charted below the warning depth (the note is in the popup)
+    const checkDepth = (warnings ?? []).filter(w => w.kind === 'checkDepth')
+      .map(w => ({ type: 'Feature' as const, properties: { checkDepth: true }, geometry: { type: 'Point' as const, coordinates: [w.lng, w.lat] } }));
+    (map.getSource('route') as GeoJSONSource).setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { label: `${nm} sm${warned ? ' ⚠' : ''}`, dashed }, geometry: { type: 'LineString', coordinates: coords } }, ...onLand, ...checkDepth] });
     // the map stays where it is: hovering/pinning only draws (the view moves only when another harbour is selected)
   }
   hideRoute(force = false): void {

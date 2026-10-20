@@ -41,6 +41,10 @@ public class Ship : Entity
     public decimal? BeamM { get; set; }
     public decimal? DraftM { get; set; }
     public decimal? AirDraftM { get; set; }
+    /// <summary>Routes avoid water whose charted depth band lies below this outside buoyed channels (as given, no margin added; null = draft + 0.5 m).</summary>
+    public decimal? MinDepthM { get; set; }
+    /// <summary>Routes warn "Tiefe prüfen" where they cross a depth band whose floor lies below this (null = no warnings).</summary>
+    public decimal? WarnDepthM { get; set; }
     public string? SailNumber { get; set; }
     public string? CallSign { get; set; }
     public string? Mmsi { get; set; }

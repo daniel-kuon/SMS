@@ -14,7 +14,8 @@ namespace Sms.Infrastructure.Routing;
 
 public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, LineString Geometry, int GraphVersion, string Method, IReadOnlyDictionary<string, long>? Timings = null, IReadOnlyList<RouteWarning>? Warnings = null);
 /// <summary>Something the route assumes that the chart data does not show; Kind "assumedPassage": a passage through a strait the coastline closes.
-/// Kind "startOnLand"/"endOnLand": the clicked point (Lat/Lng) lay on land, the route starts/ends at the nearest navigable water (Snapped*, DistanceM away).</summary>
+/// Kind "startOnLand"/"endOnLand": the clicked point (Lat/Lng) lay on land, the route starts/ends at the nearest navigable water (Snapped*, DistanceM away).
+/// Kind "checkDepth": the route runs through water charted (or, without data in the coastal strip, next to a band) shallower than the ship's warning depth at Lat/Lng, DistanceM the length of that stretch.</summary>
 public sealed record RouteWarning(string Kind, double Lat, double Lng, string Note, double? SnappedLat = null, double? SnappedLng = null, double? DistanceM = null);
 public sealed record NearbyResult(Guid HarbourId, decimal DistanceNm, decimal StraightLineNm);
 public sealed record GraphStatus(int ActiveVersion, string? BuiltAt, string? Region, long Nodes, long Edges);
@@ -35,28 +36,33 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     public async Task<int> ActiveVersionAsync(CancellationToken ct) => (await StatusAsync(ct)).ActiveVersion;
     /// <summary>Routing:DefaultDraftM (null when 0 = off).</summary>
     public double? DefaultDraftM => builder.Options.DefaultDraftM > 0 ? builder.Options.DefaultDraftM : null;
+    /// <summary>The minimum depth for a route: the ship's own value as given, else draft + Routing:DepthSafetyMarginM (DepthBands.MinDepth).</summary>
+    public double? MinDepth(double? draftM, double? minDepthM) => DepthBands.MinDepth(draftM, minDepthM, builder.Options.DepthSafetyMarginM);
 
     /// <summary>Harbour → harbour route; null when either harbour is not connected to the active graph or no path exists.</summary>
-    public async Task<RouteResult?> RouteAsync(Guid from, Guid to, CancellationToken ct, double? airDraftM = null, double? draftM = null)
+    /// <param name="minDepthM">Routes avoid bands whose middle lies below it (null = no depth limit, see <see cref="MinDepth"/>).</param>
+    /// <param name="warnDepthM">"checkDepth" warnings where the route crosses a band whose floor lies below it (null = none).</param>
+    public async Task<RouteResult?> RouteAsync(Guid from, Guid to, CancellationToken ct, double? airDraftM = null, double? minDepthM = null, double? warnDepthM = null)
     {
         var version = await ActiveVersionAsync(ct);
         if (version == 0) return null;
-        // the cache holds unrestricted routes only; an air draft may close bridges and a draft shallow areas, so those are computed every time
+        // the cache holds unrestricted routes only; an air draft may close bridges and a minimum depth shallow areas, so those are computed every time
         // with assumed passages switched off the cached routes (which may use them) are bypassed
-        var useCache = airDraftM is null && draftM is null && builder.Options.AssumedPassages;
+        var useCache = airDraftM is null && minDepthM is null && builder.Options.AssumedPassages;
         var cached = useCache ? await db.RouteCaches.AsNoTracking().FirstOrDefaultAsync(r => r.FromHarbourId == from && r.ToHarbourId == to && r.GraphVersion == version, ct) : null;
         var a = await db.Harbours.AsNoTracking().Where(h => h.Id == from).Select(h => h.Location).FirstOrDefaultAsync(ct);
         var b = await db.Harbours.AsNoTracking().Where(h => h.Id == to).Select(h => h.Location).FirstOrDefaultAsync(ct);
         if (a is null || b is null) return null;
         var straight = Math.Round((decimal)(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / Nm), 1);
-        if (cached is not null) return new RouteResult(cached.DistanceNm, straight, cached.Geometry, version, "sea-graph", Warnings: (await WarningsAlongAsync([cached.Geometry], ct))[0]);
+        if (cached is not null) return new RouteResult(cached.DistanceNm, straight, cached.Geometry, version, "sea-graph", Warnings: (await WarningsAlongAsync([cached.Geometry], ct, warnDepthM))[0]);
         var start = await AccessNodeAsync(from, version, ct);
         var end = await AccessNodeAsync(to, version, ct);
         if (start is null || end is null) return null;
         var graph = await GraphAsync(version);
-        var result = await RouteEndsAsync(graph, new SeaGraph.End(a.Coordinate, (int)start.Value), new SeaGraph.End(b.Coordinate, (int)end.Value), version, ct, airDraftM, draftM);
+        var result = await RouteEndsAsync(graph, new SeaGraph.End(a.Coordinate, (int)start.Value), new SeaGraph.End(b.Coordinate, (int)end.Value), version, ct, airDraftM, minDepthM, warnDepthM);
         if (result is null) return null;
         if (!useCache) return result;
+        // the unrestricted route only: a later hit with a warning depth gets its depth warnings along the stored geometry
         db.RouteCaches.Add(new RouteCache { FromHarbourId = from, ToHarbourId = to, GraphVersion = version, DistanceNm = result.DistanceNm, Geometry = result.Geometry });
         db.RouteCaches.Add(new RouteCache { FromHarbourId = to, ToHarbourId = from, GraphVersion = version, DistanceNm = result.DistanceNm, Geometry = (LineString)result.Geometry.Reverse() });
         try { await db.SaveChangesAsync(ct); } catch (DbUpdateException) { db.ChangeTracker.Clear(); } // concurrent insert of the same pair
@@ -64,7 +70,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     /// <summary>Point → point route (map clicks). Each point snaps to a linked harbour next to it, a passage edge or the nearest node (EndAsync).</summary>
-    public async Task<RouteResult?> RouteAsync(Point from, Point to, CancellationToken ct, double? airDraftM = null, double? draftM = null)
+    public async Task<RouteResult?> RouteAsync(Point from, Point to, CancellationToken ct, double? airDraftM = null, double? minDepthM = null, double? warnDepthM = null)
     {
         var version = await ActiveVersionAsync(ct);
         if (version == 0) return null;
@@ -75,7 +81,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var end = await EndAsync(to, version, graph, ct);
         timings["snap"] = clock.ElapsedMilliseconds;
         if (start is null || end is null) return null;
-        return await RouteEndsAsync(graph, start, end, version, ct, airDraftM, draftM, timings);
+        return await RouteEndsAsync(graph, start, end, version, ct, airDraftM, minDepthM, warnDepthM, timings);
     }
 
     /// <summary>A click within this distance of a harbour the builder linked snaps to the harbour's access node.</summary>
@@ -231,10 +237,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             await using var r = await c.ExecuteReaderAsync();
             while (await r.ReadAsync()) { var id = (int)r.GetInt64(0); x[id] = r.GetDouble(1); y[id] = r.GetDouble(2); }
         }
-        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount];
+        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount]; var adjacent = new float[edgeCount];
         var geomStart = new int[edgeCount + 1]; var geom = new List<double>();
         var m = 0;
-        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
+        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed, adjacent_depth_m FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
         {
             c.Parameters.AddWithValue("v", version);
             await using var r = await c.ExecuteReaderAsync();
@@ -246,11 +252,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 geomStart[m] = geom.Count / 2;
                 if (!r.IsDBNull(5)) AppendInterior(r.GetFieldValue<byte[]>(5), geom);
                 assumed[m] = r.GetBoolean(6);
+                adjacent[m] = r.IsDBNull(7) ? float.NaN : (float)r.GetDouble(7);
                 m++;
             }
         }
         geomStart[m] = geom.Count / 2;
-        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref geomStart, m + 1); }
+        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref adjacent, m); Array.Resize(ref geomStart, m + 1); }
         var isolated = new bool[maxNode + 1];
         await using (var c = new NpgsqlCommand("SELECT id FROM routing_isolated WHERE graph_version = @v", conn))
         {
@@ -259,7 +266,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             while (await r.ReadAsync()) { var id = r.GetInt64(0); if (id <= maxNode) isolated[id] = true; }
         }
         var loaded = sw.ElapsedMilliseconds;
-        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed);
+        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed, adjacent: adjacent);
         logger.LogInformation("Routing graph v{Version} in memory: {Nodes} node slots, {Edges} edges, {Snap} passage edges for snapping, heuristic x{Factor:F6}, ~{Mb} MB (GC +{GcMb} MB); read {Read} ms, indexed {Index} ms",
             version, graph.NodeSlots, graph.EdgeCount, graph.SnapEdgeCount, graph.HeuristicFactor, graph.ApproxBytes >> 20, (GC.GetTotalMemory(false) - before) >> 20, loaded, sw.ElapsedMilliseconds - loaded);
         return graph;
@@ -299,22 +306,23 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     private static (int count, (double, double)[] bands)? _depthBands;
-    /// <summary>The lowest charted depth band floor a ship with this draft may cross (see <see cref="DepthBands"/>).</summary>
-    private async Task<double> DepthFloorAsync(double draftM, CancellationToken ct)
+    /// <summary>The lowest charted depth band floor a ship with this minimum depth may cross (see <see cref="DepthBands"/>).</summary>
+    private async Task<double> DepthFloorAsync(double minDepthM, CancellationToken ct)
     {
         if (_depthBands is null)
         {
             var rows = await db.Database.SqlQueryRaw<BandRow>("SELECT DISTINCT min_depth_m AS \"Min\", max_depth_m AS \"Max\" FROM routing_depth").ToListAsync(ct);
             _depthBands = (rows.Count, rows.Select(r => (r.Min, r.Max)).ToArray());
         }
-        return DepthBands.EffectiveFloor(draftM + builder.Options.DepthSafetyMarginM, _depthBands.Value.bands);
+        return DepthBands.EffectiveFloor(minDepthM, _depthBands.Value.bands);
     }
     private sealed class BandRow { public double Min { get; set; } public double Max { get; set; } }
 
-    private async Task<RouteResult?> RouteEndsAsync(SeaGraph graph, SeaGraph.End from, SeaGraph.End to, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null)
+    private async Task<RouteResult?> RouteEndsAsync(SeaGraph graph, SeaGraph.End from, SeaGraph.End to, int version, CancellationToken ct, double? airDraftM = null, double? minDepthM = null, double? warnDepthM = null, Dictionary<string, long>? timings = null)
     {
-        // bridges lower than the ship's air draft close their passage edges (clearance_m is null elsewhere); charted depth areas
-        // shallower than draft + margin close grid edges (min_depth_m is null on marked passages: a buoyed channel is followed anyway)
+        // bridges lower than the ship's air draft close their passage edges (clearance_m is null elsewhere); charted depth bands whose
+        // middle lies below the minimum depth close grid edges (min_depth_m is null on marked passages: a buoyed channel is followed anyway),
+        // and so does coastal water without depth data next to such a band (adjacent_depth_m, DepthBands.Effective)
         // the edges at the two end nodes are exempt from the depth limit: a harbour basin is charted shallow at this resolution and
         // one has to get in anyway; from there on only deep legs or the buoyed channel (passage edges carry no limit) continue
         // … and so is the harbour approach (HarbourAccessM around both ends): the charted fathom steps call a dredged fjord or marina
@@ -328,7 +336,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         if (straightM > builder.Options.MaxRouteNm * Nm) return null;
         timings ??= []; var clock = Stopwatch.StartNew();
         var o = builder.Options;
-        var limits = new SeaGraph.Limits(airDraftM, draftM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat, NoAssumed: !o.AssumedPassages);
+        var limits = new SeaGraph.Limits(airDraftM, minDepthM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat, NoAssumed: !o.AssumedPassages);
         // the builder lets a passage end's link into the water graph cross up to 50 m of land (a harbour point on its pier): from a marina
         // channel that is a link straight across the mole (Großenbrode). Links on the path that cross land with water on both sides
         // cost Limits.PenaltyM (20 km) extra and the search runs again: they stay usable where nothing else leads on, as before
@@ -353,7 +361,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // the points of assumed edges: their legs cross the coastline land by design and are not rerouted round it
         var assumedPoints = new HashSet<Coordinate>();
         foreach (var e in path.Edges ?? []) if (graph.IsAssumed(e)) assumedPoints.UnionWith(graph.Coords(e));
-        var smoothed = await SmoothAsync(path.Points, path.Fixed, version, ct, airDraftM, draftM, timings, assumedPoints);
+        var smoothed = await SmoothAsync(path.Points, path.Fixed, version, ct, airDraftM, minDepthM, timings, assumedPoints);
         timings["smooth"] = clock.ElapsedMilliseconds;
         var metres = 0.0;
         for (var i = 1; i < smoothed.Count; i++) metres += RoutingGraphBuilder.Haversine(smoothed[i - 1].Y, smoothed[i - 1].X, smoothed[i].Y, smoothed[i].X);
@@ -362,6 +370,15 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var warnings = await WarningsAtAsync(path.Assumed ?? [], ct);
         if (from.OnLand is { } fl) warnings.Insert(0, LandWarning("startOnLand", fl, a, "Start liegt an Land – Route beginnt am nächsten Wasser"));
         if (to.OnLand is { } tl) warnings.Add(LandWarning("endOnLand", tl, b, "Ziel liegt an Land – Route endet am nächsten Wasser"));
+        if (warnDepthM is { } wd)
+        {
+            // graph edges without charted depth that count as the band next to them (the smoothed line runs along them)
+            var inferred = (path.Edges ?? []).Distinct().Where(e => graph.DepthInferred(e) && DepthBands.Warns(graph.Depth(e), wd))
+                .Select(e => { var l = Geo.Factory.CreateLineString(graph.Coords(e)); return new DepthBands.Piece(l.Centroid.Coordinate, graph.Depth(e), double.NaN, LengthM(l), true); }).ToList();
+            clock.Restart();
+            warnings.AddRange(await DepthWarningsAsync(line, wd, inferred, ct));
+            timings["depth-warnings"] = clock.ElapsedMilliseconds;
+        }
         return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph", timings, warnings);
     }
 
@@ -424,9 +441,13 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// Warnings for stored routes (route cache, planned legs) that carry no graph flags: every active "Annahme" passage a route runs
     /// along (<see cref="AssumedPassages.Follows"/>). One list per route; empty lists while Routing:AssumedPassages is off.
     /// </summary>
-    public async Task<List<RouteWarning>[]> WarningsAlongAsync(IReadOnlyList<LineString?> routes, CancellationToken ct)
+    /// <param name="warnDepthM">Also "checkDepth" warnings where a route crosses charted bands with a floor below it (water without data is not judged here: no graph edges).</param>
+    public async Task<List<RouteWarning>[]> WarningsAlongAsync(IReadOnlyList<LineString?> routes, CancellationToken ct, double? warnDepthM = null)
     {
         var result = routes.Select(_ => new List<RouteWarning>()).ToArray();
+        if (warnDepthM is { } wd)
+            for (var i = 0; i < routes.Count; i++)
+                if (routes[i] is { } r) result[i].AddRange(await DepthWarningsAsync(r, wd, [], ct));
         if (!builder.Options.AssumedPassages || routes.All(r => r is null)) return result;
         var env = new Envelope(); foreach (var r in routes) if (r is not null) env.ExpandToInclude(r.EnvelopeInternal);
         var box = Geo.Factory.ToGeometry(env); box.SRID = 4326;
@@ -439,6 +460,34 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         for (var i = 0; i < result.Length; i++) result[i] = Dedupe(result[i]);
         return result;
     }
+
+    /// <summary>"checkDepth" warnings for a route: its pieces inside depth areas with a floor below the warning depth (PostGIS, per route
+    /// segment so the index sees small boxes) plus the given inferred pieces, merged into stretches (<see cref="DepthBands.Stretches"/>).</summary>
+    private async Task<List<RouteWarning>> DepthWarningsAsync(LineString route, double warnDepthM, IReadOnlyList<DepthBands.Piece> inferred, CancellationToken ct)
+    {
+        var g = (LineString)route.Copy(); g.SRID = 4326;
+        var rows = await db.Database.SqlQueryRaw<DepthPieceRow>("""
+            WITH r AS (SELECT {0}::geometry AS g),
+                 s AS (SELECT ST_MakeLine(ST_PointN(r.g, i), ST_PointN(r.g, i + 1)) AS seg FROM r, generate_series(1, ST_NPoints(r.g) - 1) i)
+            SELECT ST_X(p) AS "X", ST_Y(p) AS "Y", d.min_depth_m AS "Floor", d.max_depth_m AS "Max", ST_Length(x.geom::geography) AS "M"
+            FROM s JOIN routing_depth d ON d.geom && s.seg AND d.min_depth_m < {1} AND ST_Intersects(d.geom, s.seg),
+                 LATERAL ST_Dump(ST_CollectionExtract(ST_Intersection(d.geom, s.seg), 2)) x, LATERAL ST_LineInterpolatePoint(x.geom, 0.5) p
+            """, g, warnDepthM).ToListAsync(ct);
+        var pieces = rows.Select(r => new DepthBands.Piece(new Coordinate(r.X, r.Y), r.Floor, r.Max, r.M)).Concat(inferred).ToList();
+        return DepthBands.Stretches(route, pieces).Select(p => new RouteWarning("checkDepth", Math.Round(p.At.Y, 5), Math.Round(p.At.X, 5),
+            $"Tiefe prüfen – möglicherweise zu flach ({(p.Inferred ? "keine Tiefendaten, daneben " : "Karte ")}{Band(p.FloorM, p.MaxM)})", DistanceM: Math.Round(p.LengthM))).ToList();
+    }
+
+    private static readonly System.Globalization.CultureInfo De = System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+    private static string Band(double floor, double max) => floor < 0 ? "trockenfallend" : double.IsNaN(max) || max <= floor ? string.Format(De, "ab {0:0.0} m", floor) : string.Format(De, "{0:0.0}–{1:0.0} m", floor, max);
+
+    private static double LengthM(LineString l)
+    {
+        var m = 0.0; var cs = l.Coordinates;
+        for (var i = 1; i < cs.Length; i++) m += RoutingGraphBuilder.Haversine(cs[i - 1].Y, cs[i - 1].X, cs[i].Y, cs[i].X);
+        return m;
+    }
+    private sealed class DepthPieceRow { public double X { get; set; } public double Y { get; set; } public double Floor { get; set; } public double Max { get; set; } public double M { get; set; } }
 
     /// <summary>
     /// Length (metres, unsmoothed) of the graph route between two points with assumed passages closed, null when there is none: the
@@ -519,7 +568,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return tree;
     }
 
-    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, List<bool> fixedSeg, int version, CancellationToken ct, double? airDraftM = null, double? draftM = null, Dictionary<string, long>? timings = null, IReadOnlySet<Coordinate>? assumedPoints = null)
+    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, List<bool> fixedSeg, int version, CancellationToken ct, double? airDraftM = null, double? minDepthM = null, Dictionary<string, long>? timings = null, IReadOnlySet<Coordinate>? assumedPoints = null)
     {
         var clock = Stopwatch.StartNew();
         void Lap(string k) { if (timings is not null) timings[k] = clock.ElapsedMilliseconds; clock.Restart(); }
@@ -545,8 +594,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             }
         }
         Lap("smooth-bridges");
-        var limit = draftM is { } dm ? await DepthFloorAsync(dm, ct) : double.MinValue;
-        if (draftM is not null)
+        var limit = minDepthM is { } dm ? await DepthFloorAsync(dm, ct) : double.MinValue;
+        if (minDepthM is not null)
         {
             var shallow = await db.Database.SqlQueryRaw<GeomRow>("SELECT geom AS \"Geom\" FROM routing_depth WHERE min_depth_m < {0} AND geom && ST_MakeEnvelope({1},{2},{3},{4},4326)", limit, env.MinX, env.MinY, env.MaxX, env.MaxY).ToListAsync(ct);
             foreach (var g in shallow) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));

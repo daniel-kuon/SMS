@@ -1,7 +1,7 @@
 import { formatOpeningHours, isOpenNow, openNowText } from './opening-hours';
 /** A place of a harbour service from GET /api/pois/near (details parsed from the OSM tags). */
 export interface ServicePlace {
-  id: number; name: string | null; kind: string; poiClass?: string; poiKind?: string; osmType?: string; osmId?: number; lat: number; lng: number; distanceM: number;
+  id: number; name: string | null; kind: string; poiClass?: string; poiKind?: string; osmType?: string; osmId?: number; lat: number; lng: number; distanceM: number; walkM?: number | null;
   openingHours: string | null; cuisine: string | null; website: string | null; phone: string | null; address: string | null;
 }
 

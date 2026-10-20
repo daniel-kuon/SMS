@@ -64,7 +64,7 @@ public sealed class RoutingAudit(SeaRouter router, RoutingGraphBuilder builder, 
             {
                 var to = harbours.FirstOrDefault(x => x.Id == n.HarbourId); if (to is null) continue;
                 routes++;
-                var r = await router.RouteAsync(h.Id, n.HarbourId, ct, null, draft > 0 ? draft : null);
+                var r = await router.RouteAsync(h.Id, n.HarbourId, ct, null, router.MinDepth(draft > 0 ? draft : null, null));
                 if (r is null) { unroutable++; Count("unroutable"); findings.Add(new("unroutable", h.Name, to.Name, h.Location.Y, h.Location.X, $"no route for draft {draft} m")); if (afterRoute is not null) await afterRoute(routes, expected, counts); continue; }
                 var failed = false;
                 var g = r.Geometry;

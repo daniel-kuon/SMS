@@ -6,11 +6,11 @@ using static Sms.Api.ApiHelpers;
 namespace Sms.Api.Endpoints;
 
 public record ShipUpsert(string Name, string? Type, decimal? LengthM, decimal? BeamM, decimal? DraftM, decimal? AirDraftM, string? SailNumber,
-    string? CallSign, string? Mmsi, Guid? HomeHarbourId, decimal CruisingSpeedKn, string? Description, Visibility Visibility);
+    string? CallSign, string? Mmsi, Guid? HomeHarbourId, decimal CruisingSpeedKn, string? Description, Visibility Visibility, decimal? MinDepthM = null, decimal? WarnDepthM = null);
 public record ShipMemberDto(Guid UserId, string DisplayName, ShipRole Role, DateTimeOffset Since);
 public record ShipDto(Guid Id, string Name, string? Type, decimal? LengthM, decimal? BeamM, decimal? DraftM, decimal? AirDraftM, string? SailNumber,
     string? CallSign, string? Mmsi, Guid? HomeHarbourId, string? HomeHarbourName, decimal CruisingSpeedKn, string? Description, Visibility Visibility,
-    string? PhotoUrl, IReadOnlyList<ShipMemberDto> Members, ShipRole? MyRole);
+    string? PhotoUrl, IReadOnlyList<ShipMemberDto> Members, ShipRole? MyRole, decimal? MinDepthM, decimal? WarnDepthM);
 public record ShipStats(decimal NauticalMiles, decimal EngineHours, int Entries, int Harbours, int Trips);
 public record MemberUpsert(Guid UserId, ShipRole Role);
 public record ShipInviteRequest(string Email, ShipRole Role);
@@ -153,7 +153,7 @@ public static class ShipEndpoints
 
     private static void Apply(Ship s, ShipUpsert r, HtmlSanitizerService html)
     {
-        s.Name = r.Name.Trim(); s.Type = r.Type; s.LengthM = r.LengthM; s.BeamM = r.BeamM; s.DraftM = r.DraftM; s.AirDraftM = r.AirDraftM;
+        s.Name = r.Name.Trim(); s.Type = r.Type; s.LengthM = r.LengthM; s.BeamM = r.BeamM; s.DraftM = r.DraftM; s.AirDraftM = r.AirDraftM; s.MinDepthM = r.MinDepthM > 0 ? r.MinDepthM : null; s.WarnDepthM = r.WarnDepthM > 0 ? r.WarnDepthM : null;
         s.SailNumber = r.SailNumber; s.CallSign = r.CallSign; s.Mmsi = r.Mmsi; s.HomeHarbourId = r.HomeHarbourId;
         s.CruisingSpeedKn = r.CruisingSpeedKn > 0 ? r.CruisingSpeedKn : 5; s.Description = html.Sanitize(r.Description);
         s.Visibility = r.Visibility == Visibility.Private ? Visibility.Private : Visibility.Public;
@@ -163,5 +163,5 @@ public static class ShipEndpoints
         s.Id, s.Name, s.Type, s.LengthM, s.BeamM, s.DraftM, s.AirDraftM, s.SailNumber, s.CallSign, s.Mmsi, s.HomeHarbourId, s.HomeHarbour?.Name,
         s.CruisingSpeedKn, s.Description, s.Visibility, s.PhotoMediaId is { } p ? $"/api/media/{p}/preview" : null,
         s.Members.Select(m => new ShipMemberDto(m.UserId, names.GetValueOrDefault(m.UserId, "?"), m.Role, m.Since)).ToList(),
-        s.Members.FirstOrDefault(m => m.UserId == me)?.Role);
+        s.Members.FirstOrDefault(m => m.UserId == me)?.Role, s.MinDepthM, s.WarnDepthM);
 }

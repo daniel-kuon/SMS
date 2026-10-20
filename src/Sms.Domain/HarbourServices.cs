@@ -1,7 +1,11 @@
 namespace Sms.Domain;
 
-/// <summary>A service near a harbour: the nearest matching OSM POI (straight-line metres) or an on-site facility flag (0 m, no POI).</summary>
-public record HarbourService(string Kind, int DistanceM, string? Name, long? PoiId);
+/// <summary>A service near a harbour: the nearest matching OSM POI (straight-line metres, walking metres over the walk network when known) or an on-site facility flag (0 m, no POI).</summary>
+public record HarbourService(string Kind, int DistanceM, string? Name, long? PoiId, int? WalkM = null)
+{
+    /// <summary>What counts for "nearest" and the range: the walk if known, else the straight line.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public int EffectiveM => WalkM ?? DistanceM;
+}
 
 /// <summary>Which services count for sailors, which OSM POI kinds provide them, and how the nearest one per service is picked.</summary>
 public static class HarbourServices
@@ -61,7 +65,7 @@ public static class HarbourServices
     ];
 
     /// <summary>
-    /// Nearest candidate per service within <see cref="MaxDistanceM"/>; a facility flag of the harbour itself counts as on site (0 m).
+    /// Nearest candidate per service within <see cref="MaxDistanceM"/> (walking distance when known); a facility flag of the harbour itself counts as on site (0 m).
     /// Fuel counts only for boats: a POI in <paramref name="boatFuel"/> (OSM boat=yes/only or waterway=fuel) or one within <see cref="FuelAtHarbourM"/>.
     /// </summary>
     public static List<HarbourService> Select(IReadOnlyDictionary<string, bool> facilities, IEnumerable<HarbourService> candidates, IReadOnlySet<long>? boatFuel = null)
@@ -70,7 +74,7 @@ public static class HarbourServices
         foreach (var c in candidates)
         {
             if (c.Kind == "fuel" && c.DistanceM > FuelAtHarbourM && !(c.PoiId is { } id && boatFuel?.Contains(id) == true)) continue;
-            if (c.DistanceM <= MaxDistanceM && Order.Contains(c.Kind) && (!best.TryGetValue(c.Kind, out var b) || c.DistanceM < b.DistanceM)) best[c.Kind] = c;
+            if (c.EffectiveM <= MaxDistanceM && Order.Contains(c.Kind) && (!best.TryGetValue(c.Kind, out var b) || c.EffectiveM < b.EffectiveM)) best[c.Kind] = c;
         }
         foreach (var (key, on) in facilities)
             if (on && Order.Contains(key)) best[key] = new HarbourService(key, 0, null, null);

@@ -17,3 +17,10 @@ describe('formatServiceDistance', () => {
     expect(formatServiceDistance(1500, 'de', '')).toBe('1,5 km');
   });
 });
+
+describe('formatServiceDistance on foot', () => {
+  it('appends the walking word to a walked distance', () => {
+    expect(formatServiceDistance(347, 'de', 'vor Ort', 'zu Fuß')).toBe('350 m zu Fuß');
+    expect(formatServiceDistance(1230, 'en', 'on site', 'on foot')).toBe('1.2 km on foot');
+  });
+});

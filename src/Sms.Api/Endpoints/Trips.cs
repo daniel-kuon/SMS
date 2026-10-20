@@ -234,7 +234,7 @@ public static class TripEndpoints
                 if (known.TryGetValue((l.FromHarbourId, l.ToHarbourId), out var k)) { leg.RouteGeometry = k.RouteGeometry; leg.DistanceNm = k.DistanceNm; }
                 else
                 {
-                    var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct, (double?)trip.Ship.AirDraftM); // low bridges stay closed for this ship
+                    var route = await router.RouteAsync(l.FromHarbourId, l.ToHarbourId, ct, (double?)trip.Ship.AirDraftM, router.MinDepth((double?)trip.Ship.DraftM, (double?)trip.Ship.MinDepthM)); // low bridges and shallows stay closed for this ship
                     var meters = route is null ? await db.Harbours.Where(h => h.Id == l.FromHarbourId).Select(h => h.Location.Distance(db.Harbours.First(x => x.Id == l.ToHarbourId).Location)).FirstOrDefaultAsync(ct) : 0;
                     leg.DistanceNm = route?.DistanceNm ?? Math.Round((decimal)meters / 1852m, 1); leg.RouteGeometry = route?.Geometry;
                 }
@@ -385,7 +385,7 @@ public static class TripEndpoints
         var legs = await db.PlannedLegs.AsNoTracking().Where(l => l.TripId == trip.Id).OrderBy(l => l.Order).ThenBy(l => l.Alternative).ToListAsync(ct);
         var ids = legs.SelectMany(l => new[] { l.FromHarbourId, l.ToHarbourId }).Distinct().ToList();
         var names = await db.Harbours.AsNoTracking().Where(h => ids.Contains(h.Id)).ToDictionaryAsync(h => h.Id, h => h.Name, ct);
-        var warnings = await router.WarningsAlongAsync(legs.Select(l => l.RouteGeometry).ToList(), ct); // assumed passages the stored route runs through
+        var warnings = await router.WarningsAlongAsync(legs.Select(l => l.RouteGeometry).ToList(), ct, (double?)trip.Ship.WarnDepthM); // assumed passages and shallows below the ship's warning depth the stored route runs through
         return legs.Select((l, i) => new LegDto(l.Id, l.Order, l.Alternative, l.FromHarbourId, names.GetValueOrDefault(l.FromHarbourId, "?"), l.ToHarbourId, names.GetValueOrDefault(l.ToHarbourId, "?"), l.PlannedDate, l.DistanceNm,
             l.DistanceNm is { } nm && trip.Ship.CruisingSpeedKn > 0 ? Math.Round(nm / trip.Ship.CruisingSpeedKn, 1) : null, warnings[i])).ToList();
     }

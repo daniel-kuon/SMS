@@ -45,4 +45,24 @@ public class DepthTests
         Assert.Equal(inShallow.Cost, result[0].Cost); // depth never changes the cost, it only closes edges per draft at query time
         Assert.Null(DepthLimits.Apply([inShallow], [])[0].MinDepthM);
     }
+
+    [Fact]
+    public void Uncharted_coastal_edges_get_the_floor_of_the_band_next_to_them()
+    {
+        // land north of 54.5205 (the strip 54.5195-54.5205 has no data), the 1.83 m band south of 54.5195, the 0 m band to the east
+        var band = F.CreatePolygon([new(10.00, 54.50), new(10.10, 54.50), new(10.10, 54.5195), new(10.00, 54.5195), new(10.00, 54.50)]);
+        var flat = F.CreatePolygon([new(10.10, 54.50), new(10.20, 54.50), new(10.20, 54.5195), new(10.10, 54.5195), new(10.10, 54.50)]);
+        var land = F.CreatePolygon([new(9.90, 54.5205), new(10.30, 54.5205), new(10.30, 54.60), new(9.90, 54.60), new(9.90, 54.5205)]);
+        bool NearLand(Coordinate c, double m) => land.IsWithinDistance(F.CreatePoint(c), m / 111_320.0);
+        var strip = Edge(1, 2, 10.02, 54.52, 10.06, 54.52);        // next to the 1.83 m band only
+        var stripEast = Edge(3, 4, 10.08, 54.52, 10.12, 54.52);    // reaches the 0 m band too: the shallowest counts
+        var offshore = Edge(5, 6, 10.02, 54.40, 10.06, 54.40);     // no data far from land: stays unlimited
+        var wide = Edge(7, 8, 10.02, 54.52, 10.02, 54.47);         // charted on the way: its own depth
+        var result = DepthLimits.Apply([strip, stripEast, offshore, wide], [(band, 1.8288), (flat, 0)], NearLand);
+        Assert.Null(result[0].MinDepthM); Assert.Equal(1.8288, result[0].AdjacentDepthM);
+        Assert.Equal(0, result[1].AdjacentDepthM);
+        Assert.Null(result[2].AdjacentDepthM);
+        Assert.Equal(1.8288, result[3].MinDepthM); Assert.Null(result[3].AdjacentDepthM);
+        Assert.Null(DepthLimits.Apply([strip], [(band, 1.8288)])[0].AdjacentDepthM); // without land (passages): no coastal rule
+    }
 }

@@ -34,7 +34,7 @@ public sealed class RoutingOptions
     public double LockPenaltyM { get; set; } = 1852;
     /// <summary>Extra cost (metres) for an opening bridge: waiting for the next opening, about half a lock.</summary>
     public double BridgeOpeningPenaltyM { get; set; } = 926;
-    /// <summary>Water under the keel a route keeps: an edge is usable when its shallowest charted depth ≥ draft + this.</summary>
+    /// <summary>A ship (or request) with a draft but no minimum depth of its own routes with minimum depth = draft + this (DepthBands.MinDepth).</summary>
     public double DepthSafetyMarginM { get; set; } = 0.5;
     /// <summary>Open water within this distance of a derived fairway counts as unmarked/shallow: grid edges there cost ×ChannelPenaltyFactor (0 = off).</summary>
     public double ChannelPreferenceM { get; set; } = 1500;
@@ -249,9 +249,13 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         long gridNodeCount, gridEdgeCount, nextId; List<GraphNode>? waterNodes = null;
         var tiler = new WaterGraphTiler(Geo.Factory, regionEnv, o.StartCellM, o.MinCellM, o.CoastPenaltyFactor, o.TileCells);
         var tileNo = 0;
+        // the link checks below run in memory (an SQL probe per candidate took an hour); no-go blocks are not land for a link: a buoyed
+        // fairway through a Wadden Sea zone-1 area must still hook into the water outside it. The depth limits use it for the coastal strip
+        var linkLand = await LandIndexAsync(conn, version, blocks, ct);
+        var nearLand = NearLand(linkLand);
         if (o.Mode == "areas")
         {
-            (gridNodeCount, gridEdgeCount, nextId, waterNodes) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, harbours.Select(h => h.Location.Coordinate).ToList(), landKey, sw, ct);
+            (gridNodeCount, gridEdgeCount, nextId, waterNodes) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, harbours.Select(h => h.Location.Coordinate).ToList(), landKey, sw, nearLand, ct);
         }
         else
         {
@@ -286,7 +290,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                     foreach (var n in result.Nodes) { await w.StartRowAsync(c); await w.WriteAsync(version, NpgsqlDbType.Integer, c); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, c); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, c); }
                     await w.CompleteAsync(c);
                 }
-                await WriteEdgesAsync(conn, version, DepthLimits.Apply(Avoid.Apply(ChannelPreference.Apply(result.Edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), avoids, o.AvoidPenaltyFactor), depthsByTile.TryRemove(result_tile_key(WaterGraphTiler.WithMargin(result.Tile)), out var tileDepths) ? tileDepths : []), c);
+                await WriteEdgesAsync(conn, version, DepthLimits.Apply(Avoid.Apply(ChannelPreference.Apply(result.Edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), avoids, o.AvoidPenaltyFactor), depthsByTile.TryRemove(result_tile_key(WaterGraphTiler.WithMargin(result.Tile)), out var tileDepths) ? tileDepths : [], nearLand), c);
                 foreach (var h in harbourIndex.Query(result.Tile.Envelope))
                     if (result.Nearest(h.X, h.Y, accessDeg) is { } near) access.Add((h.Id, near.Id, Haversine(h.Y, h.X, near.Y, near.X)));
                 if (result.Nodes.Count > 0 || tileNo % 25 == 0)
@@ -311,9 +315,6 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             shared[key] = id; extraNodes.Add(new GraphNode(id, p.X, p.Y, false));
             return id;
         }
-        // the link checks below run in memory (an SQL probe per candidate took an hour); no-go blocks are not land for a link: a buoyed
-        // fairway through a Wadden Sea zone-1 area must still hook into the water outside it
-        var linkLand = await LandIndexAsync(conn, version, blocks, ct);
         // nearest-node lookups of this phase run against an in-memory index of the water nodes (area mode); grid mode keeps the SQL path
         var nodeIndex = waterNodes is null ? null : NodeIndex.Build(waterNodes);
         var channelEdgeFrom = new List<int>(); // index ranges of derived channel edges: they run through whatever depth the sound has
@@ -517,7 +518,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     private static async Task WriteEdgesAsync(NpgsqlConnection conn, int version, IReadOnlyList<GraphEdge> edges, CancellationToken ct)
     {
         if (edges.Count == 0) return;
-        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed) FROM STDIN (FORMAT BINARY)", ct);
+        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed, adjacent_depth_m) FROM STDIN (FORMAT BINARY)", ct);
         foreach (var e in edges)
         {
             await w.StartRowAsync(ct);
@@ -529,6 +530,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             if (e.ClearanceM is { } cl) await w.WriteAsync(cl, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
             if (e.MinDepthM is { } md) await w.WriteAsync(md, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
             await w.WriteAsync(e.Assumed, NpgsqlDbType.Boolean, ct);
+            if (e.AdjacentDepthM is { } ad) await w.WriteAsync(ad, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
         }
         await w.CompleteAsync(ct);
     }
@@ -538,7 +540,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     /// harbours and passage ends + corners of shallow banks → visibility edges, decorated like grid edges (channel preference, depth).
     /// </summary>
     private async Task<(long nodes, long edges, long nextId, List<GraphNode> waterNodes)> BuildAreasAsync(NpgsqlConnection conn, SmsDbContext db, int version, Envelope region, RoutingOptions o,
-        IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Coordinate> harbourPoints, string landKey, Stopwatch sw, CancellationToken ct)
+        IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Coordinate> harbourPoints, string landKey, Stopwatch sw, Func<Coordinate, double, bool> nearLand, CancellationToken ct)
     {
         // a visibility leg through a sound passes under its bridge: clearance, lock and opening costs apply here as on passages;
         // a long bridge with charted spans is passable at the spans only, so the span points become anchors (legs through them)
@@ -558,7 +560,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         edges = ChannelPreference.Apply(edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor);
         Tick(); Report("areas", $"channel preference applied ({sw.Elapsed:hh\\:mm\\:ss})");
-        edges = DepthLimits.Apply(Avoid.Apply(edges, avoids, o.AvoidPenaltyFactor), depths);
+        edges = DepthLimits.Apply(Avoid.Apply(edges, avoids, o.AvoidPenaltyFactor), depths, nearLand);
         Tick(); Report("areas", $"depth limits applied ({sw.Elapsed:hh\\:mm\\:ss})");
         edges = Obstacles.Apply(edges, Obstacles.WithSpans(bridgesRaw), o.LockPenaltyM, o.BridgeOpeningPenaltyM, o.BridgeMatchAreaM); // a bridge over a sound is a point, the leg may pass a few hundred metres from it
         Tick(); Report("areas", $"bridges and locks applied, writing {nodes.Count} nodes and {edges.Count} edges ({sw.Elapsed:hh\\:mm\\:ss})");
@@ -818,8 +820,19 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         return land.Query(new Envelope(c)).Any(l => l.prepared.Contains(pt));
     }
 
+    /// <summary>(point, metres) → land of the index lies within that distance (planar degrees of latitude, see DepthLimits); facet indexes built per polygon on first use.</summary>
+    public static Func<Coordinate, double, bool> NearLand(STRtree<(IPreparedGeometry prepared, Geometry geom)> land)
+    {
+        var facets = new System.Collections.Concurrent.ConcurrentDictionary<Geometry, NetTopologySuite.Operation.Distance.IndexedFacetDistance>(ReferenceEqualityComparer.Instance);
+        return (c, m) =>
+        {
+            var d = m / WaterGraphTiler.MPerDegLat; var pt = Geo.Factory.CreatePoint(c);
+            return land.Query(new Envelope(c.X - d, c.X + d, c.Y - d, c.Y + d)).Any(l => facets.GetOrAdd(l.geom, g => new(g)).Distance(pt) <= d);
+        };
+    }
+
     /// <summary>The raw land of this graph version (coast tiles with lakes cut out, no-go blocks) as a prepared index for the link checks.</summary>
-    private static async Task<STRtree<(IPreparedGeometry prepared, Geometry geom)>> LandIndexAsync(NpgsqlConnection conn, int version, IReadOnlyList<Geometry> blocks, CancellationToken ct)
+    public static async Task<STRtree<(IPreparedGeometry prepared, Geometry geom)>> LandIndexAsync(NpgsqlConnection conn, int version, IReadOnlyList<Geometry> blocks, CancellationToken ct)
     {
         var index = new STRtree<(IPreparedGeometry, Geometry)>();
         var blockEnvelopes = blocks.Select(b => b.EnvelopeInternal).ToHashSet();

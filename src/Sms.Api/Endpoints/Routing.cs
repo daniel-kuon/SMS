@@ -61,22 +61,25 @@ public static class RoutingEndpoints
             return Results.Ok(new { method, disclaimer = Disclaimer, attribution = Attribution, ports });
         });
 
-        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, double? draft, bool? debug, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
+        // minDepth: routes avoid bands whose middle lies below it (as given); warnDepth: "checkDepth" warnings where a band's floor lies below it;
+        // draft (old clients, ships without the two settings): minDepth = draft + margin, no warnings
+        g.MapGet("/route", async (Guid? fromHarbour, Guid? toHarbour, string? from, string? to, double? airDraft, double? draft, double? minDepth, double? warnDepth, bool? debug, SmsDbContext db, SeaRouter router, CancellationToken ct) =>
         {
             RouteResult? r = null;
             Point? a = null, b = null;
-            draft ??= router.DefaultDraftM; // no ship given: route for a typical yacht, not for a dinghy
+            var min = router.MinDepth(draft ?? (minDepth is > 0 ? null : router.DefaultDraftM), minDepth); // no ship given: route for a typical yacht, not for a dinghy
+            var warn = warnDepth is > 0 ? warnDepth : null;
             if (fromHarbour is { } f && toHarbour is { } t)
             {
                 a = await db.Harbours.AsNoTracking().Where(h => h.Id == f).Select(h => h.Location).FirstOrDefaultAsync(ct);
                 b = await db.Harbours.AsNoTracking().Where(h => h.Id == t).Select(h => h.Location).FirstOrDefaultAsync(ct);
                 if (a is null || b is null) return Results.NotFound();
-                r = await router.RouteAsync(f, t, ct, airDraft, draft);
+                r = await router.RouteAsync(f, t, ct, airDraft, min, warn);
             }
             else if (TryParsePoint(from, out var pa) && TryParsePoint(to, out var pb))
             {
                 a = pa; b = pb;
-                r = await router.RouteAsync(pa, pb, ct, airDraft, draft);
+                r = await router.RouteAsync(pa, pb, ct, airDraft, min, warn);
             }
             else return Invalid("from", "fromHarbour/toHarbour oder from=lat,lng&to=lat,lng angeben.");
 

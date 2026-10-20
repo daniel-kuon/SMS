@@ -10,7 +10,8 @@ export interface Harbour extends HarbourMarker {
   source: string; osmType: string | null; osmId: number | null; wifis: Wifi[]; reviews: Review[]; averageRating: number | null; photoUrls: string[]; services: HarbourService[];
 }
 /** Nearest service of a kind (0 m = on site, from the harbour's facility flags). */
-export interface HarbourService { kind: string; distanceM: number; name: string | null; poiId: number | null; }
+/** distanceM straight; walkM over the walking network when known (null/absent: no way nearby, the straight distance stands). */
+export interface HarbourService { kind: string; distanceM: number; name: string | null; poiId: number | null; walkM?: number | null; }
 export interface NearbyPort { harbourId: string; name: string; lat: number; lng: number; distanceNm: number; straightLineNm: number; etaHours: number; method: string; }
 
 export type ShipRole = 'Owner' | 'Skipper';
@@ -19,6 +20,8 @@ export interface Ship {
   id: string; name: string; type: string | null; lengthM: number | null; beamM: number | null; draftM: number | null; airDraftM: number | null;
   sailNumber: string | null; callSign: string | null; mmsi: string | null; homeHarbourId: string | null; homeHarbourName: string | null;
   cruisingSpeedKn: number; description: string | null; visibility: Visibility; photoUrl: string | null; members: ShipMember[]; myRole: ShipRole | null;
+  /** Routes avoid water whose depth band lies below this (null: draft + 0.5 m); warnings where a band's floor lies below warnDepthM (null: none). */
+  minDepthM?: number | null; warnDepthM?: number | null;
 }
 export interface ShipStats { nauticalMiles: number; engineHours: number; entries: number; harbours: number; trips: number; }
 
@@ -33,10 +36,15 @@ export interface Trip extends TripSummary {
 }
 export interface Leg { id: string; order: number; alternative: number; fromHarbourId: string; fromName: string; toHarbourId: string; toName: string; plannedDate: string | null; distanceNm: number | null; etaHours: number | null; warnings?: RouteWarning[]; }
 /** A route assumption the chart data does not show (kind "assumedPassage": a strait the coastline closes, passed along a ferry line or buoy gap).
- *  Kind "startOnLand"/"endOnLand": the clicked point (lat/lng) lies on land, the route starts/ends at the nearest navigable water (snapped*, distanceM away). */
+ *  Kind "startOnLand"/"endOnLand": the clicked point (lat/lng) lies on land, the route starts/ends at the nearest navigable water (snapped*, distanceM away).
+ *  Kind "checkDepth": the route crosses water charted below the ship's warning depth at lat/lng (distanceM: length of that stretch). */
 export interface RouteWarning { kind: string; lat: number; lng: number; note: string; snappedLat?: number | null; snappedLng?: number | null; distanceM?: number | null; }
-/** " · ⚠ <notes>" for a route's warnings, "" without any. */
-export function routeWarningText(warnings?: RouteWarning[] | null): string { return warnings?.length ? ` · ⚠ ${warnings.map(w => w.note).join('; ')}` : ''; }
+/** " · ⚠ <notes>" for a route's warnings (the same note once, with a count), "" without any. */
+export function routeWarningText(warnings?: RouteWarning[] | null): string {
+  if (!warnings?.length) return '';
+  const counts = new Map<string, number>(); for (const w of warnings) counts.set(w.note, (counts.get(w.note) ?? 0) + 1);
+  return ` · ⚠ ${[...counts].map(([note, n]) => n > 1 ? `${note} (${n}×)` : note).join('; ')}`;
+}
 
 export interface EntryCrew { crewMemberId: string | null; userId: string | null; name: string; }
 export interface LogbookEntry {

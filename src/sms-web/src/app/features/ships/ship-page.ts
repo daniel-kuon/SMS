@@ -40,6 +40,7 @@ import { AisConfigCard } from './ais-config';
           <dl class="dl">
             <dt>{{ 'ship.type' | translate }}</dt><dd>{{ s.type }}</dd>
             <dt>{{ 'ship.length' | translate }} / {{ 'ship.beam' | translate }} / {{ 'ship.draft' | translate }}</dt><dd>{{ s.lengthM }} / {{ s.beamM }} / {{ s.draftM }} m</dd>
+            @if (s.minDepthM != null || s.warnDepthM != null) { <dt>{{ 'ship.minDepth' | translate }} / {{ 'ship.warnDepth' | translate }}</dt><dd>{{ s.minDepthM ?? '–' }} / {{ s.warnDepthM ?? '–' }} m</dd> }
             <dt>{{ 'ship.sailNumber' | translate }}</dt><dd>{{ s.sailNumber }}</dd>
             <dt>{{ 'ship.callSign' | translate }} / {{ 'ship.mmsi' | translate }}</dt><dd>{{ s.callSign }} {{ s.mmsi }}</dd>
             <dt>{{ 'ship.homeHarbour' | translate }}</dt><dd>@if (s.homeHarbourId) { <a [routerLink]="['/harbours', s.homeHarbourId]">{{ s.homeHarbourName }}</a> }</dd>

@@ -1,5 +1,6 @@
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, GeoJSONSource, Map as MlMap, MapOptions, StyleSpecification } from 'maplibre-gl';
+import type { Feature, LineString, Point } from 'geojson';
 import { formatPosition, seamarkTypeLabel } from './seamark-icons';
 import { appI18n } from './site';
 import { hoursRow, PlaceRow } from './service-place';
@@ -217,18 +218,22 @@ async function poiBadge(kind: string, cls: string, inverted = false): Promise<Im
 /** Shops, restaurants, services near harbours (own tile layer from Sms.Tiles, z ≥ 13); a click shows the OSM details. */
 const DEPTH_STORAGE = 'sms.depthOverlay';
 /**
- * Depth shading as one blue ramp (the shallower the darker; drying a greenish grey like paper charts; from 18 m clear). A ship draft adds two
- * violet warning steps for what is too shallow (draft + 0.5 m) - fully (max depth below) darker, partly lighter - and a thin red hatch on the first
- * from z12. Water with no charted depth (the strip along the shore, the Wadden flats) comes from the tiles as the shallowest step with unknown = 1:
- * one quieter even colour (a grey teal, with a draft "partly too shallow"), never hatched - as the hatched shallowest step it ringed every island.
+ * Depth shading as one blue ramp (the shallower the darker; drying a greenish grey like paper charts; from 18 m clear). The ship's settings add
+ * two violet steps, the same rules the routes use: too shallow (the band's middle below the minimum depth: routes avoid it) indigo with a thin
+ * red hatch from z12, and "check depth" (the band's floor below the warning depth: routes warn there) lavender. Water with no charted depth (the
+ * strip along the shore, the Wadden flats) comes from the tiles as the shallowest step with unknown = 1: one quieter even colour (a grey teal,
+ * lavender with ship settings), never hatched - as the hatched shallowest step it ringed every island.
  */
 const UNKNOWN = ['==', ['get', 'unknown'], 1];
-function depthFillColour(draftM: number | null): unknown {
-  const limit = draftM == null ? null : draftM + 0.5;
+const MIDDLE = ['/', ['+', ['get', 'min_depth'], ['get', 'max_depth']], 2];
+export function depthFillColour(minDepthM: number | null, warnDepthM: number | null = null): unknown {
   const steps = ['step', ['get', 'min_depth'], '#9fb98a', 0, '#1d4f9c', 1.8, '#3274c4', 3.6, '#5b9bdc', 5.4, '#8dbbea', 9, '#bdd8f4', 18, 'rgba(0,0,0,0)'];
-  return limit == null ? ['case', UNKNOWN, '#6f9fa0', steps] : ['case', UNKNOWN, '#7a78c8', ['<', ['get', 'max_depth'], limit], '#34357a', ['<', ['get', 'min_depth'], limit], '#7a78c8', steps];
+  if (minDepthM == null && warnDepthM == null) return ['case', UNKNOWN, '#6f9fa0', steps];
+  return ['case', UNKNOWN, '#9c97d6',
+    ...(minDepthM == null ? [] : [['<', MIDDLE, minDepthM], '#34357a']),
+    ...(warnDepthM == null ? [] : [['<', ['get', 'min_depth'], warnDepthM], '#9c97d6']), steps];
 }
-const depthHatchFilter = (draftM: number | null): unknown => draftM == null ? ['<', ['get', 'max_depth'], -1e9] : ['all', ['!', UNKNOWN], ['<', ['get', 'max_depth'], draftM + 0.5]];
+export const depthHatchFilter = (minDepthM: number | null): unknown => minDepthM == null ? ['<', ['get', 'max_depth'], -1e9] : ['all', ['!', UNKNOWN], ['<', MIDDLE, minDepthM]];
 /** Thin diagonal red stripes for the "too shallow for the ship" hatch. */
 function depthHatchImage(): ImageData {
   const size = 24, c = document.createElement('canvas'); c.width = c.height = size;
@@ -255,10 +260,10 @@ export function addDepthOverlay(map: MlMap, tilesUrl: string): void {
   map.addControl({ onAdd: () => { wrap.append(button); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
   refresh();
 }
-/** Recolours the depth overlay for the ship's draft (null = chart steps only). */
-export function applyDepthShading(map: MlMap, draftM: number | null): void {
-  if (map.getLayer('depth-fill')) map.setPaintProperty('depth-fill', 'fill-color', depthFillColour(draftM) as never);
-  if (map.getLayer('depth-hatch')) map.setFilter('depth-hatch', depthHatchFilter(draftM) as never);
+/** Recolours the depth overlay for the ship's minimum and warning depth (null = chart steps only). */
+export function applyDepthShading(map: MlMap, minDepthM: number | null, warnDepthM: number | null = null): void {
+  if (map.getLayer('depth-fill')) map.setPaintProperty('depth-fill', 'fill-color', depthFillColour(minDepthM, warnDepthM) as never);
+  if (map.getLayer('depth-hatch')) map.setFilter('depth-hatch', depthHatchFilter(minDepthM) as never);
 }
 
 export function addPoiOverlay(map: MlMap, tilesUrl: string): void {
@@ -313,6 +318,8 @@ export function setPoiFocus(map: MlMap, at: { lat: number; lng: number } | null)
 /** A highlighted service place: drawn with the inverted variant (inv|class|kind) of the icon image of our POI tiles (poi|class|kind), bigger and on top, even where the tiles do not have it at this zoom. */
 export interface ServiceSpot { lat: number; lng: number; icon: string; popup?: () => HTMLElement; }
 let hlSpots: ServiceSpot[] = [], hlPick: ((i: number) => void) | undefined, hlPopup: maplibregl.Popup | undefined;
+type HlFeature = Feature<Point | LineString, { i: number; icon?: string; walk?: boolean }>;
+let hlFeatures: HlFeature[] = [];
 const HL_LAYERS = ['service-hl-icons', 'service-hl-icons-active'];
 const hlAt = (map: MlMap, point: maplibregl.PointLike) => HL_LAYERS.every(id => map.getLayer(id)) && map.queryRenderedFeatures(point, { layers: HL_LAYERS }).length > 0;
 const dimmed = new Map<string, unknown>();
@@ -344,6 +351,7 @@ export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: {
     map.addSource('service-hl', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     const point = ['==', ['geometry-type'], 'Point'];
     map.addLayer({ id: 'service-hl-line', type: 'line', source: 'service-hl', filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'i'], -1]], layout: { 'line-cap': 'round' }, paint: { 'line-color': '#d50000', 'line-width': 3, 'line-dasharray': [3, 2] } });
+    map.addLayer({ id: 'service-hl-walk', type: 'line', source: 'service-hl', filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'i'], -1]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#d50000', 'line-width': 4 } });
     const icon = (size: number) => ({ 'icon-image': ['get', 'icon'], 'icon-size': ['interpolate', ['linear'], ['zoom'], 13, 0.9 * size, 16, 1.3 * size], 'icon-allow-overlap': true, 'icon-ignore-placement': true });
     map.addLayer({ id: 'service-hl-icons', type: 'symbol', source: 'service-hl', filter: point as never, layout: icon(1) as never });
     map.addLayer({ id: 'service-hl-icons-active', type: 'symbol', source: 'service-hl', filter: ['all', point, ['==', ['get', 'i'], -1]] as never, layout: icon(1.4) as never });
@@ -355,10 +363,11 @@ export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: {
       hlPick?.(i);
     });
   }
-  (map.getSource('service-hl') as GeoJSONSource).setData({ type: 'FeatureCollection', features: spots.flatMap((s, i) => [
-    { type: 'Feature' as const, properties: { i, icon: s.icon.replace(/^poi\|/, 'inv|') }, geometry: { type: 'Point' as const, coordinates: [s.lng, s.lat] } },
+  hlFeatures = spots.flatMap((s, i): HlFeature[] => [
+    { type: 'Feature', properties: { i, icon: s.icon.replace(/^poi\|/, 'inv|') }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } },
     ...(harbour && (s.lat !== harbour.lat || s.lng !== harbour.lng) ? [{ type: 'Feature' as const, properties: { i }, geometry: { type: 'LineString' as const, coordinates: [[harbour.lng, harbour.lat], [s.lng, s.lat]] } }] : []),
-  ]) });
+  ]);
+  (map.getSource('service-hl') as GeoJSONSource).setData({ type: 'FeatureCollection', features: hlFeatures });
   setServiceActive(map, null);
   dimOtherPois(map, spots.length > 0);
   if (!spots.length) return;
@@ -370,11 +379,19 @@ export function setServiceHighlight(map: MlMap, spots: ServiceSpot[], harbour: {
   if (b.getWest() !== b.getEast() || b.getSouth() !== b.getNorth()) map.fitBounds(b, { padding: 70, maxZoom: 17, duration, easing, essential: true });
   else map.easeTo({ center: b.getCenter(), zoom: Math.min(17, Math.max(map.getZoom() + 0.5, 15)), duration, easing, essential: true });
 }
-/** Emphasises one place (null = none): its icon grows and the line from the harbour is drawn, e.g. for the hovered list item. */
+/** Replaces the straight (dashed) line from the harbour to place i by the walking path (solid), e.g. from GET /api/pois/walk. */
+export function setServicePath(map: MlMap, i: number, coordinates: [number, number][]): void {
+  const source = map.getSource('service-hl') as GeoJSONSource | undefined;
+  if (!source || !hlSpots[i]) return;
+  hlFeatures = [...hlFeatures.filter(f => f.properties.i !== i || f.geometry.type === 'Point'), { type: 'Feature', properties: { i, walk: true }, geometry: { type: 'LineString', coordinates } }];
+  source.setData({ type: 'FeatureCollection', features: hlFeatures });
+}
+/** Emphasises one place (null = none): its icon grows and the line from the harbour is drawn (the walking path once known, else straight and dashed), e.g. for the hovered list item. */
 export function setServiceActive(map: MlMap, i: number | null): void {
   if (!map.getLayer('service-hl-line')) return;
-  const on = ['==', ['get', 'i'], i ?? -1];
-  map.setFilter('service-hl-line', ['all', ['==', ['geometry-type'], 'LineString'], on] as never);
+  const on = ['==', ['get', 'i'], i ?? -1], line = ['==', ['geometry-type'], 'LineString'], walk = ['boolean', ['get', 'walk'], false];
+  map.setFilter('service-hl-line', ['all', line, on, ['!', walk]] as never);
+  map.setFilter('service-hl-walk', ['all', line, on, walk] as never);
   map.setFilter('service-hl-icons-active', ['all', ['==', ['geometry-type'], 'Point'], on] as never);
   map.setFilter('service-hl-icons', ['all', ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'i'], i ?? -1]] as never);
 }
@@ -546,10 +563,11 @@ export function addSeamarkOverlay(map: MlMap, tilesUrl: string): void {
   });
 }
 
-/** Hides rocks, wrecks and obstructions that lie deeper than the ship's draft plus a margin (null = show all). */
-export function applyHazardFilter(map: MlMap, draftM: number | null): void {
-  for (const id of ['seamark-icons', 'seamark-points']) if (map.getLayer(id)) map.setFilter(id, id === 'seamark-points' ? hazardFilter(draftM) : hazardFilter(draftM));
-  if (map.getLayer('seamark-hazard-depths')) map.setFilter('seamark-hazard-depths', ['all', hazardFilter(draftM), ['in', ['get', 'type'], ['literal', ['rock', 'wreck', 'obstruction']]], ['has', 'depth']]);
+/** Hides rocks, wrecks and obstructions that lie deeper than this (the ship's warning or minimum depth, margin included; null = show all). */
+export function applyHazardFilter(map: MlMap, depthM: number | null): void {
+  const f = hazardFilter(depthM, 0);
+  for (const id of ['seamark-icons', 'seamark-points']) if (map.getLayer(id)) map.setFilter(id, f);
+  if (map.getLayer('seamark-hazard-depths')) map.setFilter('seamark-hazard-depths', ['all', f, ['in', ['get', 'type'], ['literal', ['rock', 'wreck', 'obstruction']]], ['has', 'depth']]);
 }
 
 /** Arc polylines for every light with sectors currently rendered: radius shrinks with zoom so arcs stay readable. */

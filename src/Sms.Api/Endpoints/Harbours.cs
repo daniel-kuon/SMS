@@ -265,7 +265,9 @@ public static class HarbourEndpoints
 
     /// <summary>
     /// Stores the nearest service per kind (HarbourServices) for the given harbours. One statement: candidate POIs within range of each harbour
-    /// (Pois are EPSG:3857, so the radius is scaled by 1/cos(lat) and the distance back by cos(lat)), nearest per (harbour, service).
+    /// (Pois are EPSG:3857, so the radius is scaled by 1/cos(lat) and the distance back by cos(lat)), the nearest few per (harbour, service);
+    /// then per harbour (in parallel) the walking distances over walk_edge (<see cref="Walking"/>): nearest by walk, places too far on foot drop out,
+    /// places without a way nearby and harbours without any network keep the straight distance.
     /// Fuel: boat fuel (boat=yes/only, waterway=fuel) or a station at the harbour is preferred over a nearer road station, which Select then drops.
     /// </summary>
     public static async Task ComputeServicesAsync(SmsDbContext db, IReadOnlyCollection<Guid> ids, CancellationToken ct)
@@ -273,26 +275,41 @@ public static class HarbourEndpoints
         if (ids.Count == 0) return;
         // constants from HarbourServices, no user input
         var kinds = string.Join(",", HarbourServices.PoiKinds.Select(k => $"('{k.Service}','{k.Class}','{k.Kind}')"));
+        // ponytail: the walking-nearest is taken from the 25 straight-nearest per service; a basin with 25+ places of one kind on the far side would hide a walkable one
         var rows = await db.Database.SqlQueryRaw<ServiceRow>($$"""
             WITH h AS (SELECT "Id", ST_Transform("Location"::geometry, 3857) AS g, cos(radians(ST_Y("Location"::geometry))) AS k FROM "Harbours" WHERE "Id" = ANY({0})),
-                 s(svc, cls, kind) AS (VALUES {{kinds}})
-            SELECT DISTINCT ON (h."Id", s.svc) h."Id" AS "HarbourId", s.svc AS "Kind", p."Id" AS "PoiId", p."Name" AS "Name", ST_Distance(h.g, p."Location") * h.k AS "DistanceM",
-                   (p."TagsJson"->>'boat' IN ('yes', 'only') OR p."TagsJson"->>'waterway' = 'fuel') IS TRUE AS "Boat"
-            FROM h JOIN "Pois" p ON ST_DWithin(p."Location", h.g, {{HarbourServices.MaxDistanceM}} / h.k)
-                   JOIN s ON s.cls = p."Class" AND s.kind = p."Kind"
-            ORDER BY h."Id", s.svc, (s.svc = 'fuel' AND NOT (p."TagsJson"->>'boat' IN ('yes', 'only') OR p."TagsJson"->>'waterway' = 'fuel') IS TRUE
-                                     AND ST_Distance(h.g, p."Location") * h.k > {{HarbourServices.FuelAtHarbourM}}), "DistanceM"
+                 s(svc, cls, kind) AS (VALUES {{kinds}}),
+                 c AS (SELECT h."Id" AS "HarbourId", s.svc AS "Kind", p."Id" AS "PoiId", p."Name" AS "Name", ST_Distance(h.g, p."Location") * h.k AS "DistanceM",
+                          (p."TagsJson"->>'boat' IN ('yes', 'only') OR p."TagsJson"->>'waterway' = 'fuel') IS TRUE AS "Boat",
+                          ST_Y(ST_Transform(p."Location", 4326)) AS "Lat", ST_X(ST_Transform(p."Location", 4326)) AS "Lng"
+                       FROM h JOIN "Pois" p ON ST_DWithin(p."Location", h.g, {{HarbourServices.MaxDistanceM}} / h.k)
+                              JOIN s ON s.cls = p."Class" AND s.kind = p."Kind")
+            SELECT "HarbourId", "Kind", "PoiId", "Name", "DistanceM", "Boat", "Lat", "Lng" FROM (SELECT c.*, row_number() OVER (PARTITION BY "HarbourId", "Kind" ORDER BY ("Kind" = 'fuel' AND NOT "Boat" AND "DistanceM" > {{HarbourServices.FuelAtHarbourM}}), "DistanceM") AS n FROM c) x
+            WHERE n <= 25
             """, ids.ToArray()).ToListAsync(ct);
         var byHarbour = rows.ToLookup(r => r.HarbourId);
         var boatFuel = rows.Where(r => r.Boat).Select(r => r.PoiId).ToHashSet();
-        foreach (var h in await db.Harbours.Where(h => ids.Contains(h.Id)).ToListAsync(ct))
+        var harbours = await db.Harbours.Where(h => ids.Contains(h.Id)).ToListAsync(ct);
+        var walks = new System.Collections.Concurrent.ConcurrentDictionary<Guid, Dictionary<long, int?>>();
+        var template = db.Database.GetDbConnection();   // the DbContext is not for parallel use: each task clones its connection
+        await Parallel.ForEachAsync(harbours.Where(h => byHarbour[h.Id].Any()), new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct }, async (h, c) =>
         {
-            var services = HarbourServices.Select(Facilities(h), byHarbour[h.Id].Select(r => new HarbourService(r.Kind, (int)Math.Round(r.DistanceM), r.Name, r.PoiId)), boatFuel);
+            await using var conn = Walking.Connection(template);
+            await conn.OpenAsync(c);
+            if (await Walking.SearchAsync(conn, h.Location.Y, h.Location.X, HarbourServices.MaxDistanceM, c) is { } search)
+                walks[h.Id] = await Walking.DistancesAsync(conn, search, byHarbour[h.Id].DistinctBy(r => r.PoiId).Select(r => (r.PoiId, r.Lat, r.Lng)).ToList(), c);
+        });
+        foreach (var h in harbours)
+        {
+            var walk = walks.GetValueOrDefault(h.Id);
+            var candidates = byHarbour[h.Id].Where(r => walk is null || walk.ContainsKey(r.PoiId))   // left out = too far on foot
+                .Select(r => new HarbourService(r.Kind, (int)Math.Round(r.DistanceM), r.Name, r.PoiId, walk?[r.PoiId]));
+            var services = HarbourServices.Select(Facilities(h), candidates, boatFuel);
             h.Services = services.Count > 0 ? JsonSerializer.Serialize(services, JsonOpts) : null;
         }
         await db.SaveChangesAsync(ct);
     }
-    private sealed class ServiceRow { public Guid HarbourId { get; set; } public string Kind { get; set; } = ""; public long PoiId { get; set; } public string? Name { get; set; } public double DistanceM { get; set; } public bool Boat { get; set; } }
+    private sealed class ServiceRow { public Guid HarbourId { get; set; } public string Kind { get; set; } = ""; public long PoiId { get; set; } public string? Name { get; set; } public double DistanceM { get; set; } public bool Boat { get; set; } public double Lat { get; set; } public double Lng { get; set; } }
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 

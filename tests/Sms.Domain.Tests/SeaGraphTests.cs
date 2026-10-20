@@ -25,8 +25,8 @@ public class SeaGraphTests
             foreach (var p in interior) { Geom.Add(10 + p.x * D); Geom.Add(54 + p.y * D); }
             return S.Count - 1;
         }
-        public SeaGraph Build(int firstPassage = int.MaxValue, double snapMinM = 1000) =>
-            new([.. X], [.. Y], [.. S], [.. T], [.. Cost], [.. Depth], [.. Clear], [.. GeomStart, Geom.Count / 2], [.. Geom], firstPassage, null, snapMinM);
+        public SeaGraph Build(int firstPassage = int.MaxValue, double snapMinM = 1000, float[]? adjacent = null) =>
+            new([.. X], [.. Y], [.. S], [.. T], [.. Cost], [.. Depth], [.. Clear], [.. GeomStart, Geom.Count / 2], [.. Geom], firstPassage, null, snapMinM, adjacent: adjacent);
         public Coordinate C(int n) => new(X[n], Y[n]);
     }
 
@@ -72,6 +72,41 @@ public class SeaGraphTests
         Assert.DoesNotContain(g.C(detour), graph.Route(new(g.C(a), a), new(g.C(c), c), limits with { ExemptDeg = 0.02 })!.Points);
         // without a draft it is a plain edge
         Assert.True(graph.Route(new(g.C(a), a), new(g.C(b), b), new())!.Cost < 6000);
+    }
+
+    [Fact]
+    public void Uncharted_coastal_edge_counts_as_the_band_next_to_it()
+    {
+        var g = new G();
+        int a = g.Node(0, 0), m = g.Node(4, 0), b = g.Node(8, 0), c = g.Node(9, 0), detour = g.Node(6, -6);
+        var strip = g.Edge(m, b); // no charted depth: the strip next to the coast
+        g.Edge(a, m); g.Edge(m, detour); g.Edge(detour, b); g.Edge(b, c);
+        var adjacent = Enumerable.Repeat(float.NaN, g.S.Count).ToArray();
+        var limits = new SeaGraph.Limits(DepthLimitM: 1.8288); // floor of the first band passing for the minimum depth
+        // next to the 1.83 m band: passes like that band
+        adjacent[strip] = 1.8288f;
+        var graph = g.Build(adjacent: adjacent);
+        Assert.DoesNotContain(g.C(detour), graph.Route(new(g.C(a), a), new(g.C(c), c), limits)!.Points);
+        Assert.True(graph.DepthInferred(strip)); Assert.Equal(1.8288f, graph.Depth(strip));
+        // next to drying ground: closed like it
+        adjacent[strip] = -16f;
+        Assert.Contains(g.C(detour), g.Build(adjacent: adjacent).Route(new(g.C(a), a), new(g.C(c), c), limits)!.Points);
+        // no band next to it (open water without data): unlimited
+        adjacent[strip] = float.NaN;
+        var open = g.Build(adjacent: adjacent);
+        Assert.DoesNotContain(g.C(detour), open.Route(new(g.C(a), a), new(g.C(c), c), limits)!.Points);
+        Assert.False(open.DepthInferred(strip));
+    }
+
+    [Fact]
+    public void Charted_depth_wins_over_the_adjacent_band()
+    {
+        var g = new G();
+        int a = g.Node(0, 0), b = g.Node(4, 0);
+        var e = g.Edge(a, b, depth: 5.4864f);
+        var graph = g.Build(adjacent: [0f]);
+        Assert.Equal(5.4864f, graph.Depth(e)); Assert.False(graph.DepthInferred(e));
+        Assert.NotNull(graph.Route(new(g.C(a), a), new(g.C(b), b), new(DepthLimitM: 3.6576)));
     }
 
     [Fact]

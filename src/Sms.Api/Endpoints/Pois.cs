@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Sms.Domain;
 using Sms.Infrastructure;
 using static Sms.Api.ApiHelpers;
@@ -27,8 +28,9 @@ public static class PoiEndpoints
             var p = await db.Pois.AsNoTracking().Where(x => x.Name == name && x.Location.IsWithinDistance(at, radius)).OrderBy(x => x.Location.Distance(at)).FirstOrDefaultAsync(ct);
             return p is null ? Results.NotFound() : Results.Ok(Details(p));
         }).WithTags("Pois");
-        // all POIs that provide a harbour service (HarbourServices.PoiKinds, e.g. "toilets") around a point, nearest first
-        api.MapGet("/pois/near", async (double lat, double lng, string kind, SmsDbContext db, CancellationToken ct, int radiusM = HarbourServices.MaxDistanceM) =>
+        // all POIs that provide a harbour service (HarbourServices.PoiKinds, e.g. "toilets") around a point, nearest first: by walking distance
+        // over walk_edge (walkM; places too far on foot drop out), straight distance where there is no way nearby (walkM null)
+        api.MapGet("/pois/near", async (double lat, double lng, string kind, SmsDbContext db, IMemoryCache cache, CancellationToken ct, int radiusM = HarbourServices.MaxDistanceM) =>
         {
             var tags = HarbourServices.PoiKinds.Where(k => k.Service == kind).ToList();
             if (tags.Count == 0 || Math.Abs(lat) > 85 || Math.Abs(lng) > 180) return Results.BadRequest();
@@ -36,14 +38,39 @@ public static class PoiEndpoints
             var at = SeamarkEndpoints.ToMercator(lat, lng);
             var k = Math.Cos(lat * Math.PI / 180);   // Pois are EPSG:3857, metres stretched by 1/cos(lat)
             var kinds = tags.Select(t => t.Kind).ToList();
-            var rows = await db.Pois.AsNoTracking().Where(x => kinds.Contains(x.Kind) && x.Location.IsWithinDistance(at, radiusM / k))
-                .OrderBy(x => x.Location.Distance(at)).Take(100).Select(x => new { x.Id, x.Name, x.Class, x.Kind, x.OsmType, x.OsmId, x.Location, x.TagsJson }).ToListAsync(ct);
-            return Results.Ok(rows.Where(x => tags.Any(t => t.Class == x.Class && t.Kind == x.Kind)).Take(50).Select(x =>
+            var rows = (await db.Pois.AsNoTracking().Where(x => kinds.Contains(x.Kind) && x.Location.IsWithinDistance(at, radiusM / k))
+                .OrderBy(x => x.Location.Distance(at)).Take(100).Select(x => new { x.Id, x.Name, x.Class, x.Kind, x.OsmType, x.OsmId, x.Location, x.TagsJson }).ToListAsync(ct))
+                .Where(x => tags.Any(t => t.Class == x.Class && t.Kind == x.Kind))
+                .Select(x => { var (pLat, pLng) = Sms.Infrastructure.Routing.Fairways.FromMercator(x.Location.X, x.Location.Y); return (x, pLat, pLng, distanceM: (int)Math.Round(x.Location.Distance(at) * k)); }).ToList();
+            await using var conn = Walking.Connection(db.Database.GetDbConnection());
+            await conn.OpenAsync(ct);
+            var walk = await Walking.PageSearchAsync(cache, conn, lat, lng, ct) is { } search ? await Walking.DistancesAsync(conn, search, rows.Select(r => (r.x.Id, r.pLat, r.pLng)).ToList(), ct) : null;
+            return Results.Ok(rows.Where(r => walk is null || walk.ContainsKey(r.x.Id)).Select(r => (r, walkM: walk?[r.x.Id])).Where(r => (r.walkM ?? r.r.distanceM) <= radiusM)
+                .OrderBy(r => r.walkM ?? r.r.distanceM).Take(50).Select(v =>
             {
-                var (pLat, pLng) = Sms.Infrastructure.Routing.Fairways.FromMercator(x.Location.X, x.Location.Y);
+                var (x, pLat, pLng, distanceM) = v.r;
                 var i = Info(x.TagsJson);
-                return new { x.Id, x.Name, kind, poiClass = x.Class, poiKind = x.Kind, x.OsmType, x.OsmId, lat = pLat, lng = pLng, distanceM = (int)Math.Round(x.Location.Distance(at) * k), i.OpeningHours, i.Cuisine, i.Website, i.Phone, i.Address };
+                return new { x.Id, x.Name, kind, poiClass = x.Class, poiKind = x.Kind, x.OsmType, x.OsmId, lat = pLat, lng = pLng, distanceM, v.walkM, i.OpeningHours, i.Cuisine, i.Website, i.Phone, i.Address };
             }));
+        }).WithTags("Pois").RequireRateLimiting("ingest");
+        // the walking path from a point (the harbour) to one POI, for the hover line on the harbour page; 404 = no path (draw it straight)
+        api.MapGet("/pois/walk", async (double lat, double lng, long poiId, SmsDbContext db, IMemoryCache cache, CancellationToken ct) =>
+        {
+            if (Math.Abs(lat) > 85 || Math.Abs(lng) > 180) return Results.BadRequest();
+            var result = await cache.GetOrCreateAsync(("walkpath", Math.Round(lat, 5), Math.Round(lng, 5), poiId), async e =>
+            {
+                e.SlidingExpiration = TimeSpan.FromMinutes(30);
+                var poi = await db.Pois.AsNoTracking().Where(p => p.Id == poiId).Select(p => p.Location).FirstOrDefaultAsync(ct);
+                if (poi is null) return null;
+                var (pLat, pLng) = Sms.Infrastructure.Routing.Fairways.FromMercator(poi.X, poi.Y);
+                await using var conn = Walking.Connection(db.Database.GetDbConnection());
+                await conn.OpenAsync(ct);
+                if (await Walking.PageSearchAsync(cache, conn, lat, lng, ct) is not { } search) return null;
+                if (search.PathTo((await Walking.SnapAsync(conn, [(pLat, pLng)], Walking.PlaceSnapM, ct))[0]) is not { } path) return null;
+                var line = await Walking.PathGeometryAsync(conn, path, (lat, lng), (pLat, pLng), ct);
+                return new { walkM = (int)Math.Round(path.DistanceM), coordinates = line.Coordinates.Select(c => new[] { Math.Round(c.X, 7), Math.Round(c.Y, 7) }).ToArray() };
+            });
+            return result is null ? Results.NotFound() : Results.Ok(result);
         }).WithTags("Pois").RequireRateLimiting("ingest");
         // public transport only (HarbourServices.TransportKind) near the harbours, without re-importing all POIs; Overpass, so 2°×2° chunks at most
         api.MapPost("/admin/pois/import-transport", async (string bbox, SmsDbContext db, CurrentUser current, IHttpClientFactory http, IConfiguration cfg, ILogger<PbfImportJob> log, CancellationToken ct, double radiusKm = 3) =>

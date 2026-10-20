@@ -26,6 +26,7 @@ public sealed class SeaGraph
     private readonly int _firstPassage;
     private readonly bool[]? _isolated;
     private readonly bool[]? _assumed;
+    private readonly float[]? _adjacent;
     private readonly STRtree<int> _passages = new();
 
     /// <summary>Lower bound of cost per metre over all edges (the heuristic's scale).</summary>
@@ -41,9 +42,11 @@ public sealed class SeaGraph
     /// <param name="geom">Interior points as x,y pairs, oriented from source to target.</param>
     /// <param name="snapMinM">Passage edges at least this long are indexed for snapping route ends onto them.</param>
     /// <param name="assumed">Per edge: an assumed passage (null = none).</param>
-    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null)
+    /// <param name="adjacent">Per edge without a charted depth: the floor of the shallowest band next to it in the coastal strip, NaN = none
+    /// (<see cref="DepthBands.Effective"/>; null = no such data).</param>
+    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null, float[]? adjacent = null)
     {
-        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed;
+        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed; _adjacent = adjacent;
         int n = x.Length, m = src.Length;
         _adjStart = new int[n + 1];
         for (var e = 0; e < m; e++) { _adjStart[src[e] + 1]++; _adjStart[tgt[e] + 1]++; }
@@ -73,7 +76,7 @@ public sealed class SeaGraph
     }
 
     /// <summary>Approximate bytes held (arrays and the snap index).</summary>
-    public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
+    public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + (_adjacent?.Length ?? 0) * 4L + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
 
     public bool IsPassage(int e) => _src[e] >= _firstPassage && _tgt[e] >= _firstPassage;
     public bool IsAssumed(int e) => _assumed is not null && _assumed[e];
@@ -82,6 +85,10 @@ public sealed class SeaGraph
     /// <summary>A straight edge between two passage vertices that is not an assumed passage: a gap link between two channel pieces
     /// (the builder links ends up to 200 m apart without a land test) or a two-point channel or fairway piece.</summary>
     public bool IsStraightPassage(int e) => IsPassage(e) && _geomStart[e] == _geomStart[e + 1] && !IsAssumed(e);
+    /// <summary>The depth the edge counts with (charted, else the adjacent band's floor; NaN = unknown).</summary>
+    public float Depth(int e) => DepthBands.Effective(_depth[e], _adjacent?[e] ?? float.NaN);
+    /// <summary>The edge has no charted depth of its own and counts with the band next to it.</summary>
+    public bool DepthInferred(int e) => float.IsNaN(_depth[e]) && !float.IsNaN(Depth(e));
     public int Source(int e) => _src[e];
     public int Target(int e) => _tgt[e];
     /// <summary>The edges at a node.</summary>
@@ -207,9 +214,11 @@ public sealed class SeaGraph
         if (l.NoAssumed && IsAssumed(e)) return double.PositiveInfinity;
         var cl = _clear[e];
         if (l.AirDraftM is { } ad && !float.IsNaN(cl) && cl < ad) return double.PositiveInfinity;
-        double c = _cost[e]; var d = _depth[e];
+        double c = _cost[e]; var d = Depth(e);
         if (l.Penalized is { } pen && pen.Contains(e)) c += l.PenaltyM;
-        if (l.DepthLimitM is { } lim && !float.IsNaN(d) && d < lim)
+        // compared as floats: the depths are stored as floats, and (float)1.8288 < 1.8288 closed the band floor itself (the whole
+        // 1.83-3.66 m band was shut in A* for every draft, only the pull and the harbour approach used it)
+        if (l.DepthLimitM is { } lim && !float.IsNaN(d) && d < (float)lim)
         {
             if (!Exempt(e, l, from, to)) return double.PositiveInfinity;
             c *= ShallowFactor;

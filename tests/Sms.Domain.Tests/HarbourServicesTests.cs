@@ -30,6 +30,15 @@ public class HarbourServicesTests
     }
 
     [Fact]
+    public void Walking_distance_decides_nearest_and_range_when_known()
+    {
+        HarbourService across = new("bakery", 300, "Across the basin", 1, WalkM: 1900), around = new("bakery", 700, "Round the corner", 2, WalkM: 800), noWay = new("cafe", 1400, "Pier café", 3);
+        Assert.Equal([around], HarbourServices.Select(new Dictionary<string, bool>(), [across, around]));
+        Assert.Empty(HarbourServices.Select(new Dictionary<string, bool>(), [across]));                 // 1.9 km on foot: out of range
+        Assert.Equal([noWay], HarbourServices.Select(new Dictionary<string, bool>(), [noWay]));         // no way near it: straight distance stands
+    }
+
+    [Fact]
     public void Every_poi_service_has_a_display_slot() =>
         Assert.All(HarbourServices.PoiKinds, k => Assert.Contains(k.Service, HarbourServices.Order));
 

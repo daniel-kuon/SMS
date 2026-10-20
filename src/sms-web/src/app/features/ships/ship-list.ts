@@ -51,6 +51,8 @@ export class ShipListPage {
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.beam' | translate }}</mat-label><input matInput type="number" step="0.01" [(ngModel)]="m.beamM" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.draft' | translate }}</mat-label><input matInput type="number" step="0.01" [(ngModel)]="m.draftM" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.airDraft' | translate }}</mat-label><input matInput type="number" step="0.01" [(ngModel)]="m.airDraftM" /></mat-form-field>
+      <mat-form-field appearance="outline" class="full" subscriptSizing="dynamic"><mat-label>{{ 'ship.minDepth' | translate }}</mat-label><input matInput type="number" step="0.1" min="0" [(ngModel)]="m.minDepthM" /><mat-hint>{{ 'ship.minDepthHint' | translate }}</mat-hint></mat-form-field>
+      <mat-form-field appearance="outline" class="full" subscriptSizing="dynamic"><mat-label>{{ 'ship.warnDepth' | translate }}</mat-label><input matInput type="number" step="0.1" min="0" [(ngModel)]="m.warnDepthM" /><mat-hint>{{ 'ship.warnDepthHint' | translate }}</mat-hint></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.sailNumber' | translate }}</mat-label><input matInput [(ngModel)]="m.sailNumber" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.callSign' | translate }}</mat-label><input matInput [(ngModel)]="m.callSign" /></mat-form-field>
       <mat-form-field appearance="outline"><mat-label>{{ 'ship.mmsi' | translate }}</mat-label><input matInput [(ngModel)]="m.mmsi" /></mat-form-field>
@@ -63,7 +65,7 @@ export class ShipListPage {
 })
 export class ShipEditDialog {
   data = inject<Ship | null>(MAT_DIALOG_DATA); private ref = inject(MatDialogRef); private api = inject(Api);
-  m = { name: this.data?.name ?? '', type: this.data?.type ?? '', lengthM: this.data?.lengthM ?? null, beamM: this.data?.beamM ?? null, draftM: this.data?.draftM ?? null, airDraftM: this.data?.airDraftM ?? null,
+  m = { name: this.data?.name ?? '', type: this.data?.type ?? '', lengthM: this.data?.lengthM ?? null, beamM: this.data?.beamM ?? null, draftM: this.data?.draftM ?? null, airDraftM: this.data?.airDraftM ?? null, minDepthM: this.data?.minDepthM ?? null, warnDepthM: this.data?.warnDepthM ?? null,
     sailNumber: this.data?.sailNumber ?? '', callSign: this.data?.callSign ?? '', mmsi: this.data?.mmsi ?? '', homeHarbourId: this.data?.homeHarbourId ?? null, cruisingSpeedKn: this.data?.cruisingSpeedKn ?? 5,
     description: this.data?.description ?? '', visibility: this.data?.visibility ?? 'Public' as const };
   error = signal('');
