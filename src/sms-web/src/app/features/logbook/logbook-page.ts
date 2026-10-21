@@ -14,7 +14,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { TranslatePipe } from '@ngx-translate/core';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { drafts, isNetworkError, OfflineQueue } from '../../core/offline';
-import { EntryCrew, LogbookDefaults, LogbookEntry, Paged, RouteWarning, routeWarningText, Ship, unknownBridgesParam } from '../../core/models';
+import { EntryCrew, LogbookDefaults, LogbookEntry, Paged, RouteWarning, routeWarningText, Ship } from '../../core/models';
 import { fromShip, routeParams } from '../../core/ship-context';
 import { TranslateService } from '@ngx-translate/core';
 
@@ -178,7 +178,7 @@ export class EntryDialog {
       error: err => this.routeHint.set(errorMessage(err)),
     });
     if (this.shipParams) { route(this.shipParams); return; }
-    this.api.get<Ship>(`/api/ships/${this.data.shipId}`).subscribe({ next: s => route(this.shipParams = { ...routeParams(fromShip(s)), ...unknownBridgesParam(s) }), error: () => route({}) });
+    this.api.get<Ship>(`/api/ships/${this.data.shipId}`).subscribe({ next: s => route(this.shipParams = routeParams(fromShip(s))), error: () => route({}) });
   }
   async pickEnd(): Promise<void> {
     const h = await this.data.map?.pickHarbour(this.m.startHarbourId);

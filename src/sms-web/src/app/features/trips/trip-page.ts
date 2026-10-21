@@ -15,7 +15,7 @@ import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
 import { TrackPath } from '../../core/track-playback';
 import { fmtObservation, WeatherDialog, WeatherObservation } from '../../core/weather';
 import { Api, AuthService, errorMessage } from '../../core/api';
-import { Day, Harbour, HarbourMarker, Leg, LogbookEntry, Media, RouteWarning, Ship, Trip, unknownBridgesParam } from '../../core/models';
+import { Day, Harbour, HarbourMarker, Leg, LogbookEntry, Media, RouteWarning, Ship, Trip } from '../../core/models';
 import { fromShip, routeParams } from '../../core/ship-context';
 import { confirm, fmtDate, fmtDateTime, Gallery, HarbourSelect, UploadZone } from '../../shared/shared';
 import { CrewDialog, TripEditDialog } from './trip-dialogs';
@@ -412,7 +412,7 @@ export class TripPage {
     if (!from || from === h.id) return Promise.resolve(null);
     const key = `${from}>${h.id}`;
     const t = this.trip();
-    this.shipParams ??= t ? firstValueFrom(this.api.get<Ship>(`/api/ships/${t.shipId}`)).then(s => ({ ...routeParams(fromShip(s)), ...unknownBridgesParam(s) }), () => ({})) : undefined;
+    this.shipParams ??= t ? firstValueFrom(this.api.get<Ship>(`/api/ships/${t.shipId}`)).then(s => routeParams(fromShip(s)), () => ({})) : undefined;
     if (!this.routeCache.has(key)) this.routeCache.set(key, (this.shipParams ?? Promise.resolve({})).then(p => firstValueFrom(this.api.get<{ distanceNm: number; warnings?: RouteWarning[] }>('/api/routing/route', { fromHarbour: from, toHarbour: h.id, ...p })))
       .then(r => `${r.distanceNm} sm${r.warnings?.length ? ' ⚠' : ''}`, () => null));
     return this.routeCache.get(key)!;

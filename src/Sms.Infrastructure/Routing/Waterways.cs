@@ -18,7 +18,7 @@ public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? Clear
 /// </summary>
 public static class Waterways
 {
-    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0});way["bridge"](if:length()>300)({0}););out geom;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
+    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["bridge"="movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0});way["bridge"](if:length()>300)({0}););out geom;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
 
     /// <summary>Navigable for yachts: an explicit boat/motorboat/ship permission, a CEMT class, or a fairway.</summary>
     public static bool IsNavigable(IReadOnlyDictionary<string, string> tags)
@@ -385,9 +385,9 @@ public static class Waterways
     }
 
     private static readonly HashSet<string> OpeningCategories = ["opening", "bascule", "swing", "lift", "drawbridge", "folding", "retractable", "submersible", "transporter"];
-    /// <summary>Movable bridge: bridge:movable=* (anything but "no") or an opening seamark category.</summary>
+    /// <summary>Movable bridge: bridge=movable, bridge:movable=* (anything but "no") or an opening seamark category.</summary>
     public static bool IsOpening(IReadOnlyDictionary<string, string> tags) =>
-        (tags.TryGetValue("bridge:movable", out var m) && m != "no") || (tags.TryGetValue("seamark:bridge:category", out var c) && OpeningCategories.Contains(c)) || tags.ContainsKey("seamark:bridge:clearance_height_open");
+        tags.GetValueOrDefault("bridge") == "movable" || (tags.TryGetValue("bridge:movable", out var m) && m != "no") || (tags.TryGetValue("seamark:bridge:category", out var c) && OpeningCategories.Contains(c)) || tags.ContainsKey("seamark:bridge:clearance_height_open");
 
     /// <summary>Clearance of an opening bridge when open (seamark:bridge:clearance_height_open); null = unlimited.</summary>
     public static double? OpenClearance(IReadOnlyDictionary<string, string> tags) =>

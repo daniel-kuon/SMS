@@ -22,11 +22,7 @@ export interface Ship {
   cruisingSpeedKn: number; description: string | null; visibility: Visibility; photoUrl: string | null; members: ShipMember[]; myRole: ShipRole | null;
   /** Routes avoid water whose depth band lies below this (null: draft + 0.5 m); warnings where a band's floor lies below warnDepthM (null: none). */
   minDepthM?: number | null; warnDepthM?: number | null;
-  /** Fixed bridges without a charted clearance: passed with a "bridgeUnknown" warning, or avoided unless no other route exists. */
-  unknownBridges?: 'Pass' | 'Avoid';
 }
-/** Routing API parameter for a ship's unknown-clearance bridge setting (the API's default is "pass"). */
-export const unknownBridgesParam = (ship: Pick<Ship, 'unknownBridges'>): Record<string, string> => ship.unknownBridges === 'Avoid' ? { unknownBridges: 'avoid' } : {};
 export interface ShipStats { nauticalMiles: number; engineHours: number; entries: number; harbours: number; trips: number; }
 
 export type CrewRole = 'Skipper' | 'Crew';

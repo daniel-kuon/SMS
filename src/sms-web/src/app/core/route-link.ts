@@ -4,7 +4,7 @@ import { haversineM } from './track-playback';
 /**
  * A route in the URL, for "this route is wrong" links: the inputs (from, to, via, the routing settings) and `ref`, the route the
  * server returned then, so the page can show it next to the route the current server calculates.
- * ?from=54.4,10.2&to=54.5,10.6&via=54.45,10.3;54.47,10.4&minDepth=2.1&unknownBridges=pass&ref=<polyline>~20.4
+ * ?from=54.4,10.2&to=54.5,10.6&via=54.45,10.3;54.47,10.4&minDepth=2.1&ref=<polyline>~20.4
  */
 
 /** Google's polyline algorithm (precision 5), but with the base64url alphabet instead of the characters 63–126, so it needs no escaping in a URL. */
@@ -74,7 +74,7 @@ export function parseRef(ref: string): { coordinates: [number, number][]; nm: nu
 
 export interface RouteLink {
   from: LatLng; to: LatLng; vias: LatLng[];
-  minDepth: number | null; warnDepth: number | null; airDraft: number | null; unknownBridges: 'pass' | 'avoid' | null;
+  minDepth: number | null; warnDepth: number | null; airDraft: number | null;
   ref: { coordinates: [number, number][]; nm: number } | null;
 }
 
@@ -89,11 +89,10 @@ const fmt = (p: LatLng) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
 export function parseRouteLink(query: string): RouteLink | null {
   const q = new URLSearchParams(query), from = latLng(q.get('from')), to = latLng(q.get('to'));
   if (!from || !to) return null;
-  const b = q.get('unknownBridges'), ref = q.get('ref');
+  const ref = q.get('ref');
   return {
     from, to, vias: (q.get('via') ?? '').split(';').map(latLng).filter((p): p is LatLng => !!p),
     minDepth: num(q.get('minDepth')), warnDepth: num(q.get('warnDepth')), airDraft: num(q.get('airDraft')),
-    unknownBridges: b === 'pass' || b === 'avoid' ? b : null,
     ref: ref ? parseRef(ref) : null,
   };
 }
@@ -103,7 +102,7 @@ export function routeLinkParams(from: LatLng, to: LatLng, vias: LatLng[], settin
   const s = (k: string) => settings[k] == null ? null : String(settings[k]);
   return {
     from: fmt(from), to: fmt(to), via: vias.length ? vias.map(fmt).join(';') : null,
-    minDepth: s('minDepth'), warnDepth: s('warnDepth'), airDraft: s('airDraft'), unknownBridges: s('unknownBridges'),
+    minDepth: s('minDepth'), warnDepth: s('warnDepth'), airDraft: s('airDraft'), unknownBridges: null, // old links: bridges without a clearance are always passed now
     ref: formatRef(coords, nm),
   };
 }

@@ -131,10 +131,6 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
         <label [title]="'ship.minDepthHint' | translate">{{ 'ship.minDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.minDepthM()" (ngModelChange)="shipCtx.manual($event === '' ? null : +$event, shipCtx.warnDepthM(), shipCtx.airDraftM())" /></label>
         <label [title]="'ship.warnDepthHint' | translate">{{ 'ship.warnDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.warnDepthM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), $event === '' ? null : +$event, shipCtx.airDraftM())" /></label>
         <label [title]="'ship.airDraftHint' | translate">{{ 'ship.airDraft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), shipCtx.warnDepthM(), $event === '' ? null : +$event)" /></label>
-        <label [title]="'ship.unknownBridgesHint' | translate">{{ 'ship.unknownBridges' | translate }}
-          <select class="unknown-bridges" [ngModel]="shipCtx.unknownBridges()" (ngModelChange)="shipCtx.unknownBridges.set($event)">
-            <option value="pass">{{ 'ship.unknownBridgesPass' | translate }}</option><option value="avoid">{{ 'ship.unknownBridgesAvoid' | translate }}</option>
-          </select></label>
         @if (shipCtx.hazardDepthM() !== null) { <span class="muted small">{{ 'ship.hazardsHidden' | translate }}</span> }
       </div>
       <aside class="panel" [class.open]="harbour()">
@@ -578,7 +574,6 @@ export class HarbourMapPage {
     const map = this.map; if (!map) return;
     const ctx = this.shipCtx;
     if (ctx.minDepthM() !== link.minDepth || ctx.warnDepthM() !== link.warnDepth || ctx.airDraftM() !== link.airDraft) ctx.manual(link.minDepth, link.warnDepth, link.airDraft);
-    if (link.unknownBridges) ctx.unknownBridges.set(link.unknownBridges);
     if (link.ref) {
       this.refRoute.set(link.ref); this.refVisible.set(true);
       (map.getSource('route-ref') as GeoJSONSource).setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: link.ref.coordinates } });

@@ -58,6 +58,17 @@ public class WaterwaysTests
     }
 
     [Fact]
+    public void Movable_bridges_are_opening()
+    {
+        Assert.True(Waterways.IsOpening(Tags(("bridge", "movable"), ("bridge:movable", "bascule"), ("highway", "primary"))));   // Frederik IX Bro, Nykøbing F
+        Assert.True(Waterways.IsOpening(Tags(("bridge", "movable"), ("highway", "primary"))));                                  // without the subtype
+        Assert.True(Waterways.IsOpening(Tags(("bridge", "yes"), ("seamark:bridge:category", "swing"))));
+        Assert.False(Waterways.IsOpening(Tags(("bridge", "yes"), ("bridge:movable", "no"))));
+        Assert.False(Waterways.IsOpening(Tags(("bridge", "yes"), ("highway", "primary"))));
+        Assert.False(Waterways.IsPlainBridge(Tags(("bridge", "movable"), ("highway", "primary"))));
+    }
+
+    [Fact]
     public void Ferry_lines_skip_cable_ferries_and_take_the_relation_name()
     {
         using var doc = JsonDocument.Parse("""

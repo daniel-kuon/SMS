@@ -36,16 +36,17 @@ describe('route link', () => {
     expect(parseRef(encodePolyline([[10, 54], [10, 55]]))!.nm).toBe(60);
   });
   it('writes and reads the route inputs and keeps other parameters', () => {
-    const q = withParams('c=54.4,10.5,9&ref=old', routeLinkParams({ lat: 54.4, lng: 10.2 }, { lat: -54.5, lng: -10.6 }, [{ lat: 54.45, lng: 10.3 }, { lat: 54.47, lng: 10.4 }],
-      { minDepth: 2.1, airDraft: 14, unknownBridges: 'avoid' }, [[10.2, 54.4], [-10.6, -54.5]], 3.2));
+    const q = withParams('c=54.4,10.5,9&unknownBridges=avoid&ref=old', routeLinkParams({ lat: 54.4, lng: 10.2 }, { lat: -54.5, lng: -10.6 }, [{ lat: 54.45, lng: 10.3 }, { lat: 54.47, lng: 10.4 }],
+      { minDepth: 2.1, airDraft: 14 }, [[10.2, 54.4], [-10.6, -54.5]], 3.2));
     expect(q).toContain('c=54.4,10.5,9');
     expect(q).toContain('via=54.45000,10.30000;54.47000,10.40000');
     expect(q).not.toContain('warnDepth');
+    expect(q).not.toContain('unknownBridges');
     const link = parseRouteLink(q)!;
     expect(link.from).toEqual({ lat: 54.4, lng: 10.2 });
     expect(link.to).toEqual({ lat: -54.5, lng: -10.6 });
     expect(link.vias.length).toBe(2);
-    expect([link.minDepth, link.warnDepth, link.airDraft, link.unknownBridges]).toEqual([2.1, null, 14, 'avoid']);
+    expect([link.minDepth, link.warnDepth, link.airDraft]).toEqual([2.1, null, 14]);
     expect(link.ref).toEqual({ coordinates: [[10.2, 54.4], [-10.6, -54.5]], nm: 3.2 });
     expect(parseRouteLink('from=54.4,10.2')).toBeNull();
     expect(parseRouteLink('from=54.4,10.2&to=99,10&ref=x')).toBeNull();
