@@ -25,4 +25,15 @@ public class FerryCorridorsTests
         Assert.False(FerryCorridors.Empty.Along(L(18.21, 59.30, 18.23, 59.30)));
         Assert.False(new FerryCorridors([L(18.20, 59.30, 18.24, 59.30)], 0).Along(L(18.21, 59.30, 18.23, 59.30))); // option 0 = off
     }
+
+    [Fact]
+    public void Ferry_corridor_contains_points_within_its_width()
+    {
+        var ferries = new FerryCorridors([L(18.20, 59.30, 18.24, 59.30)], 50);
+        double M(double m) => m / 111_320.0;
+        Assert.True(ferries.Contains(new Coordinate(18.22, 59.30 + M(40))));
+        Assert.False(ferries.Contains(new Coordinate(18.22, 59.30 + M(70))));
+        Assert.True(ferries.Contains(new Coordinate(18.24 + M(40) / Math.Cos(59.3 * Math.PI / 180), 59.30))); // 40 m beyond the track's end
+        Assert.False(FerryCorridors.Empty.Contains(new Coordinate(18.22, 59.30)));
+    }
 }

@@ -54,6 +54,14 @@ public sealed class FerryCorridors
 
     public bool Along(LineString edge) => Share(edge) >= 0.5;
 
+    /// <summary>True when the point lies within the corridor of a track.</summary>
+    public bool Contains(Coordinate p)
+    {
+        if (Count == 0) return false;
+        var d = _corridorM / MPerDeg;
+        return Near(_segments.Query(new Envelope(p.X - d / Cos(p.Y), p.X + d / Cos(p.Y), p.Y - d, p.Y + d)), p);
+    }
+
     private static double Cos(double lat) => Math.Max(0.2, Math.Cos(lat * Math.PI / 180));
 
     private bool Near(IList<(Coordinate a, Coordinate b)> segments, Coordinate p)

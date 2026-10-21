@@ -527,6 +527,99 @@ public static class StringPull
         return (p, fx);
     }
 
+    /// <summary>
+    /// Vertex sliding after the pull and the chamfers: a corner a→b→c whose two legs are free is moved towards the chord (b' on the
+    /// line from b to its foot on a–c) as far as both new legs stay unblocked (binary search), or else back along one of its legs
+    /// (b' on b→a or b→c: the shortened leg is a part of the old one, only the other is tested); a corner at the end of a passage
+    /// run slides back along the run's last segment only (the run is left early, by at most trimM and within its own half), so the
+    /// route stays on the passage line. The length is convex in b', so every move shortens the route; a vertex that reaches the
+    /// chord is dropped (collinear). Passes repeat while a pass gains at least minGainM. Like Tighten's chamfer, a moved vertex
+    /// keeps clearM short of what blocks it (the leg one step further must be free too).
+    /// </summary>
+    /// <param name="blocked">The leg test of the final route (land, depth, zone, cardinals, piers, coast clearance).</param>
+    /// <param name="worse">Optional: per leg, metres of what the route must not get more of (uncharted water, an uncertain band): the two moved
+    /// legs together may not exceed the corner's two old legs in any of them (no worse than before, where the pull's blockers allow it).</param>
+    public static (List<Coordinate> points, List<bool> fixedSeg) Slide(IReadOnlyList<Coordinate> points, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, IReadOnlyList<Func<Coordinate, Coordinate, double>>? worse = null, double trimM = 3000, int passes = 8, double minGainM = 1, double clearM = 20)
+    {
+        var p = points.ToList(); var fx = fixedSeg.ToList();
+        static double D(Coordinate a, Coordinate b) => SeaGraph.Haversine(a.Y, a.X, b.Y, b.X);
+        static Coordinate Lerp(Coordinate a, Coordinate b, double t) => new(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+        // per segment: the original length of the passage run it belongs to (0 = free) and what has been cut off the run at this
+        // segment's outer end so far (the trim allowance is of the original run, not of what is left of it)
+        var run0 = new List<double>(new double[fx.Count]); var cut = new List<double>(new double[fx.Count]);
+        for (var k = 0; k < fx.Count; k++)
+        {
+            if (!fx[k] || (k > 0 && fx[k - 1])) continue;
+            var e = k; var len = 0.0;
+            while (e < fx.Count && fx[e]) { len += D(p[e], p[e + 1]); e++; }
+            for (var q = k; q < e; q++) run0[q] = len;
+        }
+        // a vertex is retried in a later pass only when it or a neighbour moved (what held it still holds)
+        var dirty = new List<bool>(Enumerable.Repeat(true, p.Count));
+        for (var pass = 0; pass < passes; pass++)
+        {
+            var gained = 0.0;
+            for (var i = 1; i < p.Count - 1; i++)
+            {
+                bool fa = fx[i - 1], fc = fx[i];
+                if (fa && fc || !dirty[i]) continue;
+                dirty[i] = false;
+                Coordinate a = p[i - 1], b = p[i], c = p[i + 1];
+                var before = D(a, b) + D(b, c);
+                if (before - D(a, c) < minGainM) continue;
+                // a move is tested leg by leg; the no-worse budgets are checked on the whole corner (both new legs) once a move is found
+                var budget = worse?.Select(w => w(a, b) + w(b, c) + 1).ToArray();
+                bool Worse(Coordinate q) => budget is not null && worse!.Where((w, k) => w(a, q) + w(q, c) > budget[k]).Any();
+                // candidates: target, the farthest parameter allowed, which legs the move changes
+                var cands = new List<(Coordinate target, double maxT, bool testA, bool testC)>();
+                if (!fa && !fc)
+                {
+                    var cos = Math.Cos(b.Y * Math.PI / 180);
+                    double dx = (c.X - a.X) * cos, dy = c.Y - a.Y, l2 = dx * dx + dy * dy;
+                    var t = l2 == 0 ? 0 : Math.Clamp(((b.X - a.X) * cos * dx + (b.Y - a.Y) * dy) / l2, 0, 1);
+                    cands.Add((Lerp(a, c, t), 1, true, true));
+                    cands.Add((a, 1, false, true)); // tried only when the move towards the chord is blocked at once
+                    cands.Add((c, 1, true, false));
+                }
+                else if (fa) cands.Add((a, Math.Min(1, (Math.Min(trimM, run0[i - 1] / 2) - cut[i - 1]) / D(a, b)), false, true));
+                else cands.Add((c, Math.Min(1, (Math.Min(trimM, run0[i] / 2) - cut[i]) / D(b, c)), true, false));
+                Coordinate? best = null; var bestGain = minGainM;
+                foreach (var (target, maxT, testA, testC) in cands)
+                {
+                    if (best is not null) break;
+                    var reach = D(b, target);
+                    if (reach < 1 || maxT <= 0) continue;
+                    bool Free(double t) { var q = Lerp(b, target, t); return (!testA || !blocked(a, q)) && (!testC || !blocked(q, c)) && !Worse(q); }
+                    // bisection on the guarded position (one step further must be free), the result verified once
+                    var step = Math.Min(maxT, clearM / reach);
+                    double lo = 0, hi = maxT;
+                    if (Free(maxT)) lo = maxT;
+                    else
+                    {
+                        for (var k = 0; k < 8; k++) { var mid = (lo + hi) / 2; if (Free(Math.Min(maxT, mid + step))) lo = mid; else hi = mid; }
+                        if (lo > 0 && !Free(lo)) lo = 0;
+                    }
+                    if (lo == 0) continue;
+                    var q = Lerp(b, target, lo); var gain = before - D(a, q) - D(q, c);
+                    if (gain > bestGain) { best = q; bestGain = gain; }
+                }
+                if (best is null) continue;
+                gained += bestGain;
+                dirty[i - 1] = dirty[i] = dirty[i + 1] = true;
+                // on the chord (or merged into a neighbour): the vertex goes, the one leg left is free
+                if (D(a, best) < 1 || D(best, c) < 1 || D(a, best) + D(best, c) - D(a, c) < 0.01)
+                {
+                    p.RemoveAt(i); fx.RemoveAt(i); run0.RemoveAt(i); cut.RemoveAt(i); dirty.RemoveAt(i);
+                    fx[i - 1] = false; run0[i - 1] = 0; cut[i - 1] = 0; i--; continue;
+                }
+                if (fa) cut[i - 1] += D(b, best); else if (fc) cut[i] += D(b, best);
+                p[i] = best;
+            }
+            if (gained < minGainM) break;
+        }
+        return (p, fx);
+    }
+
     /// <summary>Pull, also returning per result segment whether it is passage geometry (a kept segment of a fixed run; a leg that skips points is free).</summary>
     public static (List<Coordinate> points, List<bool> fixedSeg) PullFlags(IReadOnlyList<Coordinate> p, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, double trimM = 3000, double maxLegM = 30_000, int maxTests = 64, double shapeM = 60, Func<Coordinate, Coordinate, bool>? followBlocked = null)
     {

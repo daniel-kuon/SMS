@@ -542,6 +542,50 @@ public class StringPullTests
     }
 
     [Fact]
+    public void Slide_moves_a_free_corner_onto_the_chord_and_drops_it()
+    {
+        var p = Line((0, 0), (2, 1), (4, 0));
+        var (t, fx) = StringPull.Slide(p, [false, false], Open);
+        Assert.Equal([p[0], p[^1]], t); Assert.Equal([false], fx);
+    }
+
+    [Fact]
+    public void Slide_stops_short_of_the_obstacle()
+    {
+        var p = Line((0, 0), (5, -6), (10, 0)); // the V round the island, apex 5 units south of it
+        var (t, fx) = StringPull.Slide(p, [false, false], HitsIsland);
+        Assert.Equal(3, t.Count); Assert.Equal([false, false], fx);
+        Assert.Equal(p[0], t[0]); Assert.Equal(p[2], t[2]);
+        Assert.False(HitsIsland(t[0], t[1])); Assert.False(HitsIsland(t[1], t[2]));
+        Assert.True(StringPull.Length(t) < StringPull.Length(p) - 1000);
+        Assert.InRange(t[1].Y, 54 - 0.06, 54 - 0.01); // moved north towards the island's south side (y = -1), not past it
+        Assert.True(StringPull.Slide(p, [false, false], (_, _) => true).points.SequenceEqual(p)); // everything blocked: unchanged
+    }
+
+    [Fact]
+    public void Slide_leaves_a_passage_run_early_along_its_last_segment()
+    {
+        var p = Line((0, 0), (5, 0), (3, -2)); // A→B a passage segment (3.3 km), the free leg doubles back
+        var (t, fx) = StringPull.Slide(p, [true, false], Open, trimM: 3000);
+        Assert.Equal(3, t.Count); Assert.Equal([true, false], fx);
+        Assert.Equal(54.0, t[1].Y, 6); // still on the passage line
+        Assert.InRange(t[1].X, 10.024, 10.026); // half the run (1.6 km) back from B, not to the foot at x = 3
+        Assert.True(StringPull.Length(t) < StringPull.Length(p));
+        Assert.Equal(p, StringPull.Slide(p, [true, true], Open).points); // inside a run: nothing moves
+    }
+
+    [Fact]
+    public void Slide_moved_legs_must_be_charted_unless_the_corner_was_not()
+    {
+        static double Uncharted(Coordinate u, Coordinate v) => u.Y < 54.02 && v.Y < 54.02 ? 1000 : 0; // a leg wholly south of y = 2 counts as 1 km uncharted
+        var p = Line((0, 0), (2, 3), (4, 0)); // both legs reach charted water, the chord does not
+        var (t, _) = StringPull.Slide(p, [false, false], Open, [Uncharted]);
+        Assert.Equal(3, t.Count); Assert.InRange(t[1].Y, 54.02, 54.0205);
+        var q = Line((0, 0), (2, 1), (4, 0)); // the corner's own legs are uncharted: no worse, dropped onto the chord
+        Assert.Equal([q[0], q[^1]], StringPull.Slide(q, [false, false], Open, [Uncharted]).points);
+    }
+
+    [Fact]
     public void Densify_leaves_passage_segments_alone()
     {
         var p = Line((0, 0), (5, 0), (10, 0));

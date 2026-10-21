@@ -36,6 +36,28 @@ public static class CardinalMarks
         return Geo.Factory.CreatePolygon(ring.ToArray());
     }
 
+    /// <summary>A route keeps this far off an isolated-danger mark (the rock or wreck lies under it).</summary>
+    public const double IsolatedDangerM = 60;
+
+    /// <summary>All isolated-danger buoys and beacons of the Seamarks table (EPSG:3857 → 4326).</summary>
+    public static async Task<List<Coordinate>> LoadIsolatedAsync(SmsDbContext db, CancellationToken ct = default) =>
+        (await db.Database.SqlQueryRaw<Row>("""
+            SELECT ST_X(ST_Transform("Location", 4326)) AS "X", ST_Y(ST_Transform("Location", 4326)) AS "Y", '' AS "Category"
+            FROM "Seamarks" WHERE "Type" IN ('buoy_isolated_danger', 'beacon_isolated_danger')
+            """).ToListAsync(ct)).Select(r => new Coordinate(r.X, r.Y)).ToList();
+
+    /// <summary>The danger disc round an isolated-danger mark: a 24-gon round the circle of radius <paramref name="radiusM"/> (its edges
+    /// touch the circle, nothing inside the radius is outside the polygon), in a local metric frame (cos φ).</summary>
+    public static Polygon Disc(Coordinate p, double radiusM = IsolatedDangerM)
+    {
+        var r = radiusM / Math.Cos(Math.PI / 24);
+        var dLat = r / WaterGraphTiler.MPerDegLat; var dLng = dLat / Math.Max(0.2, Math.Cos(p.Y * Math.PI / 180));
+        var ring = new Coordinate[25];
+        for (var k = 0; k < 24; k++) ring[k] = new Coordinate(p.X + dLng * Math.Sin(k * Math.PI / 12), p.Y + dLat * Math.Cos(k * Math.PI / 12));
+        ring[24] = ring[0];
+        return Geo.Factory.CreatePolygon(ring);
+    }
+
     public static STRtree<Polygon> Index(IEnumerable<(Coordinate p, MarkSide side)> marks, double radiusM = Fairways.CardinalDangerM)
     {
         var tree = new STRtree<Polygon>();

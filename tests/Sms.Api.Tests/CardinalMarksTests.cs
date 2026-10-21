@@ -21,6 +21,18 @@ public class CardinalMarksTests
     }
 
     [Fact]
+    public void Disc_keeps_60_m_round_an_isolated_danger_mark()
+    {
+        var d = CardinalMarks.Disc(new Coordinate(10, 54));
+        double N(double m) => m / WaterGraphTiler.MPerDegLat; double E(double m) => N(m) / Math.Cos(54 * Math.PI / 180);
+        Assert.True(d.Contains(P(10, 54 + N(59))));            // 59 m north
+        Assert.True(d.Contains(P(10 + E(59), 54)));            // 59 m east
+        Assert.True(d.Contains(P(10 - E(42), 54 - N(42))));    // 59.4 m south-west, between two vertices
+        Assert.False(d.Contains(P(10, 54 - N(70))));           // 70 m south
+        Assert.False(d.Contains(P(10 + E(70), 54)));           // 70 m east
+    }
+
+    [Fact]
     public void Apply_prices_the_share_inside()
     {
         (Coordinate, MarkSide)[] marks = [(new Coordinate(10, 54), MarkSide.North)];
