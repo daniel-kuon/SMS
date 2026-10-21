@@ -68,6 +68,7 @@ builder.Services.AddSingleton<FeedTokens>();
 // Overpass queries run for minutes: no standard resilience handler (its 10 s attempt timeout would abort them).
 #pragma warning disable EXTEXP0001 // RemoveAllResilienceHandlers is marked experimental
 builder.Services.AddHttpClient("overpass", c => c.DefaultRequestHeaders.UserAgent.ParseAdd("sailing-portal/0.1 (+https://github.com/daniel-kuon/SMS)")).RemoveAllResilienceHandlers();
+builder.Services.AddHttpClient("dtm", c => c.Timeout = TimeSpan.FromMinutes(5)).RemoveAllResilienceHandlers(); // EMODnet ERDDAP: a 1° DTM chunk (4.6 MB) takes 1–30 s
 #pragma warning restore EXTEXP0001
 builder.Services.AddHttpClient("routing");
 builder.Services.AddHttpClient("marinetraffic");

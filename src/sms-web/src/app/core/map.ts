@@ -42,6 +42,7 @@ export async function createMap(container: HTMLElement, options: Partial<MapOpti
   addSeamarkOverlay(map, cfg.seamarkTilesUrl);
   addPoiOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/poi/'));
   addDepthOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/depth/'));
+  addTrafficOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/traffic/'));
   addWeatherOverlayControl(map);
   (window as unknown as { smsMap?: MlMap }).smsMap = map; // debugging/e2e hook: the current map instance
   return map;
@@ -265,6 +266,34 @@ export function addDepthOverlay(map: MlMap, tilesUrl: string): void {
   map.addControl({ onAdd: () => { wrap.append(button); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
   refresh();
 }
+const TRAFFIC_STORAGE = 'sms.trafficOverlay';
+/** EMODnet vessel density (CC BY 4.0): the licence asks for the portal and the originator. */
+export const TRAFFIC_ATTRIBUTION = 'Verkehrsdichte: Daten vom EMODnet-Portal (emodnet.ec.europa.eu), Urheber Cogea Srl, CC BY 4.0';
+/** Sailing + pleasure craft hours per km² per month in log steps: 0.1 nearly clear, 1 light, 10 medium, 100 strong, ≥ 1000 max. */
+export const TRAFFIC_FILL = ['step', ['+', ['get', 'sailing'], ['get', 'pleasure']], 'rgba(0,0,0,0)', 0.1, '#fde0c5', 1, '#facba6', 10, '#f59e72', 100, '#e4573c', 1000, '#b31b1b'];
+/**
+ * Sailing traffic (EMODnet vessel density, 1 km cells) as a toggleable overlay below the sea marks; the cells the routing counts as
+ * known-navigable water (sailing ≥ Routing:TrafficKnownSailing, "known") get a dashed outline. Off by default, remembered per browser.
+ */
+export function addTrafficOverlay(map: MlMap, tilesUrl: string): void {
+  if (map.getSource('traffic')) return;
+  const abs = tilesUrl.startsWith('/') ? `${location.origin}${tilesUrl}` : tilesUrl;
+  map.addSource('traffic', { type: 'vector', tiles: [abs], minzoom: 6, maxzoom: 14, attribution: TRAFFIC_ATTRIBUTION });
+  let on = false; try { on = localStorage.getItem(TRAFFIC_STORAGE) === '1'; } catch { /* ignore */ }
+  const before = ['seamark-sectors-fill', 'seamark-lines', 'seamark-icons', 'seamark-points'].find(id => map.getLayer(id));
+  const visibility = on ? 'visible' : 'none';
+  map.addLayer({ id: 'traffic-fill', type: 'fill', source: 'traffic', 'source-layer': 'traffic', minzoom: 6, layout: { visibility },
+    paint: { 'fill-color': TRAFFIC_FILL as never, 'fill-opacity': 0.5, 'fill-antialias': false } }, before);
+  map.addLayer({ id: 'traffic-known', type: 'line', source: 'traffic', 'source-layer': 'traffic', minzoom: 9, layout: { visibility }, filter: ['==', ['get', 'known'], true],
+    paint: { 'line-color': '#b31b1b', 'line-width': 1, 'line-dasharray': [2, 2], 'line-opacity': 0.7 } }, before);
+  const wrap = document.createElement('div'); wrap.className = 'maplibregl-ctrl maplibregl-ctrl-group depth-overlay-ctrl';
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'depth-overlay-button'; button.title = 'Verkehrsdichte (Segeln) anzeigen'; button.setAttribute('aria-label', 'Verkehrsdichte anzeigen');
+  const refresh = () => { button.textContent = '⛵'; button.classList.toggle('active', on); button.setAttribute('aria-pressed', String(on)); };
+  button.onclick = () => { on = !on; for (const id of ['traffic-fill', 'traffic-known']) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); try { localStorage.setItem(TRAFFIC_STORAGE, on ? '1' : '0'); } catch { /* ignore */ } refresh(); };
+  map.addControl({ onAdd: () => { wrap.append(button); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
+  refresh();
+}
+
 /** Recolours the depth overlay for the ship's minimum and warning depth (null = chart steps only). */
 export function applyDepthShading(map: MlMap, minDepthM: number | null, warnDepthM: number | null = null): void {
   if (map.getLayer('depth-fill')) map.setPaintProperty('depth-fill', 'fill-color', depthFillColour(minDepthM, warnDepthM) as never);

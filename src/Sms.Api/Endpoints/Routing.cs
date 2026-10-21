@@ -18,7 +18,7 @@ public record CorrectionUpsert(CorrectionKind Kind, Geometry Geometry, string? N
 public static class RoutingEndpoints
 {
     public const string Disclaimer = "Entfernungen sind Schätzwerte und nicht zur Navigation geeignet.";
-    public const string Attribution = "© OpenStreetMap-Mitwirkende, OpenSeaMap";
+    public const string Attribution = "© OpenStreetMap-Mitwirkende, OpenSeaMap, EMODnet Human Activities Vessel Density (Cogea Srl) CC BY 4.0, EMODnet Bathymetry DTM 2024 CC BY 4.0";
     /// <summary>derive-fairways reads marks this far (degrees of latitude) beyond its bbox: more than Fairways' 5 km wide hop.</summary>
     public const double DeriveMarginDeg = 0.15;
 
@@ -192,6 +192,43 @@ public static class RoutingEndpoints
             var (areas, removed) = await DepthImport.RunAsync(depths, db, minLng, minLat, maxLng, maxLat, ct);
             return Results.Ok(new { areas, removed, provider = depths.Name });
         });
+        // EMODnet Bathymetry DTM 2024 (routing_dtm) per 1° chunk from ERDDAP, at most 4° × 4° per call; the next graph build reads it
+        admin.MapPost("/import-dtm", async (string? bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, RoutingGraphBuilder builder, ILogger<SeaRouter> log, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var p = (bbox ?? "").Split(',').Select(v => double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : double.NaN).ToArray();
+            if (p.Length != 4 || p.Any(double.IsNaN) || p[2] <= p[0] || p[3] <= p[1]) return Invalid("bbox", "bbox=south,west,north,east");
+            int s = (int)Math.Floor(p[0]), w = (int)Math.Floor(p[1]), n = (int)Math.Ceiling(p[2]), e = (int)Math.Ceiling(p[3]);
+            if (n - s > 4 || e - w > 4) return Invalid("bbox", "Höchstens 4° × 4° (16 Kacheln) pro Aufruf.");
+            var client = http.CreateClient("dtm");
+            var (chunks, cells, measured, failed) = await DtmImport.RunAsync(client, builder.Options.DtmUrl, (NpgsqlConnection)db.Database.GetDbConnection(), s, w, n, e, log, ct);
+            return Results.Ok(new { chunks, cells, measured, failed });
+        });
+        // EMODnet vessel density GeoTIFFs (vesseldensity_04_<year>.tif sailing, _05_ pleasure craft, as in the EMODnet zips) → routing_traffic,
+        // replaced as a whole: upload every year wanted in one request (the files of a kind are averaged)
+        admin.MapPost("/import-traffic-file", async (HttpRequest http, CurrentUser current, SmsDbContext db, RoutingGraphBuilder builder, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
+            var form = await http.ReadFormAsync(new Microsoft.AspNetCore.Http.Features.FormOptions { MultipartBodyLengthLimit = 1L << 30 }, ct);
+            if (form.Files.Count == 0) return Invalid("file", "GeoTIFF-Dateien vesseldensity_04_<Jahr>.tif / vesseldensity_05_<Jahr>.tif fehlen.");
+            var files = new List<(string kind, GeoTiff tif)>(); var years = new SortedSet<int>();
+            foreach (var f in form.Files)
+            {
+                if (TrafficImport.ParseName(f.FileName) is not { } name) return Invalid("file", $"{f.FileName}: Name vesseldensity_04_<Jahr>.tif oder vesseldensity_05_<Jahr>.tif erwartet.");
+                await using var stream = f.OpenReadStream();
+                try { files.Add((name.kind, GeoTiff.Open(stream))); }
+                catch (NotSupportedException ex) { return Invalid("file", $"{f.FileName}: kein lesbares GeoTIFF ({ex.Message})."); }
+                years.Add(name.year);
+            }
+            var r = builder.Options.Region;
+            List<TrafficCell> cells;
+            try { cells = TrafficImport.Cells(files, new Envelope(r.MinLng, r.MaxLng, r.MinLat, r.MaxLat)); }
+            catch (InvalidDataException ex) { return Invalid("file", ex.Message); }
+            var yearText = string.Join(",", years);
+            await TrafficImport.WriteAsync((NpgsqlConnection)db.Database.GetDbConnection(), cells, yearText, ct);
+            return Results.Ok(new { cells = cells.Count, files = files.Count, years = yearText });
+        }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(1L << 30)); // 6 files × 15 MB > Kestrel's 30 MB default
         admin.MapPost("/import-waterways", async (string bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, IConfiguration cfg, CancellationToken ct) =>
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();

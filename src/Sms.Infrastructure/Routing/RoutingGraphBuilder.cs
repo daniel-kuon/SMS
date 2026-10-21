@@ -60,6 +60,14 @@ public sealed class RoutingOptions
     /// <summary>Edges running along a scheduled ferry track (Kind Ferry) within this distance count as known-navigable: no depth floor
     /// in the strict search, the charted band block stays. 0 = off.</summary>
     public double FerryCorridorM { get; set; } = 50;
+    /// <summary>Edges with at least half of their length in EMODnet vessel density cells (routing_traffic) with this much sailing traffic
+    /// (hours per km² per month) count as known-navigable like a ferry track, the charted band block stays. 0 = off.</summary>
+    public double TrafficKnownSailing { get; set; } = 10;
+    /// <summary>EMODnet Bathymetry DTM 2024 on ERDDAP (griddap, NetCDF subsets with the interpolation flag) for the DTM import (routing_dtm):
+    /// measured DTM cells deep enough lift the "not definitely deep enough" verdict.</summary>
+    public string DtmUrl { get; set; } = "https://erddap.emodnet.eu/erddap/griddap/bathymetry_dtm_2024.nc";
+    /// <summary>Only DTM cells with soundings count; cells the DTM interpolated (interpolation_flag, 64 % of the region's water) do not.</summary>
+    public bool DtmMeasuredOnly { get; set; } = false; // interpolated cells count too: on 24 sailed legs they were not less reliable (0.68 % vs 0.86 % of samples under 1.8 m)
     /// <summary>A leg up to this length that the coast buffer closes is still added when it clears the land buffered by NarrowBufferM, at ×NarrowLegFactor (sound entrances, harbour mouths narrower than 2 × CoastBufferM). 0 = off.</summary>
     public double NarrowLegM { get; set; } = 1000;
     public double NarrowBufferM { get; set; } = 40;
@@ -275,9 +283,13 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var buoyedAreas = Polygons(allAreas.Select(a => a.Geometry).ToList()); // buoyed water for the depth limits
         var ferryLines = o.FerryCorridorM > 0 ? (await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Ferry).Select(c => c.Geometry).ToListAsync(ct)).OfType<LineString>().ToList() : [];
         var ferries = new FerryCorridors(ferryLines, o.FerryCorridorM); // known-navigable water for the depth limits
+        var traffic = await TrafficAreas.LoadAsync(conn, o.TrafficKnownSailing, ct); // idem, dense sailing traffic (EMODnet vessel density)
+        var dtm = DtmGrid.FromDatabase(conn, o.DtmMeasuredOnly); // EMODnet DTM: "known deep" for edges with a band floor, chunks read on first touch
+        var isolated = await CardinalMarks.LoadIsolatedAsync(db, ct);
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         var cardinals = await CardinalMarks.LoadAsync(db, ct);
-        List<GraphEdge> Cardinals(IReadOnlyList<GraphEdge> edges) => CardinalMarks.Apply(edges, cardinals, o.CardinalPenaltyFactor);
+        var hazards = CardinalMarks.Hazards(cardinals, isolated); // no traffic or DTM evidence on the danger side of a mark
+        List<GraphEdge> Cardinals(IReadOnlyList<GraphEdge> edges) => CardinalMarks.Apply(edges, cardinals, o.CardinalPenaltyFactor, isolated);
         var depthsByTile = new System.Collections.Concurrent.ConcurrentDictionary<string, List<(Geometry, double)>>();
         static string result_tile_key(Envelope e) => $"{e.MinX:0.####},{e.MinY:0.####}";
         long gridNodeCount, gridEdgeCount, nextId; List<GraphNode>? waterNodes = null;
@@ -289,11 +301,11 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         var nearLand = NearLand(linkLand);
         if (o.Mode == "areas")
         {
-            (gridNodeCount, gridEdgeCount, nextId, waterNodes) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, buoyedAreas, ferries, harbours.Select(h => h.Location.Coordinate).ToList(), landKey, sw, nearLand, cardinals, ct);
+            (gridNodeCount, gridEdgeCount, nextId, waterNodes) = await BuildAreasAsync(conn, db, version, regionEnv, o, fairways, fairwayAreas, buoyedAreas, ferries, traffic, dtm, hazards, harbours.Select(h => h.Location.Coordinate).ToList(), landKey, sw, nearLand, cardinals, isolated, ct);
         }
         else
         {
-        Report("grid", $"{tiler.Tiles.Count} tiles of {o.TileCells}×{o.TileCells} start cells, {ferries.Count} ferry tracks");
+        Report("grid", $"{tiler.Tiles.Count} tiles of {o.TileCells}×{o.TileCells} start cells, {ferries.Count} ferry tracks, {traffic.Count} traffic cells");
         await tiler.RunAsync(
             async (tile, c) =>
             {
@@ -324,7 +336,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                     foreach (var n in result.Nodes) { await w.StartRowAsync(c); await w.WriteAsync(version, NpgsqlDbType.Integer, c); await w.WriteAsync(n.Id, NpgsqlDbType.Bigint, c); await w.WriteAsync(Geo.Factory.CreatePoint(new Coordinate(n.X, n.Y)), NpgsqlDbType.Geometry, c); }
                     await w.CompleteAsync(c);
                 }
-                await WriteEdgesAsync(conn, version, Cardinals(DepthLimits.Apply(Avoid.Apply(ChannelPreference.Apply(result.Edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), avoids, o.AvoidPenaltyFactor), depthsByTile.TryRemove(result_tile_key(WaterGraphTiler.WithMargin(result.Tile)), out var tileDepths) ? tileDepths : [], nearLand, buoyedAreas, ferries)), c);
+                await WriteEdgesAsync(conn, version, Cardinals(DepthLimits.Apply(Avoid.Apply(ChannelPreference.Apply(result.Edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor), avoids, o.AvoidPenaltyFactor), depthsByTile.TryRemove(result_tile_key(WaterGraphTiler.WithMargin(result.Tile)), out var tileDepths) ? tileDepths : [], nearLand, buoyedAreas, ferries, traffic, dtm, hazards)), c);
                 foreach (var h in harbourIndex.Query(result.Tile.Envelope))
                     if (result.Nearest(h.X, h.Y, accessDeg) is { } near) access.Add((h.Id, near.Id, Haversine(h.Y, h.X, near.Y, near.X)));
                 if (result.Nodes.Count > 0 || tileNo % 25 == 0)
@@ -409,7 +421,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             }
             var channelEdges = new List<GraphEdge>(); var ranges = new List<(int from, int to)>();
             for (var i = 0; i < channelEdgeFrom.Count; i += 2) { ranges.Add((channelEdgeFrom[i], channelEdgeFrom[i + 1])); channelEdges.AddRange(extraEdges.Skip(channelEdgeFrom[i]).Take(channelEdgeFrom[i + 1] - channelEdgeFrom[i])); }
-            var limited = DepthLimits.Apply(channelEdges, depthRows, nearLand, ferry: ferries);
+            var limited = DepthLimits.Apply(channelEdges, depthRows, nearLand, ferry: ferries, traffic: traffic, dtm: dtm, hazards: hazards);
             // a channel through water charted shallower than the default yacht costs ×ShallowChannelFactor but stays open (the depth
             // areas are coarse in the Swedish archipelago and would close every sound); a channel across a drying flat is closed.
             // The floor it runs through stays known as FloorM (as does the band next to a channel in the coastal strip without
@@ -477,7 +489,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 gapSeen.Add((Math.Min(n.Id, id), Math.Max(n.Id, id)));
                 gapLinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
             }
-            await WriteEdgesAsync(conn, version, Cardinals(ChannelLinkFloors(gapLinks, channelEnds, depthRows, nearLand, ferries)), ct);
+            await WriteEdgesAsync(conn, version, Cardinals(ChannelLinkFloors(gapLinks, channelEnds, depthRows, nearLand, ferries, traffic, dtm, hazards)), ct);
             // live union-find: a stray end links to the nearest node of any other component (land-free), and the two merge; chains
             // of such merges pull archipelago fragments together even where no main-component node is within reach
             var parent = await ComponentsAsync(conn, version, ct);
@@ -496,7 +508,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 relinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
                 Union(id, n.Id);
             }
-            await WriteEdgesAsync(conn, version, Cardinals(ChannelLinkFloors(relinks, channelEnds, depthRows, nearLand, ferries)), ct);
+            await WriteEdgesAsync(conn, version, Cardinals(ChannelLinkFloors(relinks, channelEnds, depthRows, nearLand, ferries, traffic, dtm, hazards)), ct);
             var giantRoot = Find(giant);
             // nodes outside the main component (enclosed pockets, lakes without a passage): the snap of a map click prefers the main
             // component, otherwise a click on a town quay snapped into a pond next to it and the route fell back to a straight line
@@ -556,28 +568,28 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         lock (_measured) { _measured["switch"] = _phaseClock.Elapsed.TotalSeconds; phaseSeconds = new(_expected); foreach (var (k, v) in _measured) phaseSeconds[k] = Math.Round(v, 1); }
         await new NpgsqlCommand("INSERT INTO routing_meta (key, value) VALUES ('phase_seconds', @p), ('build_seconds', @s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", conn)
             { Parameters = { new("p", System.Text.Json.JsonSerializer.Serialize(phaseSeconds)), new("s", Math.Round(sw.Elapsed.TotalSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture)) } }.ExecuteNonQueryAsync(ct);
-        Report("done", $"Graph version {version} active: {nodes} nodes, {edges} edges, {access.Count} harbours ({sw.Elapsed:hh\\:mm\\:ss})");
+        Report("done", $"{traffic.Count} traffic cells, {dtm.Chunks} DTM chunks used; graph version {version} active: {nodes} nodes, {edges} edges, {access.Count} harbours ({sw.Elapsed:hh\\:mm\\:ss})");
     }
 
     /// <summary>Links from a derived channel's end (gap links, relinks) carry no limit, only the floor of the water they cross (FloorM: the
     /// charted band, the band next to them in the coastal strip, or unknown coastal water), as the channel itself. A link along a ferry
-    /// track carries the Ferry flag and no floor.</summary>
-    private static List<GraphEdge> ChannelLinkFloors(List<GraphEdge> links, IReadOnlySet<long> channelEnds, IReadOnlyList<(Geometry, double)>? depths, Func<Coordinate, double, bool> nearLand, FerryCorridors ferries)
+    /// track carries the Ferry flag and no floor; one through dense sailing traffic the Traffic flag, the others the DTM depth along them.</summary>
+    private static List<GraphEdge> ChannelLinkFloors(List<GraphEdge> links, IReadOnlySet<long> channelEnds, IReadOnlyList<(Geometry, double)>? depths, Func<Coordinate, double, bool> nearLand, FerryCorridors ferries, TrafficAreas traffic, DtmGrid dtm, IReadOnlyList<Polygon> hazards)
     {
         if (depths is null || links.Count == 0) return links;
         var idx = Enumerable.Range(0, links.Count).Where(i => channelEnds.Contains(links[i].Source)).ToList();
-        var limited = DepthLimits.Apply(idx.Select(i => links[i]).ToList(), depths, nearLand, ferry: ferries);
+        var limited = DepthLimits.Apply(idx.Select(i => links[i]).ToList(), depths, nearLand, ferry: ferries, traffic: traffic, dtm: dtm, hazards: hazards);
         var result = links.ToList();
         for (var k = 0; k < idx.Count; k++)
             if (limited[k].Ferry) result[idx[k]] = links[idx[k]] with { Ferry = true };
-            else if ((limited[k].MinDepthM ?? limited[k].AdjacentDepthM ?? limited[k].FloorM) is { } f) result[idx[k]] = links[idx[k]] with { FloorM = f };
+            else if ((limited[k].MinDepthM ?? limited[k].AdjacentDepthM ?? limited[k].FloorM) is { } f) result[idx[k]] = links[idx[k]] with { FloorM = f, Traffic = limited[k].Traffic, DtmMinM = limited[k].DtmMinM };
         return result;
     }
 
     private static async Task WriteEdgesAsync(NpgsqlConnection conn, int version, IReadOnlyList<GraphEdge> edges, CancellationToken ct)
     {
         if (edges.Count == 0) return;
-        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed, adjacent_depth_m, floor_m, unknown_bridge, ferry) FROM STDIN (FORMAT BINARY)", ct);
+        await using var w = await conn.BeginBinaryImportAsync("COPY routing_edge (graph_version, source, target, cost, reverse_cost, x1, y1, x2, y2, geom, clearance_m, min_depth_m, assumed, adjacent_depth_m, floor_m, unknown_bridge, ferry, traffic, dtm_min_m) FROM STDIN (FORMAT BINARY)", ct);
         foreach (var e in edges)
         {
             await w.StartRowAsync(ct);
@@ -593,6 +605,8 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             if (e.FloorM is { } cf) await w.WriteAsync(cf, NpgsqlDbType.Double, ct); else await w.WriteNullAsync(ct);
             await w.WriteAsync(e.UnknownBridge, NpgsqlDbType.Boolean, ct);
             await w.WriteAsync(e.Ferry, NpgsqlDbType.Boolean, ct);
+            await w.WriteAsync(e.Traffic, NpgsqlDbType.Boolean, ct);
+            if (e.DtmMinM is { } dm) await w.WriteAsync((float)dm, NpgsqlDbType.Real, ct); else await w.WriteNullAsync(ct);
         }
         await w.CompleteAsync(ct);
     }
@@ -602,7 +616,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
     /// harbours and passage ends + corners of shallow banks → visibility edges, decorated like grid edges (channel preference, depth).
     /// </summary>
     private async Task<(long nodes, long edges, long nextId, List<GraphNode> waterNodes)> BuildAreasAsync(NpgsqlConnection conn, SmsDbContext db, int version, Envelope region, RoutingOptions o,
-        IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Polygon> buoyedAreas, FerryCorridors ferries, IReadOnlyList<Coordinate> harbourPoints, string landKey, Stopwatch sw, Func<Coordinate, double, bool> nearLand, IReadOnlyList<(Coordinate p, MarkSide side)> cardinals, CancellationToken ct)
+        IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> fairwayAreas, IReadOnlyList<Polygon> buoyedAreas, FerryCorridors ferries, TrafficAreas traffic, DtmGrid dtm, IReadOnlyList<Polygon> hazards, IReadOnlyList<Coordinate> harbourPoints, string landKey, Stopwatch sw, Func<Coordinate, double, bool> nearLand, IReadOnlyList<(Coordinate p, MarkSide side)> cardinals, IReadOnlyList<Coordinate> isolated, CancellationToken ct)
     {
         // a visibility leg through a sound passes under its bridge: clearance, lock and opening costs apply here as on passages;
         // a long bridge with charted spans is passable at the spans only, so the span points become anchors (legs through them)
@@ -621,10 +635,10 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         }
         var avoids = await db.RoutingCorrections.Where(c => c.Active && c.Kind == CorrectionKind.Avoid).Select(c => c.Geometry).ToListAsync(ct);
         edges = ChannelPreference.Apply(edges, fairways, fairwayAreas, o.ChannelPreferenceM, o.ChannelPenaltyFactor);
-        edges = CardinalMarks.Apply(edges, cardinals, o.CardinalPenaltyFactor);
-        Tick(); Report("areas", $"channel preference and cardinal danger quadrants applied ({sw.Elapsed:hh\\:mm\\:ss})");
-        edges = DepthLimits.Apply(Avoid.Apply(edges, avoids, o.AvoidPenaltyFactor), depths, nearLand, buoyedAreas, ferries);
-        Tick(); Report("areas", $"depth limits applied, {ferries.Count} ferry tracks ({sw.Elapsed:hh\\:mm\\:ss})");
+        edges = CardinalMarks.Apply(edges, cardinals, o.CardinalPenaltyFactor, isolated);
+        Tick(); Report("areas", $"channel preference, cardinal danger quadrants and isolated-danger discs applied ({sw.Elapsed:hh\\:mm\\:ss})");
+        edges = DepthLimits.Apply(Avoid.Apply(edges, avoids, o.AvoidPenaltyFactor), depths, nearLand, buoyedAreas, ferries, traffic, dtm, hazards);
+        Tick(); Report("areas", $"depth limits applied, {ferries.Count} ferry tracks, {traffic.Count} traffic cells, {dtm.Chunks} DTM chunks ({sw.Elapsed:hh\\:mm\\:ss})");
         edges = Obstacles.Apply(edges, Obstacles.WithSpans(bridgesRaw), o.LockPenaltyM, o.BridgeOpeningPenaltyM, o.BridgeMatchAreaM); // a bridge over a sound is a point, the leg may pass a few hundred metres from it
         Tick(); Report("areas", $"bridges and locks applied, writing {nodes.Count} nodes and {edges.Count} edges ({sw.Elapsed:hh\\:mm\\:ss})");
         Phase("writing", 2);

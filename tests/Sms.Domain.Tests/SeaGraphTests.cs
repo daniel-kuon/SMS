@@ -25,8 +25,8 @@ public class SeaGraphTests
             foreach (var p in interior) { Geom.Add(10 + p.x * D); Geom.Add(54 + p.y * D); }
             return S.Count - 1;
         }
-        public SeaGraph Build(int firstPassage = int.MaxValue, double snapMinM = 1000, float[]? adjacent = null, float[]? floor = null, bool[]? ferry = null) =>
-            new([.. X], [.. Y], [.. S], [.. T], [.. Cost], [.. Depth], [.. Clear], [.. GeomStart, Geom.Count / 2], [.. Geom], firstPassage, null, snapMinM, adjacent: adjacent, floor: floor, ferry: ferry);
+        public SeaGraph Build(int firstPassage = int.MaxValue, double snapMinM = 1000, float[]? adjacent = null, float[]? floor = null, bool[]? ferry = null, bool[]? traffic = null, float[]? dtmMin = null) =>
+            new([.. X], [.. Y], [.. S], [.. T], [.. Cost], [.. Depth], [.. Clear], [.. GeomStart, Geom.Count / 2], [.. Geom], firstPassage, null, snapMinM, adjacent: adjacent, floor: floor, ferry: ferry, traffic: traffic, dtmMin: dtmMin);
         public Coordinate C(int n) => new(X[n], Y[n]);
     }
 
@@ -386,6 +386,32 @@ public class SeaGraphTests
         Assert.DoesNotContain(g.C(detour), g.Build(floor: floor, ferry: ferry).Route(A, C, limits)!.Points);
         ferry[band] = false;
         Assert.Contains(g.C(detour), g.Build(floor: floor, ferry: ferry).Route(A, C, limits)!.Points);
+    }
+
+    [Fact]
+    public void Dtm_depth_and_traffic_lift_the_uncertain_verdict_only()
+    {
+        var g = new G();
+        int a = g.Node(0, 0), m = g.Node(4, 0), b = g.Node(8, 0), c = g.Node(12, 0), detour = g.Node(6, -6);
+        var band = g.Edge(m, b, depth: 1.8288f);
+        g.Edge(a, m); g.Edge(m, detour, depth: 5.4864f); g.Edge(detour, b); g.Edge(b, c);
+        var dtm = Enumerable.Repeat(float.NaN, g.S.Count).ToArray(); dtm[band] = 2.5f;
+        var graph = g.Build(dtmMin: dtm);
+        Assert.False(graph.Uncertain(band, 2.3));
+        Assert.True(graph.Uncertain(band, 2.6)); // the DTM is not deep enough for that ship
+        dtm[band] = 2.3f;
+        Assert.False(g.Build(dtmMin: dtm).Uncertain(band, 2.3)); // compared as floats, like the bands
+        // the strict search takes the band now, the detour only for the deeper ship
+        var limits = new SeaGraph.Limits(DepthLimitM: 1.8288, MinDepthM: 2.3, UncertainFactor: 3, StrictDepth: true);
+        SeaGraph.End A = new(g.C(a), a), C = new(g.C(c), c);
+        Assert.DoesNotContain(g.C(detour), g.Build(dtmMin: dtm).Route(A, C, limits)!.Points);
+        Assert.Contains(g.C(detour), g.Build(dtmMin: dtm).Route(A, C, limits with { MinDepthM = 2.6 })!.Points);
+        // traffic: never uncertain, whatever the floor; the band block stays (0-1.83 m band closed)
+        var traffic = new bool[g.S.Count]; traffic[band] = true;
+        var t = g.Build(traffic: traffic);
+        Assert.True(t.Traffic(band)); Assert.True(t.Known(band)); Assert.False(t.Uncertain(band, 9));
+        g.Depth[band] = 0f;
+        Assert.Contains(g.C(detour), g.Build(traffic: traffic, dtmMin: dtm).Route(A, C, limits)!.Points);
     }
 
     [Fact]

@@ -13,7 +13,7 @@ public sealed record GraphNode(long Id, double X, double Y, bool IsMin);
 /// DepthLimits.UnknownCoastalFloorM.</param>
 /// <param name="UnknownBridge">Passes under a fixed bridge without a charted clearance (Obstacles.Apply): passed with a warning or avoided, per ship.</param>
 /// <param name="Ferry">Runs along a scheduled ferry track (FerryCorridors): known-navigable water, no floor, the charted band stays.</param>
-public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null, bool Assumed = false, double? AdjacentDepthM = null, double? FloorM = null, bool UnknownBridge = false, bool Ferry = false);
+public sealed record GraphEdge(long Source, long Target, double Cost, LineString Geom, double? ClearanceM = null, double? MinDepthM = null, bool Assumed = false, double? AdjacentDepthM = null, double? FloorM = null, bool UnknownBridge = false, bool Ferry = false, bool Traffic = false, double? DtmMinM = null);
 public sealed record GraphTile(Envelope Envelope, double StartDegLng, double StartDegLat);
 
 /// <summary>

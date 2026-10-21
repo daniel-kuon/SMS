@@ -22,6 +22,8 @@ public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, Lin
 public sealed record RouteWarning(string Kind, double Lat, double Lng, string Note, double? SnappedLat = null, double? SnappedLng = null, double? DistanceM = null);
 public sealed record NearbyResult(Guid HarbourId, decimal DistanceNm, decimal StraightLineNm);
 public sealed record GraphStatus(int ActiveVersion, string? BuiltAt, string? Region, long Nodes, long Edges);
+/// <summary>Known-navigable evidence beside the chart for the smoothing (as the graph has it per edge): dense sailing traffic cells and the EMODnet DTM.</summary>
+public sealed record KnownWater(TrafficAreas Traffic, DtmGrid Dtm);
 
 /// <summary>Query side of spec 10 §10.2: snapping, in-memory A* (SeaGraph, one per graph version), pgRouting driving distance, string-pulling smoothing, cache.</summary>
 public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILogger<SeaRouter> logger)
@@ -244,10 +246,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             await using var r = await c.ExecuteReaderAsync();
             while (await r.ReadAsync()) { var id = (int)r.GetInt64(0); x[id] = r.GetDouble(1); y[id] = r.GetDouble(2); }
         }
-        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount]; var adjacent = new float[edgeCount]; var floor = new float[edgeCount]; var unknownBridge = new bool[edgeCount]; var ferry = new bool[edgeCount];
+        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount]; var adjacent = new float[edgeCount]; var floor = new float[edgeCount]; var unknownBridge = new bool[edgeCount]; var ferry = new bool[edgeCount]; var traffic = new bool[edgeCount]; var dtmMin = new float[edgeCount];
+        // traffic and dtm_min_m come with the TrafficAndDtm migration (RouteBench may read an older database)
+        var emod = await Scalar("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'routing_edge' AND column_name IN ('traffic', 'dtm_min_m') AND @v = @v") == 2;
         var geomStart = new int[edgeCount + 1]; var geom = new List<double>();
         var m = 0;
-        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed, adjacent_depth_m, floor_m, unknown_bridge, ferry FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
+        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed, adjacent_depth_m, floor_m, unknown_bridge, ferry, " + (emod ? "traffic, dtm_min_m" : "false, NULL::real") + " FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
         {
             c.Parameters.AddWithValue("v", version);
             await using var r = await c.ExecuteReaderAsync();
@@ -263,11 +267,13 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 floor[m] = r.IsDBNull(8) ? float.NaN : (float)r.GetDouble(8);
                 unknownBridge[m] = r.GetBoolean(9);
                 ferry[m] = r.GetBoolean(10);
+                traffic[m] = r.GetBoolean(11);
+                dtmMin[m] = r.IsDBNull(12) ? float.NaN : r.GetFloat(12);
                 m++;
             }
         }
         geomStart[m] = geom.Count / 2;
-        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref adjacent, m); Array.Resize(ref floor, m); Array.Resize(ref unknownBridge, m); Array.Resize(ref ferry, m); Array.Resize(ref geomStart, m + 1); }
+        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref adjacent, m); Array.Resize(ref floor, m); Array.Resize(ref unknownBridge, m); Array.Resize(ref ferry, m); Array.Resize(ref traffic, m); Array.Resize(ref dtmMin, m); Array.Resize(ref geomStart, m + 1); }
         var isolated = new bool[maxNode + 1];
         await using (var c = new NpgsqlCommand("SELECT id FROM routing_isolated WHERE graph_version = @v", conn))
         {
@@ -276,7 +282,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             while (await r.ReadAsync()) { var id = r.GetInt64(0); if (id <= maxNode) isolated[id] = true; }
         }
         var loaded = sw.ElapsedMilliseconds;
-        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed, adjacent: adjacent, floor: floor, unknownBridge: unknownBridge, ferry: ferry);
+        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed, adjacent: adjacent, floor: floor, unknownBridge: unknownBridge, ferry: ferry, traffic: traffic, dtmMin: dtmMin);
         logger.LogInformation("Routing graph v{Version} in memory: {Nodes} node slots, {Edges} edges, {Snap} passage edges for snapping, heuristic x{Factor:F6}, ~{Mb} MB (GC +{GcMb} MB); read {Read} ms, indexed {Index} ms",
             version, graph.NodeSlots, graph.EdgeCount, graph.SnapEdgeCount, graph.HeuristicFactor, graph.ApproxBytes >> 20, (GC.GetTotalMemory(false) - before) >> 20, loaded, sw.ElapsedMilliseconds - loaded);
         return graph;
@@ -706,6 +712,22 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return new SmoothStatics(bridges, zone, CardinalMarks.Index(await CardinalMarks.LoadAsync(sdb)), isolated, ferries);
     }
 
+    // dense sailing traffic and the DTM (routing_traffic, routing_dtm) per graph version, loaded on first use (DTM chunks on first touch)
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<Task<KnownWater>>> _known = new();
+    private Task<KnownWater> KnownAsync(int version)
+    {
+        foreach (var old in _known.Keys.Where(k => k != version).ToList()) _known.TryRemove(old, out _);
+        var template = (NpgsqlConnection)((ICloneable)db.Database.GetDbConnection()).Clone(); // a clone keeps the password an opened connection string has lost
+        return _known.GetOrAdd(version, _ => new Lazy<Task<KnownWater>>(async () =>
+        {
+            await using var conn = (NpgsqlConnection)((ICloneable)template).Clone();
+            var traffic = await TrafficAreas.LoadAsync(conn, builder.Options.TrafficKnownSailing);
+            var hasDtm = await new NpgsqlCommand("SELECT to_regclass('routing_dtm') IS NOT NULL", conn).ExecuteScalarAsync() is true;
+            // ponytail: DTM chunks stay cached once touched (1.8 MB each, the region ≈ 230 MB at most); drop old ones if memory matters
+            return new KnownWater(traffic, hasDtm ? DtmGrid.FromDatabase(template, builder.Options.DtmMeasuredOnly) : DtmGrid.Empty);
+        })).Value;
+    }
+
     /// <summary>Pier corrections, indexed once per process; the pier import resets it.</summary>
     private static volatile Lazy<Task<STRtree<Geometry>>>? _piers;
     public static void InvalidatePiers() => _piers = null;
@@ -741,6 +763,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // what A* avoided must stay avoided when the string is pulled: too-low bridges (a circle around the point, a band along a
         // line), the impassable parts of bridges with charted spans, and too-shallow areas count as land
         var statics = await StaticsAsync(version, ct);
+        var known = await KnownAsync(version);
         {
             // bridge pieces (chains, charted spans) are the same for every route of a graph version: computed once, queried by envelope
             var radiusDeg = builder.Options.BridgeMatchAreaM / WaterGraphTiler.MPerDegLat;
@@ -784,8 +807,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         uncertain.Build(); uncertainAll.Build();
         Coordinate start = path[0], goal = path[^1]; var approachM = builder.Options.HarbourAccessM;
         bool InUncertain(LineString seg) => UncertainM(seg, uncertain, 1) > 0;
-        // metres of the leg (samples every ~25 m) in the tree's water outside the harbour approach and the ferry corridors (known-navigable,
-        // as in the graph); stops at the first hit when stopM is 1
+        // metres of the leg (samples every ~25 m) in the tree's water outside the harbour approach and the known-navigable water the graph
+        // exempts too: ferry corridors, dense sailing traffic cells, measured DTM cells deep enough; stops at the first hit when stopM is 1
         double UncertainM(LineString seg, STRtree<IPreparedGeometry> tree, int stopM = int.MaxValue)
         {
             var hits = tree.Query(seg.EnvelopeInternal).Where(u => u.Intersects(seg)).ToList();
@@ -799,7 +822,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 var c = new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n);
                 if (RoutingGraphBuilder.Haversine(c.Y, c.X, start.Y, start.X) <= approachM || RoutingGraphBuilder.Haversine(c.Y, c.X, goal.Y, goal.X) <= approachM) continue;
                 var pt = Geo.Factory.CreatePoint(c);
-                if (hits.Any(u => u.Contains(pt)) && !statics.Ferries.Contains(c) && ++inside * len / n >= stopM) break;
+                if (hits.Any(u => u.Contains(pt)) && !statics.Ferries.Contains(c) && !known.Traffic.Contains(c) && !(known.Dtm.Depth(c.Y, c.X) >= minDepthM) && ++inside * len / n >= stopM) break;
             }
             return inside * len / n;
         }

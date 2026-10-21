@@ -1,6 +1,6 @@
 import { fromShip, parseContext, routeParams } from './ship-context';
 import { routeWarningText } from './models';
-import { depthFillColour, depthHatchFilter } from './map';
+import { depthFillColour, depthHatchFilter, TRAFFIC_ATTRIBUTION, TRAFFIC_FILL } from './map';
 
 describe('ship depth settings', () => {
   it('migrates a stored draft-only context to minimum depth = draft + 0.5 m without warnings', () => {
@@ -30,5 +30,11 @@ describe('ship depth settings', () => {
     expect(JSON.stringify(depthFillColour(2))).not.toContain('2.8');
     expect(JSON.stringify(depthHatchFilter(2))).toContain('["<",["/",["+",["get","min_depth"],["get","max_depth"]],2],2]');
     expect(JSON.stringify(depthFillColour(null, null))).not.toContain('#34357a');
+  });
+
+  it('shades the vessel density by sailing + pleasure hours and names EMODnet and Cogea', () => {
+    expect(JSON.stringify(TRAFFIC_FILL)).toContain('["+",["get","sailing"],["get","pleasure"]]');
+    expect(TRAFFIC_ATTRIBUTION).toContain('EMODnet');
+    expect(TRAFFIC_ATTRIBUTION).toContain('Cogea Srl');
   });
 });

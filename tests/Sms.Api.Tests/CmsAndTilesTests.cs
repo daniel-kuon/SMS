@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Sms.Api.Tests;
 
@@ -127,5 +129,41 @@ public class CmsAndTilesTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(HttpStatusCode.NotFound, (await f.Tiles.GetAsync("/tiles/seamark/3/99/99.mvt")).StatusCode);
         var tilejson = await f.Tiles.GetFromJsonAsync<JsonElement>("/tiles/seamark.json");
         Assert.Equal("seamark", tilejson.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Vessel_density_upload_fills_the_traffic_cells_and_tiles()
+    {
+        var (admin, _) = await f.AdminAsync();
+        // before any upload: an empty tile
+        var empty = await f.Tiles.GetAsync("/tiles/traffic/9/270/165.mvt");
+        Assert.Equal(HttpStatusCode.OK, empty.StatusCode);
+        Assert.Empty(await empty.Content.ReadAsByteArrayAsync());
+        using (var none = new MultipartFormDataContent { { new StringContent("x"), "note" } })
+            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync("/api/admin/routing/import-traffic-file", none)).StatusCode);
+        using (var badName = new MultipartFormDataContent { { new ByteArrayContent([1, 2, 3]), "file", "density.tif" } })
+            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync("/api/admin/routing/import-traffic-file", badName)).StatusCode);
+        using var form = new MultipartFormDataContent();
+        form.Add(new ByteArrayContent(await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "vesseldensity_04_2023_fehmarn.tif"))), "file", "vesseldensity_04_2023_fehmarn.tif");
+        var (user, _) = await f.UserAsync();
+        Assert.Equal(HttpStatusCode.Forbidden, (await user.PostAsync("/api/admin/routing/import-traffic-file", form)).StatusCode);
+        var r = await admin.PostAsync("/api/admin/routing/import-traffic-file", form);
+        r.EnsureSuccessStatusCode();
+        var body = await r.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("cells").GetInt32() >= 20);
+        Assert.Equal("2023", body.GetProperty("years").GetString());
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Sms.Infrastructure.SmsDbContext>();
+            Assert.Equal(20, await db.Database.SqlQueryRaw<int>("SELECT COUNT(*)::int AS \"Value\" FROM routing_traffic WHERE sailing >= 10").SingleAsync());
+        }
+        // Fehmarn (54.7 N 11.5 E) at z9: the cells with their densities, the dense ones flagged known
+        var tile = await f.Tiles.GetAsync("/tiles/traffic/9/272/162.mvt");
+        tile.EnsureSuccessStatusCode();
+        var bytes = System.Text.Encoding.Latin1.GetString(await tile.Content.ReadAsByteArrayAsync());
+        Assert.Contains("traffic", bytes); Assert.Contains("sailing", bytes); Assert.Contains("known", bytes);
+        // the DTM import takes at most 4° × 4° per call
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync("/api/admin/routing/import-dtm?bbox=50,4,56,10", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync("/api/admin/routing/import-dtm", null)).StatusCode);
     }
 }

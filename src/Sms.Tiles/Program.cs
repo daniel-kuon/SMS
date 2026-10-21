@@ -15,7 +15,38 @@ var app = builder.Build();
 app.UseCors();
 var source = new ActivitySource("Sms");
 
-app.MapGet("/", () => Results.Ok(new { service = "sms-tiles", layers = new[] { "seamark", "poi", "depth" }, url = "/tiles/seamark/{z}/{x}/{y}.mvt", poiUrl = "/tiles/poi/{z}/{x}/{y}.mvt", depthUrl = "/tiles/depth/{z}/{x}/{y}.mvt", minZoom = 8, maxZoom = 18 }));
+app.MapGet("/", () => Results.Ok(new { service = "sms-tiles", layers = new[] { "seamark", "poi", "depth", "traffic" }, url = "/tiles/seamark/{z}/{x}/{y}.mvt", poiUrl = "/tiles/poi/{z}/{x}/{y}.mvt", depthUrl = "/tiles/depth/{z}/{x}/{y}.mvt", trafficUrl = "/tiles/traffic/{z}/{x}/{y}.mvt", minZoom = 8, maxZoom = 18 }));
+
+// EMODnet vessel density cells (routing_traffic, filled by the admin traffic import) with sailing / pleasure craft hours per km² per month;
+// known = sailing traffic the routing trusts as known-navigable water (Routing:TrafficKnownSailing, 0 = off). Below z9 only cells with ≥ 1 h.
+var knownSailing = builder.Configuration.GetValue("Routing:TrafficKnownSailing", 10.0);
+app.MapGet("/tiles/traffic/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int y, NpgsqlDataSource db, IMemoryCache cache, HttpContext ctx, CancellationToken ct) =>
+{
+    if (z < 0 || z > 22 || x < 0 || y < 0 || x >= 1 << z || y >= 1 << z) return Results.NotFound();
+    if (z < 6) return Results.Bytes([], "application/vnd.mapbox-vector-tile");
+    var tile = await cache.GetOrCreateAsync($"traffic/{z}/{x}/{y}", async entry =>
+    {
+        entry.SlidingExpiration = TimeSpan.FromMinutes(30);
+        await using var cmd = db.CreateCommand("""
+            WITH b AS (SELECT ST_TileEnvelope(@z, @x, @y) AS geom, ST_Transform(ST_TileEnvelope(@z, @x, @y, margin => 1.0 / 64), 4326)::box2d AS m),
+            q AS (
+                SELECT round(t.sailing::numeric, 1)::float8 AS sailing, round(t.pleasure::numeric, 1)::float8 AS pleasure, @known > 0 AND t.sailing >= @known AS known,
+                       ST_AsMVTGeom(ST_Transform(t.geom, 3857), b.geom, 4096, 64, true) AS geom
+                FROM routing_traffic t, b WHERE t.geom && b.m AND (@z >= 9 OR t.sailing + t.pleasure >= 1)
+            )
+            SELECT COALESCE(ST_AsMVT(q, 'traffic', 4096, 'geom'), ''::bytea) FROM q WHERE geom IS NOT NULL
+            """);
+        cmd.Parameters.AddWithValue("z", z); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y); cmd.Parameters.AddWithValue("known", (float)knownSailing);
+        var bytes = await cmd.ExecuteScalarAsync(ct) as byte[] ?? [];
+        entry.Size = bytes.Length + 64;
+        return bytes;
+    }) ?? [];
+    var etag = $"\"{Convert.ToHexStringLower(System.IO.Hashing.XxHash64.Hash(tile))}\"";
+    if (ctx.Request.Headers.IfNoneMatch.Contains(etag)) return Results.StatusCode(304);
+    ctx.Response.Headers.ETag = etag;
+    ctx.Response.Headers.CacheControl = "public,max-age=3600";
+    return Results.Bytes(tile, "application/vnd.mapbox-vector-tile");
+});
 
 // charted depth areas (routing_depth, filled by the admin depth import: Open Waters Seascape, fathom steps) as polygons with min/max depth
 app.MapGet("/tiles/depth/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, int y, NpgsqlDataSource db, IMemoryCache cache, HttpContext ctx, CancellationToken ct) =>

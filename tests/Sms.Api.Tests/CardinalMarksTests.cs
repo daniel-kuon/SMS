@@ -43,6 +43,10 @@ public class CardinalMarksTests
         Assert.InRange(priced[0].Cost / through.Cost, 1.5, 3);
         Assert.Equal(north.Cost, priced[1].Cost);
         Assert.Equal(through.Cost, CardinalMarks.Apply([through], marks, 1)[0].Cost);
+        // an isolated-danger mark's 60 m disc counts like a wedge: 120 m of the 445 m edge inside
+        var danger = CardinalMarks.Apply([through, north], [], 3, [new Coordinate(10, 53.998)]);
+        Assert.InRange(danger[0].Cost / through.Cost, 1.4, 1.7);
+        Assert.Equal(north.Cost, danger[1].Cost);
     }
 
     [Fact]

@@ -10,6 +10,7 @@
 //        or "backfill-ferry": ferry (edges along a stored ferry track, kind Ferry, within Routing:FerryCorridorM; their adjacent_depth_m/floor_m dropped) for the active graph version, without a rebuild
 //        env SMS_BENCH_CARDINALS=factor|hard: routes on the active graph with grid edges through a cardinal's danger wedge priced x factor in memory (CardinalPenaltyFactor simulated, passage edges not)
 //        env SMS_BENCH_FERRY=file: routes on the active graph with the edges along the ferry lines in the file ("lat,lng lat,lng …" per line) flagged in memory, a backfill-ferry simulated
+//        env SMS_BENCH_KNOWN="dtm=<dir of ERDDAP dtm_<lat>_<lng>.nc>;traffic=<vesseldensity_04_<year>.tif>,…[;sailing=10][;isolated=1][;noflag=1][;nohazard=1][;nopull=1]": the TrafficAndDtm build in memory (traffic flag, DtmMinM, isolated-danger pricing) on the active graph
 using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -313,6 +314,87 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_FERRY") is { Length: > 0 } fer
     var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
     graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
     Console.WriteLine($"simulation: {lines.Count} ferry lines, {ferry.Count(f => f)} edges flagged");
+}
+
+if (Environment.GetEnvironmentVariable("SMS_BENCH_KNOWN") is { Length: > 0 } knownArg)
+{
+    // the TrafficAndDtm build in memory on the active graph (spec-emodnet-density), from local files instead of routing_traffic/routing_dtm:
+    // "dtm=<dir of dtm_<lat>_<lng>.tif, 2° WCS tiffs>;traffic=<vesseldensity_04_<year>.tif>,…;sailing=10;isolated=1;nopull=1"
+    //  - traffic: the import's cells (TrafficImport.Cells), sailing ≥ the threshold flag edges with a floor that run along them (TrafficAreas.Along)
+    //  - dtm: the import's chunks (DtmImport.Chunk; noflag=1: interpolated cells count too), DtmMinM for the other edges with a floor below DtmGrid.MaxFloorM (DtmGrid.MinDepth)
+    //  - isolated: edges through an isolated-danger disc cost × CardinalPenaltyFactor by the share inside (CardinalMarks.Apply)
+    //  - nohazard: known water through cardinal danger wedges and isolated-danger discs too (DepthLimits' hazards off)
+    //  - nopull: the smoothing does not know the traffic cells and the DTM (the pull/slide exemption off)
+    var opt = knownArg.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(p => p.Split('=', 2)).ToDictionary(p => p[0], p => p.Length > 1 ? p[1] : "1");
+    var inv = System.Globalization.CultureInfo.InvariantCulture;
+    using var scope = sp.CreateScope();
+    var router = scope.ServiceProvider.GetRequiredService<SeaRouter>();
+    var version = await router.ActiveVersionAsync(default);
+    var g = await SeaRouter.LoadGraphAsync(new Npgsql.NpgsqlConnection(cs), version, sp.GetRequiredService<ILoggerFactory>().CreateLogger("bench"));
+    T F<T>(string name) => (T)typeof(Sms.Domain.SeaGraph).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(g)!;
+    var o = sp.GetRequiredService<RoutingGraphBuilder>().Options;
+    var clock = Stopwatch.StartNew();
+    var traffic = TrafficAreas.Empty;
+    if (opt.TryGetValue("traffic", out var trafficFiles))
+    {
+        var sailing = opt.TryGetValue("sailing", out var sv) ? double.Parse(sv, inv) : o.TrafficKnownSailing;
+        var files = trafficFiles.Split(',').Select(f => (TrafficImport.ParseName(f)!.Value.kind, new GeoTiff(File.ReadAllBytes(f)))).ToList();
+        var cells = TrafficImport.Cells(files, new NetTopologySuite.Geometries.Envelope(o.Region.MinLng, o.Region.MaxLng, o.Region.MinLat, o.Region.MaxLat));
+        traffic = new TrafficAreas(cells.Where(c => c.Sailing >= sailing).Select(c => c.Cell).ToList());
+        Console.WriteLine($"traffic: {files.Count} files, {cells.Count} cells, {traffic.Count} with sailing ≥ {sailing} ({clock.Elapsed.TotalSeconds:0} s)");
+    }
+    var dtm = DtmGrid.Empty;
+    if (opt.TryGetValue("dtm", out var dtmDir))
+    {
+        // a 2° tiff gives its four 1° chunks at once
+        // the import's files, one ERDDAP griddap subset per 1° chunk (dtm_<lat>_<lng>.nc: elevation + interpolation_flag); noflag=1 ignores the flag
+        var noFlag = opt.ContainsKey("noflag");
+        dtm = new DtmGrid(k =>
+        {
+            var path = Path.Combine(dtmDir, $"dtm_{k.lat}_{k.lng}.nc");
+            if (!File.Exists(path)) return null;
+            var r = DtmRaster.FromNetCdf(File.ReadAllBytes(path));
+            return DtmImport.Chunk(r, k.lng, k.lat).Decimetres(measuredOnly: !noFlag);
+        });
+    }
+    var cost = (float[])F<float[]>("_cost").Clone();
+    var trafficFlag = new bool[g.EdgeCount]; var dtmMin = new float[g.EdgeCount]; Array.Fill(dtmMin, float.NaN);
+    NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Prepared.IPreparedGeometry>? discs = null;
+    // DepthLimits' hazards: no traffic flag and no DTM depth through a cardinal's danger wedge or an isolated-danger disc (nohazard=1: off)
+    var hazards = new NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Prepared.IPreparedGeometry>();
+    if (!opt.ContainsKey("nohazard"))
+        foreach (var h in CardinalMarks.Hazards(await CardinalMarks.LoadAsync(scope.ServiceProvider.GetRequiredService<SmsDbContext>()), await CardinalMarks.LoadIsolatedAsync(scope.ServiceProvider.GetRequiredService<SmsDbContext>())))
+            hazards.Insert(h.EnvelopeInternal, NetTopologySuite.Geometries.Prepared.PreparedGeometryFactory.Prepare(h));
+    hazards.Build();
+    if (opt.ContainsKey("isolated") && o.CardinalPenaltyFactor > 1)
+    {
+        discs = new();
+        foreach (var p in await CardinalMarks.LoadIsolatedAsync(scope.ServiceProvider.GetRequiredService<SmsDbContext>())) { var d = CardinalMarks.Disc(p); discs.Insert(d.EnvelopeInternal, NetTopologySuite.Geometries.Prepared.PreparedGeometryFactory.Prepare(d)); }
+        discs.Build();
+    }
+    int flagged = 0, sampled = 0, deep = 0, priced = 0;
+    Parallel.For(0, g.EdgeCount, e =>
+    {
+        var line = Geo.Factory.CreateLineString(g.Coords(e));
+        if (discs is not null && discs.Query(line.EnvelopeInternal) is { Count: > 0 } hits && ChannelPreference.ShareInside(line, hits, 25) is var share && share > 0)
+        {
+            cost[e] = (float)(cost[e] * (1 + share * (o.CardinalPenaltyFactor - 1))); Interlocked.Increment(ref priced);
+        }
+        if (g.Ferry(e) || float.IsNaN(g.Floor(e))) return;
+        if (hazards.Count > 0 && hazards.Query(line.EnvelopeInternal).Any(h => h.Intersects(line))) return;
+        if (traffic.Along(line)) { trafficFlag[e] = true; Interlocked.Increment(ref flagged); return; }
+        if (g.Floor(e) >= DtmGrid.MaxFloorM) return;
+        Interlocked.Increment(ref sampled);
+        if (dtm.MinDepth(line) is { } dd) { dtmMin[e] = (float)dd; if (dd >= 2.3) Interlocked.Increment(ref deep); }
+    });
+    var sim = new Sms.Domain.SeaGraph(F<double[]>("_x"), F<double[]>("_y"), F<int[]>("_src"), F<int[]>("_tgt"), cost, F<float[]>("_depth"), F<float[]>("_clear"), F<int[]>("_geomStart"), F<double[]>("_geom"), F<int>("_firstPassage"), F<bool[]?>("_isolated"),
+        assumed: F<bool[]?>("_assumed"), adjacent: F<float[]?>("_adjacent"), floor: F<float[]?>("_floor"), unknownBridge: F<bool[]?>("_unknownBridge"), ferry: F<bool[]?>("_ferry"), traffic: trafficFlag, dtmMin: dtmMin);
+    var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
+    graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
+    var known = opt.ContainsKey("nopull") ? new KnownWater(TrafficAreas.Empty, DtmGrid.Empty) : new KnownWater(traffic, dtm);
+    var knownCache = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_known", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
+    knownCache[version] = new Lazy<Task<KnownWater>>(() => Task.FromResult(known));
+    Console.WriteLine($"known-water simulation ({knownArg}): {flagged} edges flagged traffic, {sampled} sampled in the DTM ({dtm.Chunks} chunks), {deep} DTM-deep ≥ 2.3 m, {priced} edges through isolated-danger discs ({clock.Elapsed.TotalSeconds:0} s)");
 }
 
 (string name, double lat1, double lng1, double lat2, double lng2, double draft, double? minDepth, double? warnDepth, double? airDraft, bool avoidUnknownBridges)[] routes =

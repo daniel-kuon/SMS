@@ -58,6 +58,10 @@ public static class CardinalMarks
         return Geo.Factory.CreatePolygon(ring);
     }
 
+    /// <summary>The danger wedges of the cardinals and the discs round the isolated-danger marks: no known-water evidence counts in them (DepthLimits).</summary>
+    public static List<Polygon> Hazards(IEnumerable<(Coordinate p, MarkSide side)> marks, IEnumerable<Coordinate> isolated) =>
+        [.. marks.Select(m => Wedge(m.p, m.side)), .. isolated.Select(p => Disc(p))];
+
     public static STRtree<Polygon> Index(IEnumerable<(Coordinate p, MarkSide side)> marks, double radiusM = Fairways.CardinalDangerM)
     {
         var tree = new STRtree<Polygon>();
@@ -67,12 +71,14 @@ public static class CardinalMarks
     }
 
     /// <summary>Edges that run through a danger wedge cost ×factor by the share inside (sampled every 25 m; a passage edge's cost is
-    /// multiplied too, so the search leaves an "Enge" or waterway line through a wedge where the grid offers a way round). factor ≤ 1 = off.</summary>
-    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IEnumerable<(Coordinate p, MarkSide side)> marks, double factor)
+    /// multiplied too, so the search leaves an "Enge" or waterway line through a wedge where the grid offers a way round). factor ≤ 1 = off.
+    /// The <see cref="Disc"/> round each isolated-danger mark counts like a wedge (the smoothing keeps out of both).</summary>
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IEnumerable<(Coordinate p, MarkSide side)> marks, double factor, IEnumerable<Coordinate>? isolated = null)
     {
         if (factor <= 1) return edges.ToList();
         var index = new STRtree<IPreparedGeometry>();
         foreach (var (p, side) in marks) { var w = Wedge(p, side); index.Insert(w.EnvelopeInternal, PreparedGeometryFactory.Prepare(w)); }
+        foreach (var p in isolated ?? []) { var d = Disc(p); index.Insert(d.EnvelopeInternal, PreparedGeometryFactory.Prepare(d)); }
         index.Build();
         var result = new List<GraphEdge>(edges.Count);
         foreach (var e in edges)

@@ -46,5 +46,20 @@ public class PassageContractionTests
         Assert.Equal(2, result.Count(e => !e.Ferry));
         var all = PassageContraction.Contract(edges.Select(e => e with { Ferry = true }).ToList(), new HashSet<long> { 1, 4 }, _ => false);
         Assert.True(Assert.Single(all).Ferry);
+        var traffic = PassageContraction.Contract(edges.Select((e, i) => e with { Ferry = false, Traffic = i == 1 }).ToList(), new HashSet<long> { 1, 4 }, _ => false);
+        Assert.Equal(3, traffic.Count); Assert.Single(traffic, e => e.Traffic);
+    }
+
+    [Fact]
+    public void Merged_dtm_depth_is_uncertain_exactly_when_a_part_was()
+    {
+        // 1-2 through the 1.83 band with 3.0 m in the DTM, 2-3 charted 3.66: neither part is uncertain at 2.3 m, nor is the merged edge
+        var a = E(1, 2, 9.0, 54.0, 9.01, 54.0, 1.8288) with { DtmMinM = 3.0 }; var b = E(2, 3, 9.01, 54.0, 9.02, 54.0, 3.6576);
+        var merged = Assert.Single(PassageContraction.Contract([a, b], new HashSet<long> { 1, 3 }, _ => false));
+        Assert.Equal(1.8288, merged.MinDepthM); Assert.Equal(3.0, merged.DtmMinM);
+        // 2-3 in the 1.83 band without DTM evidence: the merged edge is not known deep (its known depth is that band)
+        merged = Assert.Single(PassageContraction.Contract([a, b with { MinDepthM = 1.8288 }], new HashSet<long> { 1, 3 }, _ => false));
+        Assert.Equal(1.8288, merged.DtmMinM);
+        Assert.Null(Assert.Single(PassageContraction.Contract([a with { DtmMinM = null }, b], new HashSet<long> { 1, 3 }, _ => false)).DtmMinM);
     }
 }

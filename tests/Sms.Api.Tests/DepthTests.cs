@@ -94,4 +94,39 @@ public class DepthTests
         List<GraphEdge> all = [strip, farStrip, wide, inBand];
         Assert.Equal(DepthLimits.Apply(all, areas, NearLand), DepthLimits.Apply(all, areas, NearLand, ferry: FerryCorridors.Empty));
     }
+
+    [Fact]
+    public void Dtm_and_traffic_only_lift_the_uncertain_verdict_and_never_touch_the_bands()
+    {
+        // the fixtures of Uncharted_coastal_edges_get_the_floor_of_the_band_next_to_them; a DTM that reads 3.0 m everywhere (2.6 m in the east)
+        var band = F.CreatePolygon([new(10.00, 54.50), new(10.10, 54.50), new(10.10, 54.5195), new(10.00, 54.5195), new(10.00, 54.50)]);
+        var flat = F.CreatePolygon([new(10.10, 54.50), new(10.20, 54.50), new(10.20, 54.5195), new(10.10, 54.5195), new(10.10, 54.50)]);
+        var land = F.CreatePolygon([new(9.90, 54.5205), new(10.30, 54.5205), new(10.30, 54.60), new(9.90, 54.60), new(9.90, 54.5205)]);
+        bool NearLand(Coordinate c, double m) => land.IsWithinDistance(F.CreatePoint(c), m / 111_320.0);
+        (Geometry, double)[] areas = [(band, 1.8288), (flat, 0)];
+        var chunk = Enumerable.Range(0, DtmGrid.Cells * DtmGrid.Cells).Select(i => (short)(i % DtmGrid.Cells < 0.2 * DtmGrid.Cells ? 30 : 26)).ToArray(); // 10.0–10.2 E: 3.0 m
+        var dtm = new DtmGrid(k => k == (10, 54) ? chunk : null);
+        var inBand = Edge(1, 2, 10.02, 54.51, 10.06, 54.51);
+        var strip = Edge(3, 4, 10.02, 54.52, 10.06, 54.52);       // coastal, next to the 1.83 m band
+        var farStrip = Edge(5, 6, 10.25, 54.52, 10.28, 54.52);    // coastal, no band in reach: FloorM 0
+        var offshore = Edge(7, 8, 10.02, 54.40, 10.06, 54.40);    // no data, no floor: never uncertain, not sampled
+        var result = DepthLimits.Apply([inBand, strip, farStrip, offshore], areas, NearLand, dtm: dtm);
+        Assert.Equal(1.8288, result[0].MinDepthM); Assert.Equal(3.0, result[0].DtmMinM); // the band stays, the DTM depth comes on top
+        Assert.Equal(1.8288, result[1].AdjacentDepthM); Assert.Equal(3.0, result[1].DtmMinM);
+        Assert.Equal(DepthLimits.UnknownCoastalFloorM, result[2].FloorM); Assert.Equal(2.6, result[2].DtmMinM);
+        Assert.Null(result[3].DtmMinM);
+        Assert.Equal(DepthLimits.Apply([inBand, strip, farStrip, offshore], areas, NearLand).Select(e => e with { DtmMinM = null }), result.Select(e => e with { DtmMinM = null })); // nothing else changes
+        // inside a dense traffic cell: flagged, the band and the band next to it stay (a 1 km cell may straddle a flat), no DTM sampling
+        var cell = F.CreatePolygon([new(10.00, 54.505), new(10.10, 54.505), new(10.10, 54.525), new(10.00, 54.525), new(10.00, 54.505)]);
+        var traffic = DepthLimits.Apply([inBand, strip, farStrip], areas, NearLand, traffic: new TrafficAreas([cell]), dtm: dtm);
+        Assert.True(traffic[0].Traffic); Assert.Equal(1.8288, traffic[0].MinDepthM); Assert.Null(traffic[0].DtmMinM);
+        Assert.True(traffic[1].Traffic); Assert.Equal(1.8288, traffic[1].AdjacentDepthM);
+        Assert.False(traffic[2].Traffic); Assert.Equal(2.6, traffic[2].DtmMinM);
+        // through a cardinal's danger wedge or an isolated-danger disc: neither the traffic flag nor the DTM depth
+        var hazards = CardinalMarks.Hazards([(new Coordinate(10.04, 54.5125), MarkSide.North)], [new Coordinate(10.265, 54.52)]);
+        var marked = DepthLimits.Apply([inBand, strip, farStrip], areas, NearLand, traffic: new TrafficAreas([cell]), dtm: dtm, hazards: hazards);
+        Assert.False(marked[0].Traffic); Assert.Null(marked[0].DtmMinM); Assert.Equal(1.8288, marked[0].MinDepthM);
+        Assert.True(marked[1].Traffic);
+        Assert.Null(marked[2].DtmMinM); Assert.Equal(DepthLimits.UnknownCoastalFloorM, marked[2].FloorM);
+    }
 }

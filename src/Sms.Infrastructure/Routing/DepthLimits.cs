@@ -12,6 +12,10 @@ namespace Sms.Infrastructure.Routing;
 /// FloorM = <see cref="UnknownCoastalFloorM"/>: no limit, but not definitely deep enough either (SeaGraph.Floor). Open water without data stays unlimited.
 /// An edge along a ferry track (FerryCorridors) is flagged Ferry: it keeps the charted band it crosses (the band block), but is never
 /// "not definitely deep enough" - no AdjacentDepthM, no FloorM.
+/// An edge in dense sailing traffic (TrafficAreas) is flagged Traffic: never "not definitely deep enough" either, but it keeps everything
+/// else (a 1 km cell may straddle a drying flat: the band next to it still closes the edge for the draft). Every other edge with a floor
+/// below <see cref="DtmGrid.MaxFloorM"/> gets the shallowest DTM depth along it (DtmMinM): only ever used to lift that verdict. Neither applies
+/// to an edge through a hazard (a cardinal's danger quadrant, an isolated-danger disc): the shallows are what the mark is there for.
 /// </summary>
 public static class DepthLimits
 {
@@ -23,9 +27,15 @@ public static class DepthLimits
     /// <param name="buoyed">Fairway areas (derived from the buoys, or charted): an edge at least half inside one is buoyed water and gets no
     /// depth of its own, like a passage edge – the strict depth rule leaves it open.</param>
     /// <param name="ferry">Ferry tracks: an edge along one gets its charted band and the Ferry flag, no coastal floor.</param>
-    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry area, double minDepthM)> areas, Func<Coordinate, double, bool>? nearLand = null, IReadOnlyList<Polygon>? buoyed = null, FerryCorridors? ferry = null)
+    /// <param name="traffic">Dense sailing traffic cells: an edge along them gets the Traffic flag.</param>
+    /// <param name="dtm">The EMODnet DTM: DtmMinM for the other edges with a floor.</param>
+    /// <param name="hazards">Cardinal danger wedges and isolated-danger discs (CardinalMarks.Hazards): no traffic flag, no DTM depth through them.</param>
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry area, double minDepthM)> areas, Func<Coordinate, double, bool>? nearLand = null, IReadOnlyList<Polygon>? buoyed = null, FerryCorridors? ferry = null, TrafficAreas? traffic = null, DtmGrid? dtm = null, IReadOnlyList<Polygon>? hazards = null)
     {
-        if (areas.Count == 0 && ferry is not { Count: > 0 }) return edges.ToList();
+        var hazardIndex = new STRtree<IPreparedGeometry>();
+        foreach (var h in hazards ?? []) hazardIndex.Insert(h.EnvelopeInternal, PreparedGeometryFactory.Prepare(h));
+        hazardIndex.Build();
+        if (areas.Count == 0 && ferry is not { Count: > 0 } && traffic is not { Count: > 0 }) return edges.ToList();
         var index = new STRtree<(IPreparedGeometry prepared, double depth)>();
         foreach (var (area, depth) in areas) index.Insert(area.EnvelopeInternal, (PreparedGeometryFactory.Prepare(area), depth));
         index.Build();
@@ -40,8 +50,12 @@ public static class DepthLimits
             foreach (var (prepared, depth) in index.Query(e.Geom.EnvelopeInternal))
                 if (prepared.Intersects(e.Geom) && (min is null || depth < min)) min = depth;
             if (ferry is { Count: > 0 } && ferry.Along(e.Geom)) { result.Add(e with { MinDepthM = min ?? e.MinDepthM, Ferry = true }); continue; }
-            result.Add(min is not null ? e with { MinDepthM = min } : nearLand is null || !Coastal(e.Geom, nearLand) ? e
-                : Adjacent(e.Geom, index) is { } adj ? e with { AdjacentDepthM = adj } : e with { FloorM = UnknownCoastalFloorM });
+            var r = min is not null ? e with { MinDepthM = min } : nearLand is null || !Coastal(e.Geom, nearLand) ? e
+                : Adjacent(e.Geom, index) is { } adj ? e with { AdjacentDepthM = adj } : e with { FloorM = UnknownCoastalFloorM };
+            var hazard = hazardIndex.Count > 0 && hazardIndex.Query(e.Geom.EnvelopeInternal).Any(h => h.Intersects(e.Geom));
+            if (!hazard && traffic is { Count: > 0 } && traffic.Along(e.Geom)) r = r with { Traffic = true };
+            else if (!hazard && dtm is not null && (r.MinDepthM ?? r.AdjacentDepthM ?? r.FloorM) is { } f && f < DtmGrid.MaxFloorM) r = r with { DtmMinM = dtm.MinDepth(e.Geom) };
+            result.Add(r);
         }
         return result;
     }
