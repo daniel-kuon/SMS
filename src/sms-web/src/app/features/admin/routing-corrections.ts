@@ -18,8 +18,8 @@ import { isMarkerEvent, LineEditor, vertexNear } from '../../core/line-editor';
 import { cleanLines, geometryToLines, Lines, vertexCount } from '../../core/line-network';
 import { firstValueFrom } from 'rxjs';
 
-export interface Correction { id: string; kind: 'Block' | 'Passage' | 'Bridge' | 'Lock' | 'OpeningBridge' | 'Fairway' | 'Avoid' | 'Water'; source: 'Manual' | 'Derived'; geometry: Geometry; note: string | null; active: boolean; createdAt: string; clearanceM?: number | null; }
-export const KIND_ICON: Record<Correction['kind'], string> = { Block: 'block', Passage: 'timeline', Bridge: 'vertical_align_top', Lock: 'lock', OpeningBridge: 'open_in_full', Fairway: 'water', Avoid: 'warning', Water: 'waves' };
+export interface Correction { id: string; kind: 'Block' | 'Passage' | 'Bridge' | 'Lock' | 'OpeningBridge' | 'Fairway' | 'Avoid' | 'Water' | 'Ferry'; source: 'Manual' | 'Derived'; geometry: Geometry; note: string | null; active: boolean; createdAt: string; clearanceM?: number | null; }
+export const KIND_ICON: Record<Correction['kind'], string> = { Block: 'block', Passage: 'timeline', Bridge: 'vertical_align_top', Lock: 'lock', OpeningBridge: 'open_in_full', Fairway: 'water', Avoid: 'warning', Water: 'waves', Ferry: 'directions_boat' };
 
 /** Length of a LineString in nautical miles (0 for other geometries). */
 export function lengthNm(g: Geometry): number {
@@ -39,7 +39,7 @@ export function draftGeometry(kind: 'Block' | 'Passage', points: [number, number
   return points.length >= 3 ? { type: 'Polygon', coordinates: [[...points, points[0]]] } : null;
 }
 
-export const KINDS: Correction['kind'][] = ['Block', 'Avoid', 'Water', 'Passage', 'Fairway', 'Bridge', 'Lock', 'OpeningBridge'];
+export const KINDS: Correction['kind'][] = ['Block', 'Avoid', 'Water', 'Passage', 'Fairway', 'Bridge', 'Lock', 'OpeningBridge', 'Ferry'];
 export const SOURCES: Correction['source'][] = ['Manual', 'Derived'];
 export interface CorrectionFilter { kinds: Correction['kind'][]; sources: Correction['source'][]; }
 export const FILTER_STORAGE = 'sms.correctionFilter';

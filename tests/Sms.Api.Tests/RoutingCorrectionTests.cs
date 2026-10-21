@@ -20,6 +20,9 @@ public class RoutingCorrectionTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/routing/corrections", new { kind = "Block", geometry = passage.geometry, note = "x", active = true })).StatusCode);
         var block = new { kind = "Block", geometry = new { type = "Polygon", coordinates = new[] { new[] { new[] { 10.0, 54.0 }, new[] { 10.1, 54.0 }, new[] { 10.1, 54.1 }, new[] { 10.0, 54.0 } } } }, note = "Sperrgebiet", active = true };
         (await admin.PostAsJsonAsync("/api/admin/routing/corrections", block)).EnsureSuccessStatusCode();
+        // a ferry track is a line too
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/routing/corrections", new { kind = "Ferry", geometry = block.geometry, note = "Fährlinie", active = true })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await admin.PostAsJsonAsync("/api/admin/routing/corrections", new { kind = "Ferry", geometry = passage.geometry, note = "Fährlinie", active = true })).StatusCode);
 
         var list = await admin.GetFromJsonAsync<JsonElement>("/api/admin/routing/corrections");
         var mine = list.EnumerateArray().Single(c => c.GetProperty("id").GetGuid() == id);

@@ -119,13 +119,7 @@ public static class Waterways
     /// "Empfohlener Kurs …" (the way's name, else its ferry relation's).</summary>
     public static List<Waterway> ParseGuideLines(JsonDocument doc, GeometryFactory f)
     {
-        var relationName = new Dictionary<long, string>();
-        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
-        {
-            if (el.GetProperty("type").GetString() != "relation" || !el.TryGetProperty("tags", out var t) || !t.TryGetProperty("name", out var n) || !el.TryGetProperty("members", out var members)) continue;
-            foreach (var m in members.EnumerateArray())
-                if (m.GetProperty("type").GetString() == "way") relationName.TryAdd(m.GetProperty("ref").GetInt64(), n.GetString() ?? "");
-        }
+        var relationName = RelationNames(doc);
         var ferries = new List<(LineString, string?)>(); var tracks = new List<(LineString, string?)>();
         foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
         {
@@ -138,6 +132,40 @@ public static class Waterways
             (track ? tracks : ferries).Add((f.CreateLineString(coords), $"{(track ? "Empfohlener Kurs" : "Fährlinie")}{(string.IsNullOrEmpty(name) ? "" : " " + name)}"));
         }
         return [.. Merge(ferries, f), .. Merge(tracks, f)];
+    }
+
+    /// <summary>Scheduled ferry tracks (correction kind Ferry): every route=ferry way of the guide query, one line per way (no merging),
+    /// cable ferries (ferry:cable=yes, ferry=cable: a few metres of a river crossing, nothing about the sound) skipped. Name: the way's,
+    /// else its ferry relation's.</summary>
+    public static List<(LineString line, string? name)> ParseFerryLines(JsonDocument doc, GeometryFactory f)
+    {
+        var relationName = RelationNames(doc);
+        var result = new List<(LineString, string?)>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (el.GetProperty("type").GetString() != "way" || !el.TryGetProperty("geometry", out var geom) || !el.TryGetProperty("tags", out var t)) continue;
+            var tags = t.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+            if (tags.GetValueOrDefault("route") != "ferry" || tags.GetValueOrDefault("ferry:cable") == "yes" || tags.GetValueOrDefault("ferry") == "cable") continue;
+            var coords = geom.EnumerateArray().Select(c => new Coordinate(c.GetProperty("lon").GetDouble(), c.GetProperty("lat").GetDouble())).ToArray();
+            if (coords.Length < 2) continue;
+            var line = f.CreateLineString(coords); line.SRID = 4326;
+            var name = tags.GetValueOrDefault("name") ?? relationName.GetValueOrDefault(el.GetProperty("id").GetInt64());
+            result.Add((line, string.IsNullOrEmpty(name) ? null : name));
+        }
+        return result;
+    }
+
+    /// <summary>Member way id → name of its (first) named relation.</summary>
+    private static Dictionary<long, string> RelationNames(JsonDocument doc)
+    {
+        var relationName = new Dictionary<long, string>();
+        foreach (var el in doc.RootElement.GetProperty("elements").EnumerateArray())
+        {
+            if (el.GetProperty("type").GetString() != "relation" || !el.TryGetProperty("tags", out var t) || !t.TryGetProperty("name", out var n) || !el.TryGetProperty("members", out var members)) continue;
+            foreach (var m in members.EnumerateArray())
+                if (m.GetProperty("type").GetString() == "way") relationName.TryAdd(m.GetProperty("ref").GetInt64(), n.GetString() ?? "");
+        }
+        return relationName;
     }
 
     public static bool IsPier(IReadOnlyDictionary<string, string> tags) => tags.GetValueOrDefault("man_made") is "pier" or "breakwater" or "groyne";

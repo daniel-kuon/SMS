@@ -34,4 +34,17 @@ public class PassageContractionTests
         Assert.Equal(3, looser.Count);
         Assert.Contains(looser, e => e.Geom.NumPoints == 3 && e.MinDepthM == 2.0);
     }
+
+    [Fact]
+    public void Ferry_pieces_do_not_merge_with_ordinary_ones()
+    {
+        // chain a-b-c-d (1-2-3-4) with b-c along a ferry track: the flag change keeps b and c as junctions
+        var edges = new List<GraphEdge> { E(1, 2, 9.0, 54.0, 9.01, 54.0), E(2, 3, 9.01, 54.0, 9.02, 54.0) with { Ferry = true }, E(3, 4, 9.02, 54.0, 9.03, 54.0) };
+        var result = PassageContraction.Contract(edges, new HashSet<long> { 1, 4 }, _ => false);
+        Assert.Equal(3, result.Count);
+        Assert.True(result.Single(e => e.Source is 2 or 3 && e.Target is 2 or 3).Ferry);
+        Assert.Equal(2, result.Count(e => !e.Ferry));
+        var all = PassageContraction.Contract(edges.Select(e => e with { Ferry = true }).ToList(), new HashSet<long> { 1, 4 }, _ => false);
+        Assert.True(Assert.Single(all).Ferry);
+    }
 }

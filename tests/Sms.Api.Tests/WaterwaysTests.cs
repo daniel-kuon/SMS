@@ -56,4 +56,23 @@ public class WaterwaysTests
         Assert.False(Waterways.IsPlainBridge(Tags(("bridge", "movable"), ("highway", "primary"), ("bridge:movable", "bascule"))));
         Assert.False(Waterways.IsPlainBridge(Tags(("bridge", "yes"), ("highway", "primary"), ("seamark:type", "bridge"))));
     }
+
+    [Fact]
+    public void Ferry_lines_skip_cable_ferries_and_take_the_relation_name()
+    {
+        using var doc = JsonDocument.Parse("""
+        {"elements":[
+          {"type":"way","id":1,"tags":{"route":"ferry","name":"Färja 18 Utö–Ornö–Saltsjöbaden–Stockholm"},"geometry":[{"lat":59.30,"lon":18.22},{"lat":59.31,"lon":18.22}]},
+          {"type":"way","id":2,"tags":{"route":"ferry","ferry:cable":"yes","name":"Linfärja"},"geometry":[{"lat":59.40,"lon":18.30},{"lat":59.401,"lon":18.30}]},
+          {"type":"way","id":3,"tags":{"route":"ferry"},"geometry":[{"lat":59.29,"lon":18.40},{"lat":59.29,"lon":18.50},{"lat":59.28,"lon":18.60}]},
+          {"type":"relation","id":10,"tags":{"route":"ferry","name":"Strömma kanalturen till Sandhamn"},"members":[{"type":"way","ref":3,"role":""}]}
+        ]}
+        """);
+        var lines = Waterways.ParseFerryLines(doc, F);
+        Assert.Equal(2, lines.Count);
+        Assert.Equal("Färja 18 Utö–Ornö–Saltsjöbaden–Stockholm", lines[0].name);
+        Assert.Equal("Strömma kanalturen till Sandhamn", lines[1].name);
+        Assert.Equal(3, lines[1].line.NumPoints);
+        Assert.All(lines, l => Assert.Equal(4326, l.line.SRID));
+    }
 }

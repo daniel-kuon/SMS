@@ -14,6 +14,7 @@ namespace Sms.Domain;
 /// Edges between two passage vertices (ids ≥ firstPassageNode) are "fixed": their geometry is kept by the smoothing.
 /// Assumed edges (AssumedPassages: a ferry line or buoy gap across the coastline land) are reported per path, or closed by the limits.
 /// Edges under a fixed bridge without a charted clearance (UnknownBridge) are passed, or closed by Limits.AvoidUnknownBridges.
+/// Edges along a scheduled ferry track (Ferry) are never uncertain; the charted band block still applies.
 /// </summary>
 public sealed class SeaGraph
 {
@@ -30,6 +31,7 @@ public sealed class SeaGraph
     private readonly float[]? _adjacent;
     private readonly float[]? _floor;
     private readonly bool[]? _unknownBridge;
+    private readonly bool[]? _ferry;
     private readonly STRtree<int> _passages = new();
 
     /// <summary>Lower bound of cost per metre over all edges (the heuristic's scale).</summary>
@@ -50,9 +52,10 @@ public sealed class SeaGraph
     /// <param name="floor">Per edge of a derived channel ("Enge", no buoys) that the depth limit leaves open: the floor of the band it
     /// runs through (or, without data in the coastal strip, of the band next to it), NaN = none. Counts for <see cref="Floor"/> only.</param>
     /// <param name="unknownBridge">Per edge: passes under a fixed bridge without a charted clearance (null = none).</param>
-    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null, float[]? adjacent = null, float[]? floor = null, bool[]? unknownBridge = null)
+    /// <param name="ferry">Per edge: runs along a scheduled ferry track, known-navigable water (null = none).</param>
+    public SeaGraph(double[] x, double[] y, int[] src, int[] tgt, float[] cost, float[] depth, float[] clearance, int[] geomStart, double[] geom, int firstPassageNode, bool[]? isolated = null, double snapMinM = 1000, bool[]? assumed = null, float[]? adjacent = null, float[]? floor = null, bool[]? unknownBridge = null, bool[]? ferry = null)
     {
-        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed; _adjacent = adjacent; _floor = floor; _unknownBridge = unknownBridge;
+        _x = x; _y = y; _src = src; _tgt = tgt; _cost = cost; _depth = depth; _clear = clearance; _geomStart = geomStart; _geom = geom; _firstPassage = firstPassageNode; _isolated = isolated; _assumed = assumed; _adjacent = adjacent; _floor = floor; _unknownBridge = unknownBridge; _ferry = ferry;
         int n = x.Length, m = src.Length;
         _adjStart = new int[n + 1];
         for (var e = 0; e < m; e++) { _adjStart[src[e] + 1]++; _adjStart[tgt[e] + 1]++; }
@@ -82,11 +85,13 @@ public sealed class SeaGraph
     }
 
     /// <summary>Approximate bytes held (arrays and the snap index).</summary>
-    public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + (_adjacent?.Length ?? 0) * 4L + (_floor?.Length ?? 0) * 4L + (_unknownBridge?.Length ?? 0) + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
+    public long ApproxBytes => (long)_x.Length * 16 + (_isolated?.Length ?? 0) + (long)_src.Length * (4 * 6) + (_adjacent?.Length ?? 0) * 4L + (_floor?.Length ?? 0) * 4L + (_unknownBridge?.Length ?? 0) + (_ferry?.Length ?? 0) + _geom.Length * 8L + _adjStart.Length * 4L + _adj.Length * 4L + SnapEdgeCount * 100L;
 
     public bool IsPassage(int e) => _src[e] >= _firstPassage && _tgt[e] >= _firstPassage;
     public bool IsAssumed(int e) => _assumed is not null && _assumed[e];
     public bool UnknownBridge(int e) => _unknownBridge is not null && _unknownBridge[e];
+    /// <summary>The edge runs along a scheduled ferry track: known-navigable water, never <see cref="Uncertain"/>.</summary>
+    public bool Ferry(int e) => _ferry is not null && _ferry[e];
     /// <summary>A straight link between a passage vertex and a water node (the builder lets these cross up to 50 m of land, a mole or pier).</summary>
     public bool IsLink(int e) => (_src[e] >= _firstPassage) != (_tgt[e] >= _firstPassage) && _geomStart[e] == _geomStart[e + 1];
     /// <summary>A straight edge between two passage vertices that is not an assumed passage: a gap link between two channel pieces
@@ -101,8 +106,9 @@ public sealed class SeaGraph
         var d = Depth(e); var c = _floor?[e] ?? float.NaN;
         return float.IsNaN(d) ? c : float.IsNaN(c) ? d : Math.Min(d, c);
     }
-    /// <summary>The edge's band floor lies below the minimum depth: not definitely deep enough (a buoyed channel, open water without data never is).</summary>
-    public bool Uncertain(int e, double minDepthM) => Floor(e) is var f && !float.IsNaN(f) && f < (float)minDepthM;
+    /// <summary>The edge's band floor lies below the minimum depth: not definitely deep enough (a buoyed channel, open water without data,
+    /// a ferry track never is).</summary>
+    public bool Uncertain(int e, double minDepthM) => !Ferry(e) && Floor(e) is var f && !float.IsNaN(f) && f < (float)minDepthM;
     /// <summary>Bridge clearance of the edge, NaN = none.</summary>
     public float Clearance(int e) => _clear[e];
     /// <summary>The edge has no charted depth of its own and counts with the band next to it.</summary>

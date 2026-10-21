@@ -68,4 +68,30 @@ public class DepthTests
         Assert.All(result.Take(4), e => Assert.Null(e.FloorM));
         Assert.Null(DepthLimits.Apply([strip], [(band, 1.8288)])[0].AdjacentDepthM); // without land (passages): no coastal rule
     }
+
+    [Fact]
+    public void Ferry_corridor_edges_keep_the_charted_band_but_get_no_floor()
+    {
+        // the fixtures of Uncharted_coastal_edges_get_the_floor_of_the_band_next_to_them, a ferry track along the coastal strip
+        var band = F.CreatePolygon([new(10.00, 54.50), new(10.10, 54.50), new(10.10, 54.5195), new(10.00, 54.5195), new(10.00, 54.50)]);
+        var flat = F.CreatePolygon([new(10.10, 54.50), new(10.20, 54.50), new(10.20, 54.5195), new(10.10, 54.5195), new(10.10, 54.50)]);
+        var land = F.CreatePolygon([new(9.90, 54.5205), new(10.30, 54.5205), new(10.30, 54.60), new(9.90, 54.60), new(9.90, 54.5205)]);
+        bool NearLand(Coordinate c, double m) => land.IsWithinDistance(F.CreatePoint(c), m / 111_320.0);
+        (Geometry, double)[] areas = [(band, 1.8288), (flat, 0)];
+        var ferries = new FerryCorridors([F.CreateLineString([new(10.00, 54.52), new(10.30, 54.52)])], 50);
+        var strip = Edge(1, 2, 10.02, 54.52, 10.06, 54.52);        // on the track
+        var farStrip = Edge(9, 10, 10.25, 54.52, 10.28, 54.52);    // on the track, no band in reach
+        var wide = Edge(7, 8, 10.02, 54.52, 10.02, 54.47);         // leaves the track across the band: ~50 m of 5.5 km within it
+        var result = DepthLimits.Apply([strip, farStrip, wide], areas, NearLand, ferry: ferries);
+        Assert.True(result[0].Ferry); Assert.Null(result[0].AdjacentDepthM); Assert.Null(result[0].FloorM); Assert.Null(result[0].MinDepthM);
+        Assert.True(result[1].Ferry); Assert.Null(result[1].FloorM); // was UnknownCoastalFloorM
+        Assert.False(result[2].Ferry); Assert.Equal(1.8288, result[2].MinDepthM);
+        // a track through the charted band: flagged, the band stays (the band block for charted shallows)
+        var inBand = Edge(11, 12, 10.02, 54.51, 10.06, 54.51);
+        var through = DepthLimits.Apply([inBand], areas, NearLand, ferry: new FerryCorridors([F.CreateLineString([new(10.00, 54.51), new(10.30, 54.51)])], 50))[0];
+        Assert.True(through.Ferry); Assert.Equal(1.8288, through.MinDepthM);
+        // no tracks: as before
+        List<GraphEdge> all = [strip, farStrip, wide, inBand];
+        Assert.Equal(DepthLimits.Apply(all, areas, NearLand), DepthLimits.Apply(all, areas, NearLand, ferry: FerryCorridors.Empty));
+    }
 }

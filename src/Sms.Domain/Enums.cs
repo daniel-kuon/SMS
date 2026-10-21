@@ -21,7 +21,8 @@ public enum ProfileVisibility { Public, Registered }
 /// <summary>Fairway: a marked channel area (polygon, OSM seamark:type=fairway) – open water next to it is penalised, water inside it is not.</summary>
 /// <summary>Avoid: a warning/restricted-entry area (firing range outside firing hours) – crossed only when the detour is long.</summary>
 /// <summary>Water: an inland water body (lake, IJsselmeer) that the coastline-based land polygons count as land.</summary>
-public enum CorrectionKind { Block, Passage, Bridge, Lock, OpeningBridge, Fairway, Avoid, Water, Pier }
+/// <summary>Ferry: a scheduled ferry track (OSM route=ferry, no cable ferries): water along it is known-navigable for the strict depth rule, no passage.</summary>
+public enum CorrectionKind { Block, Passage, Bridge, Lock, OpeningBridge, Fairway, Avoid, Water, Pier, Ferry }
 public enum CorrectionSource { Manual, Derived }
 /// <summary>How routes treat fixed bridges without a charted clearance: passed with a warning, or avoided unless no other route exists.</summary>
 public enum UnknownBridgePolicy { Pass, Avoid }

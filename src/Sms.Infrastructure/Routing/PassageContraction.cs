@@ -6,7 +6,7 @@ namespace Sms.Infrastructure.Routing;
 /// Merges chains of passage edges through degree-2 vertices into one edge per junction-to-junction stretch. A vertex is a
 /// junction when it is kept explicitly (passage ends, vertices with a link), belongs to the water graph, or has a number of
 /// passage edges other than two. The merged edge carries the concatenated geometry, the summed cost and the strictest depth
-/// and clearance (and channel floor) of its parts, and whether any part passes under a bridge of unknown clearance. A vertex where an assumed stretch meets an ordinary one stays a junction (the flag is per edge).
+/// and clearance (and channel floor) of its parts, and whether any part passes under a bridge of unknown clearance. A vertex where an assumed (or ferry) stretch meets an ordinary one stays a junction (the flags are per edge).
 /// </summary>
 public static class PassageContraction
 {
@@ -17,7 +17,7 @@ public static class PassageContraction
         {
             Add(incident, edges[i].Source, i); Add(incident, edges[i].Target, i);
         }
-        bool Junction(long n) => keep.Contains(n) || isWaterNode(n) || !incident.TryGetValue(n, out var l) || l.Count != 2 || edges[l[0]].Assumed != edges[l[1]].Assumed;
+        bool Junction(long n) => keep.Contains(n) || isWaterNode(n) || !incident.TryGetValue(n, out var l) || l.Count != 2 || edges[l[0]].Assumed != edges[l[1]].Assumed || edges[l[0]].Ferry != edges[l[1]].Ferry;
         var consumed = new bool[edges.Count];
         var result = new List<GraphEdge>();
         foreach (var start in incident.Keys.Where(Junction))
@@ -46,7 +46,7 @@ public static class PassageContraction
                     if (consumed[next]) break; // a loop back onto itself
                     idx = next;
                 }
-                if (coords.Count >= 2) result.Add(new GraphEdge(start, node, cost, edges[0].Geom.Factory.CreateLineString(coords.ToArray()), clearance, depth, edges[first].Assumed, FloorM: floor, UnknownBridge: unknownBridge));
+                if (coords.Count >= 2) result.Add(new GraphEdge(start, node, cost, edges[0].Geom.Factory.CreateLineString(coords.ToArray()), clearance, depth, edges[first].Assumed, FloorM: floor, UnknownBridge: unknownBridge, Ferry: edges[first].Ferry));
             }
         }
         // cycles without any junction (a closed ring of channel pieces): kept as they are

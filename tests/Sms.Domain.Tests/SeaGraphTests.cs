@@ -25,8 +25,8 @@ public class SeaGraphTests
             foreach (var p in interior) { Geom.Add(10 + p.x * D); Geom.Add(54 + p.y * D); }
             return S.Count - 1;
         }
-        public SeaGraph Build(int firstPassage = int.MaxValue, double snapMinM = 1000, float[]? adjacent = null, float[]? floor = null) =>
-            new([.. X], [.. Y], [.. S], [.. T], [.. Cost], [.. Depth], [.. Clear], [.. GeomStart, Geom.Count / 2], [.. Geom], firstPassage, null, snapMinM, adjacent: adjacent, floor: floor);
+        public SeaGraph Build(int firstPassage = int.MaxValue, double snapMinM = 1000, float[]? adjacent = null, float[]? floor = null, bool[]? ferry = null) =>
+            new([.. X], [.. Y], [.. S], [.. T], [.. Cost], [.. Depth], [.. Clear], [.. GeomStart, Geom.Count / 2], [.. Geom], firstPassage, null, snapMinM, adjacent: adjacent, floor: floor, ferry: ferry);
         public Coordinate C(int n) => new(X[n], Y[n]);
     }
 
@@ -321,6 +321,39 @@ public class SeaGraphTests
         only.Edge(p, q); only.Edge(q, r, depth: 1.8288f); only.Edge(r, s);
         Assert.Null(only.Build().Route(new(only.C(p), p), new(only.C(s), s), limits with { StrictDepth = true }));
         Assert.NotNull(only.Build().Route(new(only.C(p), p), new(only.C(s), s), limits));
+    }
+
+    [Fact]
+    public void Ferry_edges_are_never_uncertain_but_keep_the_band_block()
+    {
+        var g = new G();
+        int a = g.Node(0, 0), m = g.Node(4, 0), b = g.Node(8, 0), c = g.Node(12, 0), detour = g.Node(6, -6);
+        var band = g.Edge(m, b, depth: 1.8288f);
+        g.Edge(a, m); g.Edge(m, detour, depth: 5.4864f); g.Edge(detour, b); g.Edge(b, c);
+        var ferry = new bool[g.S.Count]; ferry[band] = true;
+        var graph = g.Build(ferry: ferry);
+        var limits = new SeaGraph.Limits(DepthLimitM: 1.8288, MinDepthM: 2.0, UncertainFactor: 3, StrictDepth: true);
+        SeaGraph.End A = new(g.C(a), a), C = new(g.C(c), c);
+        Assert.True(graph.Ferry(band));
+        Assert.False(graph.Uncertain(band, 2.0));
+        var route = graph.Route(A, C, limits)!;
+        Assert.DoesNotContain(g.C(detour), route.Points);
+        Assert.Empty(graph.UncertainEdges(route.Edges!, limits, A, C));
+        Assert.Equal(graph.Route(A, C, limits with { StrictDepth = false })!.Cost, route.Cost);
+        // the band block stays: a ferry through the 0-1.83 m band is closed
+        g.Depth[band] = 0f;
+        Assert.Contains(g.C(detour), g.Build(ferry: ferry).Route(A, C, limits)!.Points);
+        var only = new G();
+        int p = only.Node(0, 0), q = only.Node(4, 0), r = only.Node(8, 0), s = only.Node(12, 0);
+        only.Edge(p, q); var qr = only.Edge(q, r, depth: 0f); only.Edge(r, s);
+        var onlyFerry = new bool[only.S.Count]; onlyFerry[qr] = true;
+        Assert.Null(only.Build(ferry: onlyFerry).Route(new(only.C(p), p), new(only.C(s), s), limits));
+        // a derived channel's floor (or the coastal no-data floor) does not count on a ferry edge
+        g.Depth[band] = float.NaN;
+        var floor = Enumerable.Repeat(float.NaN, g.S.Count).ToArray(); floor[band] = 0f;
+        Assert.DoesNotContain(g.C(detour), g.Build(floor: floor, ferry: ferry).Route(A, C, limits)!.Points);
+        ferry[band] = false;
+        Assert.Contains(g.C(detour), g.Build(floor: floor, ferry: ferry).Route(A, C, limits)!.Points);
     }
 
     [Fact]

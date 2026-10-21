@@ -140,7 +140,7 @@ public static class RoutingEndpoints
         {
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             if (req.Kind == CorrectionKind.Block && req.Geometry is not Polygon) return Invalid("geometry", "Block braucht ein Polygon.");
-            if (req.Kind == CorrectionKind.Passage && req.Geometry is not LineString) return Invalid("geometry", "Passage braucht eine LineString.");
+            if (req.Kind is CorrectionKind.Passage or CorrectionKind.Ferry && req.Geometry is not LineString) return Invalid("geometry", "Passage/Fährlinie braucht eine LineString.");
             if (req.Kind is CorrectionKind.Bridge or CorrectionKind.Lock && req.Geometry is not Point) return Invalid("geometry", "Brücke/Schleuse braucht einen Punkt.");
             req.Geometry.SRID = 4326;
             var c = new RoutingCorrection { Kind = req.Kind, Geometry = req.Geometry, Note = req.Note, Active = req.Active, ClearanceM = req.ClearanceM, CreatedById = current.Id };
@@ -305,6 +305,7 @@ public static class RoutingEndpoints
             using var doc = await Overpass.QueryAsync(http, cfg, string.Format(Waterways.OverpassGuideQuery, bbox), ct, log);
             if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen.");
             var guides = Waterways.ParseGuideLines(doc, Geo.Factory);
+            var ferries = Waterways.ParseFerryLines(doc, Geo.Factory);
             var o = builder.Options;
             // the land of the active graph around the bbox (stretches and buoy pairs reach over its edge), indexed for point tests; beyond
             // the margin a guide line counts as open water (a stretch there would not belong to this chunk anyway)
@@ -328,6 +329,17 @@ public static class RoutingEndpoints
             var old = (await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Annahme") && c.Geometry.Intersects(extent)).ToListAsync(ct))
                 .Where(c => c.Geometry.Centroid.Within(extent)).ToList();
             db.RoutingCorrections.RemoveRange(old);
+            // the ferry tracks themselves (known-navigable water for the strict depth rule, FerryCorridors), one per OSM way and geometry
+            var oldFerries = (await db.RoutingCorrections.Where(c => c.Kind == CorrectionKind.Ferry && c.Source == CorrectionSource.Derived && c.Geometry.Intersects(extent)).ToListAsync(ct))
+                .Where(c => c.Geometry.Centroid.Within(extent)).ToList();
+            db.RoutingCorrections.RemoveRange(oldFerries);
+            var ferryGeoms = new HashSet<string>(); var ferryCount = 0;
+            foreach (var (line, name) in ferries)
+            {
+                if (!line.Centroid.Within(extent) || !ferryGeoms.Add(line.AsText())) continue;
+                db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Ferry, Source = CorrectionSource.Derived, Geometry = line, Note = name is null ? "Fährlinie" : $"Fährlinie {name}", Active = true, CreatedById = current.Id });
+                ferryCount++;
+            }
             var created = new List<(LineString line, string note, double? graphM)>();
             bool Near(Coordinate c, double m) => created.Any(x => x.line.IsWithinDistance(Geo.Factory.CreatePoint(c), m / WaterGraphTiler.MPerDegLat));
             // 1. guide-line stretches: across land always (unless the graph already connects them nearly as short – a canal or channel
@@ -383,7 +395,7 @@ public static class RoutingEndpoints
             await db.SaveChangesAsync(ct);
             return Results.Ok(new
             {
-                guideLines = guides.Count, guideStretches = stretches, marks = marks.Count, buoyGaps = gaps.Count, created = created.Count, removed = old.Count,
+                guideLines = guides.Count, guideStretches = stretches, marks = marks.Count, buoyGaps = gaps.Count, created = created.Count, removed = old.Count, ferries = ferryCount, ferriesRemoved = oldFerries.Count,
                 passages = created.Select(x => new { x.note, lat = Math.Round(x.line.Centroid.Y, 5), lng = Math.Round(x.line.Centroid.X, 5), lengthNm = Math.Round(LengthNm(x.line), 2), graphNm = x.graphM is { } g ? Math.Round(g / 1852, 1) : (double?)null }),
             });
         });

@@ -7,6 +7,8 @@
 //        or "backfill-floor": floor_m (coastal water without data, derived channels "Enge" and their links) for the active graph version, without a rebuild
 //        or "import-bridges" s,w,n,e: road/railway bridges without a clearance over routing water from Overpass (as the admin endpoint import-bridges)
 //        or "backfill-bridges": unknown_bridge (edges under a fixed bridge without a clearance, Obstacles.Apply) for the active graph version, without a rebuild
+//        or "backfill-ferry": ferry (edges along a stored ferry track, kind Ferry, within Routing:FerryCorridorM; their adjacent_depth_m/floor_m dropped) for the active graph version, without a rebuild
+//        env SMS_BENCH_FERRY=file: routes on the active graph with the edges along the ferry lines in the file ("lat,lng lat,lng …" per line) flagged in memory, a backfill-ferry simulated
 using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -164,6 +166,31 @@ if (args.Length > 2 && args[2] == "backfill-bridges")
     return;
 }
 
+if (args.Length > 2 && args[2] == "backfill-ferry")
+{
+    // DepthLimits' ferry rule on the active version: an edge along a ferry track is known-navigable (no adjacent band, no floor; the charted band stays)
+    using var scope = sp.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+    var conn = (Npgsql.NpgsqlConnection)db.Database.GetDbConnection(); await conn.OpenAsync();
+    var version = Convert.ToInt32(await new Npgsql.NpgsqlCommand("SELECT value::int FROM routing_meta WHERE key = 'active_version'", conn).ExecuteScalarAsync());
+    var clock = Stopwatch.StartNew();
+    var lines = (await db.RoutingCorrections.Where(c => c.Active && c.Kind == Sms.Domain.CorrectionKind.Ferry).Select(c => c.Geometry).ToListAsync()).OfType<NetTopologySuite.Geometries.LineString>().ToList();
+    var ferries = new FerryCorridors(lines, sp.GetRequiredService<RoutingGraphBuilder>().Options.FerryCorridorM);
+    var flagged = new List<long>(); var total = 0;
+    await using (var r = await new Npgsql.NpgsqlCommand($"SELECT id, geom FROM routing_edge WHERE graph_version = {version}", conn) { CommandTimeout = 3600 }.ExecuteReaderAsync())
+        while (await r.ReadAsync()) { total++; if (ferries.Along(r.GetFieldValue<NetTopologySuite.Geometries.LineString>(1))) flagged.Add(r.GetInt64(0)); }
+    Console.WriteLine($"v{version}: {lines.Count} ferry tracks, {flagged.Count} of {total} edges along one ({clock.Elapsed.TotalSeconds:0} s)");
+    await new Npgsql.NpgsqlCommand($"ALTER TABLE routing_edge ADD COLUMN IF NOT EXISTS ferry boolean NOT NULL DEFAULT false; UPDATE routing_edge SET ferry = false WHERE graph_version = {version} AND ferry; CREATE TEMP TABLE fe (id bigint)", conn) { CommandTimeout = 3600 }.ExecuteNonQueryAsync();
+    await using (var w = await conn.BeginBinaryImportAsync("COPY fe (id) FROM STDIN (FORMAT BINARY)"))
+    {
+        foreach (var id in flagged) { await w.StartRowAsync(); await w.WriteAsync(id, NpgsqlTypes.NpgsqlDbType.Bigint); }
+        await w.CompleteAsync();
+    }
+    var updated = await new Npgsql.NpgsqlCommand($"UPDATE routing_edge e SET ferry = true, adjacent_depth_m = NULL, floor_m = NULL FROM fe WHERE e.graph_version = {version} AND e.id = fe.id", conn) { CommandTimeout = 3600 }.ExecuteNonQueryAsync();
+    Console.WriteLine($"{updated} edges flagged ({clock.Elapsed.TotalSeconds:0} s)");
+    return;
+}
+
 if (args.Length > 3 && args[2] == "derive-fairways")
 {
     // dry run of the derive-fairways endpoint for a bbox s,w,n,e: the derived lines next to the stored "Fahrwasser" passages, nothing written
@@ -230,6 +257,30 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_PASSAGES") is { Length: > 0 } 
     var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
     graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
     Console.WriteLine($"simulation: {added} passage edges added from {extraFile}");
+}
+
+if (Environment.GetEnvironmentVariable("SMS_BENCH_FERRY") is { Length: > 0 } ferryFile)
+{
+    // backfill-ferry in memory: the active graph with the edges along the ferry lines in the file flagged (adjacent band and floor dropped)
+    using var scope = sp.CreateScope();
+    var router = scope.ServiceProvider.GetRequiredService<SeaRouter>();
+    var version = await router.ActiveVersionAsync(default);
+    var g = await SeaRouter.LoadGraphAsync(new Npgsql.NpgsqlConnection(cs), version, sp.GetRequiredService<ILoggerFactory>().CreateLogger("bench"));
+    T F<T>(string name) => (T)typeof(Sms.Domain.SeaGraph).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(g)!;
+    var lines = File.ReadAllLines(ferryFile).Where(l => l.Trim().Length > 0).Select(l => Geo.Factory.CreateLineString(l.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+        .Select(p => p.Split(',').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray()).Select(v => new NetTopologySuite.Geometries.Coordinate(v[1], v[0])).ToArray())).ToList();
+    var ferries = new FerryCorridors(lines, sp.GetRequiredService<RoutingGraphBuilder>().Options.FerryCorridorM);
+    var adjacent = F<float[]>("_adjacent"); var floor = F<float[]>("_floor"); var ferry = new bool[g.EdgeCount];
+    Parallel.For(0, g.EdgeCount, e =>
+    {
+        if (!ferries.Along(Geo.Factory.CreateLineString(g.Coords(e)))) return;
+        ferry[e] = true; adjacent[e] = float.NaN; floor[e] = float.NaN;
+    });
+    var sim = new Sms.Domain.SeaGraph(F<double[]>("_x"), F<double[]>("_y"), F<int[]>("_src"), F<int[]>("_tgt"), F<float[]>("_cost"), F<float[]>("_depth"), F<float[]>("_clear"), F<int[]>("_geomStart"), F<double[]>("_geom"), F<int>("_firstPassage"), F<bool[]?>("_isolated"),
+        assumed: F<bool[]?>("_assumed"), adjacent: adjacent, floor: floor, unknownBridge: F<bool[]?>("_unknownBridge"), ferry: ferry);
+    var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
+    graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
+    Console.WriteLine($"simulation: {lines.Count} ferry lines, {ferry.Count(f => f)} edges flagged");
 }
 
 (string name, double lat1, double lng1, double lat2, double lng2, double draft, double? minDepth, double? warnDepth, double? airDraft, bool avoidUnknownBridges)[] routes =

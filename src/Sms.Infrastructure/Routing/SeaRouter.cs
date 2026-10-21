@@ -240,10 +240,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             await using var r = await c.ExecuteReaderAsync();
             while (await r.ReadAsync()) { var id = (int)r.GetInt64(0); x[id] = r.GetDouble(1); y[id] = r.GetDouble(2); }
         }
-        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount]; var adjacent = new float[edgeCount]; var floor = new float[edgeCount]; var unknownBridge = new bool[edgeCount];
+        var src = new int[edgeCount]; var tgt = new int[edgeCount]; var cost = new float[edgeCount]; var depth = new float[edgeCount]; var clear = new float[edgeCount]; var assumed = new bool[edgeCount]; var adjacent = new float[edgeCount]; var floor = new float[edgeCount]; var unknownBridge = new bool[edgeCount]; var ferry = new bool[edgeCount];
         var geomStart = new int[edgeCount + 1]; var geom = new List<double>();
         var m = 0;
-        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed, adjacent_depth_m, floor_m, unknown_bridge FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
+        await using (var c = new NpgsqlCommand("SELECT source, target, cost, min_depth_m, clearance_m, CASE WHEN ST_NPoints(geom) > 2 THEN ST_AsBinary(geom) END, assumed, adjacent_depth_m, floor_m, unknown_bridge, ferry FROM routing_edge WHERE graph_version = @v", conn) { CommandTimeout = 600 })
         {
             c.Parameters.AddWithValue("v", version);
             await using var r = await c.ExecuteReaderAsync();
@@ -258,11 +258,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 adjacent[m] = r.IsDBNull(7) ? float.NaN : (float)r.GetDouble(7);
                 floor[m] = r.IsDBNull(8) ? float.NaN : (float)r.GetDouble(8);
                 unknownBridge[m] = r.GetBoolean(9);
+                ferry[m] = r.GetBoolean(10);
                 m++;
             }
         }
         geomStart[m] = geom.Count / 2;
-        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref adjacent, m); Array.Resize(ref floor, m); Array.Resize(ref unknownBridge, m); Array.Resize(ref geomStart, m + 1); }
+        if (m < edgeCount) { Array.Resize(ref src, m); Array.Resize(ref tgt, m); Array.Resize(ref cost, m); Array.Resize(ref depth, m); Array.Resize(ref clear, m); Array.Resize(ref assumed, m); Array.Resize(ref adjacent, m); Array.Resize(ref floor, m); Array.Resize(ref unknownBridge, m); Array.Resize(ref ferry, m); Array.Resize(ref geomStart, m + 1); }
         var isolated = new bool[maxNode + 1];
         await using (var c = new NpgsqlCommand("SELECT id FROM routing_isolated WHERE graph_version = @v", conn))
         {
@@ -271,7 +272,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             while (await r.ReadAsync()) { var id = r.GetInt64(0); if (id <= maxNode) isolated[id] = true; }
         }
         var loaded = sw.ElapsedMilliseconds;
-        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed, adjacent: adjacent, floor: floor, unknownBridge: unknownBridge);
+        var graph = new SeaGraph(x, y, src, tgt, cost, depth, clear, geomStart, geom.ToArray(), (int)gridNodes + 1, isolated, assumed: assumed, adjacent: adjacent, floor: floor, unknownBridge: unknownBridge, ferry: ferry);
         logger.LogInformation("Routing graph v{Version} in memory: {Nodes} node slots, {Edges} edges, {Snap} passage edges for snapping, heuristic x{Factor:F6}, ~{Mb} MB (GC +{GcMb} MB); read {Read} ms, indexed {Index} ms",
             version, graph.NodeSlots, graph.EdgeCount, graph.SnapEdgeCount, graph.HeuristicFactor, graph.ApproxBytes >> 20, (GC.GetTotalMemory(false) - before) >> 20, loaded, sw.ElapsedMilliseconds - loaded);
         return graph;
