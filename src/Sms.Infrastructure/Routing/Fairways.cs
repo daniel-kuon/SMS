@@ -10,7 +10,8 @@ public enum MarkSide { Port, Starboard, North, East, South, West, SafeWater }
 /// <param name="Light">A red or green minor light (pier head): pairs only with another light, across a harbour entrance.</param>
 public sealed record FairwayMark(double Lat, double Lng, MarkSide Side, bool Light = false);
 /// <param name="Singles">Unpaired marks (single lateral, cardinal or safe-water marks) the chain runs past.</param>
-/// <param name="Area">The water between the port and the starboard marks of the pairs (lines with ≥ 2 pairs): the fairway as an area,
+/// <param name="Area">The water between the port and the starboard marks of the pairs (lines with ≥ 2 pairs, median pair width
+/// ≥ <see cref="Fairways.AreaMinWidthM"/>): the fairway as an area,
 /// red border on one side, green on the other; the routing passage is its centreline <paramref name="Line"/>.</param>
 /// <param name="Wide">A corridor between two one-sided rows (a wide river): no ×3 channel zone round it in the graph build.</param>
 public sealed record Fairway(LineString Line, int Pairs, int Singles = 0, Polygon? Area = null, bool Wide = false);
@@ -32,9 +33,10 @@ public sealed record FairwayWater(Func<Coordinate, Coordinate, bool> Clear, Func
 /// Masnedø); a join needs both chains' courses to agree (≤ 45°, wide 30°). Every hop: no land between water (> <see cref="LandMaxM"/>),
 /// never through a cardinal's danger quadrant within <see cref="CardinalDangerM"/>. Pairs buoyed away from each other are never
 /// joined, nor is a single mark next to such a pair taken (Bogø/Stubbekøbing: two approaches leaving Grønsund). Safe-water
-/// marks are never chain points: a chain ends at one ahead (approach landfall, or a junction on a through fairway, which may pass
-/// it on a straight course). Cleanup: leading single marks after the last pair kept only ≥ 2 and ending lateral; out-and-back
-/// corners (> 90°) cut where the straight hop is clear and deep; an end heading for another line ≤ gapMaxM ahead joins it
+/// marks are never chain points: a chain ends at one ≤ <see cref="SafeAheadM"/> ahead (approach landfall, or a junction on a through
+/// fairway, which may pass it on a straight course).
+/// Cleanup: leading single marks after the last pair kept only ≥ 2 and ending lateral; out-and-back corners (> 90°) cut where
+/// the straight hop is clear and deep; an end heading for another line ≤ gapMaxM ahead joins it
 /// (T-junction); line ends running along a better line are cut back, lines mostly along one dropped; single lateral marks moved
 /// half a pair width (≤ 150 m) towards the channel; stretches of ≥ 2 single marks, and single marks or junction hops at a line's
 /// end, become lines of their own (no channel zone in the graph build, which takes lines with ≥ 2 pairs). Red/green minor lights
@@ -45,7 +47,8 @@ public sealed record FairwayWater(Func<Coordinate, Coordinate, bool> Clear, Func
 /// side by side: they are merged into one corridor, each mark paired with the foot of its perpendicular on the other row (widePairMaxM,
 /// through charted deep water). A one-sided row without a pair within <see cref="PairReachM"/> collapses to a line
 /// <see cref="RowOffsetM"/> (half the deepest band's run) off the marks towards the deeper charted band (<see cref="FairwayWater.Floor"/>).
-/// Rows of ≥ 3 cardinals of one kind (a shoal's edge) are fairways of their own; a moved mark whose hop enters a cardinal's danger
+/// Rows of ≥ 3 cardinals of one kind (a shoal's edge), or of north and south (east and west) cardinals on opposite sides of the
+/// line (a channel between two shoals), are fairways of their own; a moved mark whose hop enters a cardinal's danger
 /// quadrant goes back onto its mark.
 /// ponytail: greedy chaining, no buoy sequence numbers; a one-sided row gets a line, not an area (its open side is the deeper band,
 /// not a border); special-purpose marks are not used (none tagged as fairway marks); marks too sparse to chain without crossing
@@ -60,6 +63,11 @@ public static class Fairways
     public const double RowOffsetM = 150;
     /// <summary>A single lateral mark takes its offset from a pair of its line this close; farther from any pair it is a mark of a row (RowOffsetM).</summary>
     public const double PairReachM = 1000;
+    /// <summary>A line ends at a safe-water mark this far ahead of its end: landfall buoys lie 1–3 km seaward of the channel.</summary>
+    public const double SafeAheadM = 3000;
+    /// <summary>Lines whose pairs are narrower than this (median) get no area: a narrow channel is its line, the area model is for
+    /// wide water (Ærøskøbing: a 36 m wide harbour-entrance area carried no depth limit, the route made a spur to its entrance pair).</summary>
+    public const double AreaMinWidthM = 200;
     /// <summary>In the note of every derived line with pairs; a stretch of single marks only ("Fahrwasser (k Einzeltonnen)") lacks
     /// it and gets no ×3 channel zone in the graph build (RoutingGraphBuilder, SeaRouter's smoother zone).</summary>
     public const string PairedNote = "Tonnenpaare";
@@ -184,7 +192,7 @@ public static class Fairways
             if (chain.Count == 0) continue;
             // a chain ends at a safe-water mark just ahead of it: the approach's landfall, or its junction with a through fairway
             foreach (var atEnd in (ReadOnlySpan<bool>)[true, false])
-                if (SafeAhead(chain, atEnd, 1000) is { } s) { if (atEnd) chain.Add(s); else chain.Insert(0, s); }
+                if (SafeAhead(chain, atEnd, SafeAheadM) is { } s) { if (atEnd) chain.Add(s); else chain.Insert(0, s); }
             cands.Add(Straighten(chain.Select(i => Moved(i, chain)).ToList(), (a, b) => clear(a, b) && deep(a, b) && CardinalsOk(a, b)).Select(k => chain[k]).ToList());
         }
         // T-junctions: an end heading (within 45°) for a point of another line ≤ gapMaxM ahead ends there (a branch meeting a
@@ -449,6 +457,8 @@ public static class Fairways
         {
             var pairs = piece.Where(x => x.i >= 0 && pts[x.i].Pair).Select(x => pts[x.i]).ToList();
             if (pairs.Count < 2) return null;
+            var widths = pairs.Select(p => RoutingGraphBuilder.Haversine(p.P!.Lat, p.P.Lng, p.S!.Lat, p.S.Lng)).Order().ToList();
+            if (widths[widths.Count / 2] < AreaMinWidthM) return null; // median: one wide or narrow pair does not decide
             var quads = new List<Geometry>();
             for (var k = 1; k < pairs.Count; k++)
                 quads.Add(f.CreateMultiPointFromCoords([At(pairs[k - 1].P!), At(pairs[k - 1].S!), At(pairs[k].P!), At(pairs[k].S!)]).ConvexHull());
@@ -460,9 +470,9 @@ public static class Fairways
             return poly;
         }
 
-        // ≥ 2 pairs, 1 pair and 2 single marks, a lit pair (harbour entrance) with a junction, or ≥ 4 single marks (3 at a
-        // junction or a safe-water end), at least half and ≥ 2 of them lateral, or ≥ 3 cardinals all of one kind (a shoal's edge;
-        // not a ring of cardinals round a danger or a harbour, nor east and west cardinals alternating along a line)
+        // ≥ 2 pairs, 1 pair and 2 single marks, a lit pair (harbour entrance) with a junction, or ≥ 3 single marks (2 at a
+        // junction or a safe-water end: short harbour approaches), at least half and ≥ 2 of them lateral, or ≥ 3 cardinals in a
+        // row (CardinalRow)
         bool Accepted(List<(int i, Coordinate c)> items)
         {
             var own = items.Where(x => x.i >= 0 && !pts[x.i].Via).Select(x => pts[x.i]).ToList();
@@ -471,7 +481,27 @@ public static class Fairways
             var laterals = own.Count(p => p.Side is MarkSide.Port or MarkSide.Starboard);
             var cardinals = own.Where(p => p.Side is MarkSide.North or MarkSide.East or MarkSide.South or MarkSide.West).Select(p => p.Side).ToList();
             return pairs >= 2 || pairs == 1 && (singles >= 2 || own.Single(p => p.Pair).P!.Light && (items[0].i < 0 || items[^1].i < 0))
-                || pairs == 0 && singles >= (joined ? 3 : 4) && (laterals >= 2 && 2 * laterals >= singles || cardinals.Count >= 3 && cardinals.Distinct().Count() == 1);
+                || pairs == 0 && singles >= (joined ? 2 : 3) && (laterals >= 2 && 2 * laterals >= singles || cardinals.Count >= 3 && CardinalRow(items));
+        }
+        // ≥ 3 cardinals of one kind (a shoal's edge), or of two opposite kinds whose marks lie on opposite sides of the line (north
+        // cardinals south of a channel between two shoals, south cardinals north of it); not a ring round a danger, nor east and
+        // west cardinals alternating along one line
+        bool CardinalRow(List<(int i, Coordinate c)> items)
+        {
+            var cs = items.Where(x => x.i >= 0 && pts[x.i].Side is MarkSide.North or MarkSide.East or MarkSide.South or MarkSide.West).ToList();
+            var kinds = cs.Select(x => pts[x.i].Side!.Value).Distinct().ToList();
+            if (kinds.Count == 1) return true;
+            if (kinds.Count != 2 || !(kinds.Contains(MarkSide.North) && kinds.Contains(MarkSide.South) || kinds.Contains(MarkSide.East) && kinds.Contains(MarkSide.West))) return false;
+            // side of the mark (P: the mark itself) relative to the line through the chain point's neighbours
+            int Bank((int i, Coordinate c) x)
+            {
+                var at = items.IndexOf(x);
+                var (ax, ay) = V(items[Math.Max(0, at - 1)].c, items[Math.Min(items.Count - 1, at + 1)].c);
+                var (mx, my) = V(items[Math.Max(0, at - 1)].c, At(pts[x.i].P!));
+                return Math.Sign(ax * my - ay * mx);
+            }
+            var sides = cs.GroupBy(x => pts[x.i].Side).Select(g => g.Select(Bank).Distinct().ToList()).ToList();
+            return sides.All(g => g.Count == 1 && g[0] != 0) && sides[0][0] != sides[1][0];
         }
 
         // a new chain from a seed; its first hops had no heading to keep, so an end hop that turns more than a later hop of that

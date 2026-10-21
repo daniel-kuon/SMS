@@ -327,4 +327,65 @@ public class FairwaysTests
         };
         Assert.Empty(Fairways.Derive(ring, F));
     }
+
+    [Fact]
+    public void Narrow_channels_get_no_area()
+    {
+        // pairs 460 m wide carry an area; the same channel 65 m wide (a harbour entrance: Ærøskøbing) is its line only
+        const double lng0 = 10.15, lat0 = 54.40;
+        var wide = Assert.Single(Fairways.Derive(Channel(5), F));
+        Assert.Equal(5, wide.Pairs);
+        Assert.NotNull(wide.Area);
+        Assert.True(wide.Area!.Contains(F.CreatePoint(new Coordinate(lng0, lat0 + 0.009))));
+        var narrowMarks = Channel(5).Select(m => m with { Lng = m.Side == MarkSide.Port ? lng0 - 0.0005 : lng0 + 0.0005 }).ToList();
+        var narrow = Assert.Single(Fairways.Derive(narrowMarks, F));
+        Assert.Equal(5, narrow.Pairs);
+        Assert.Null(narrow.Area);
+        Assert.Equal(Fairways.Note(wide), Fairways.Note(narrow));
+    }
+
+    [Fact]
+    public void A_short_approach_of_three_single_marks_is_a_fairway()
+    {
+        // three port marks 500 m apart running north (a harbour approach), nothing else
+        const double lng0 = 10.15, lat0 = 54.40;
+        var marks = Enumerable.Range(0, 3).Select(k => new FairwayMark(lat0 + k * 0.0045, lng0, MarkSide.Port)).ToList();
+        Assert.Equal(3, Assert.Single(Fairways.Derive(marks, F)).Singles);
+        // two marks alone are no fairway
+        Assert.Empty(Fairways.Derive(marks.Take(2).ToList(), F));
+        // two marks ending at a safe-water mark 800 m beyond the last are
+        var safe = new Coordinate(lng0, lat0 + 0.0045 + 800 / WaterGraphTiler.MPerDegLat);
+        var line = Assert.Single(Fairways.Derive([.. marks.Take(2), new FairwayMark(safe.Y, safe.X, MarkSide.SafeWater)], F));
+        Assert.True(line.Line.Coordinates[0].Equals2D(safe) || line.Line.Coordinates[^1].Equals2D(safe));
+    }
+
+    [Fact]
+    public void A_line_ends_at_a_safe_water_mark_up_to_3_km_ahead()
+    {
+        // the safe-water mark 2.8 km beyond the last pair ends the line; 3.9 km beyond it does not
+        const double lng0 = 10.15, lat0 = 54.40;
+        bool EndsAt(double lat) => Fairways.Derive([.. Channel(3), new FairwayMark(lat, lng0, MarkSide.SafeWater)], F)
+            .Any(l => l.Line.Coordinates[^1].Equals2D(new Coordinate(lng0, lat)) || l.Line.Coordinates[0].Equals2D(new Coordinate(lng0, lat)));
+        Assert.True(EndsAt(lat0 + 0.009 + 0.025));
+        Assert.False(EndsAt(lat0 + 0.009 + 0.035));
+    }
+
+    [Fact]
+    public void Opposite_cardinals_on_opposite_sides_form_a_channel()
+    {
+        // an east-west channel 290 m wide between two shoals: north cardinals on its south side, south cardinals on its north side,
+        // staggered 195 m (every 390 m on either side); the line zigzags between their safe-side points, 45 m either side of the middle
+        const double lng0 = 10.15, lat0 = 54.40, width = 0.0026;
+        var marks = Enumerable.Range(0, 3).SelectMany(k => new[]
+        {
+            new FairwayMark(lat0, lng0 + k * 0.006, MarkSide.North), new FairwayMark(lat0 + width, lng0 + 0.003 + k * 0.006, MarkSide.South),
+        }).ToList();
+        var line = Assert.Single(Fairways.Derive(marks, F));
+        Assert.Equal(6, line.Singles);
+        Assert.All(line.Line.Coordinates, c => Assert.InRange(Math.Abs(c.Y - (lat0 + width / 2)) * WaterGraphTiler.MPerDegLat, 0, 50));
+        // all north cardinals on one line (no south cardinals across the channel) are a shoal's edge as before; mixed with an east
+        // cardinal (two kinds that are not opposite) they are no fairway
+        Assert.Single(Fairways.Derive(marks.Where(m => m.Side == MarkSide.North).ToList(), F));
+        Assert.Empty(Fairways.Derive(marks.Select((m, k) => k == 2 ? m with { Side = MarkSide.East } : m).Where(m => m.Side != MarkSide.South).ToList(), F));
+    }
 }
