@@ -281,6 +281,32 @@ public class SeaGraphTests
     }
 
     [Fact]
+    public void Leading_land_is_the_run_from_the_passage_end()
+    {
+        Func<Coordinate, bool> Land(params (double from, double to)[] r) => c => r.Any(x => (c.X - 10) / D >= x.from && (c.X - 10) / D <= x.to);
+        Coordinate a = new(10, 54), b = new(10 + D, 54); // ≈ 655 m
+        Assert.InRange(SeaGraph.LeadingLandM(a, b, Land((0, 0.3))), 190, 205); // a passage end on the shore
+        Assert.Equal(0, SeaGraph.LeadingLandM(a, b, Land((0.5, 0.54)))); // a mole in the middle is not leading land
+        Assert.Equal(0, SeaGraph.LeadingLandM(a, b, Land()));
+        Assert.InRange(SeaGraph.LeadingLandM(a, b, Land((0, 1))), 650, 660); // the whole leg on land: a link across an isthmus
+        Assert.InRange(SeaGraph.LeadingLandM(a, b, Land((0, 0.2), (0.6, 0.62))), 125, 140); // shore, water, mole: only the shore counts
+    }
+
+    [Fact]
+    public void Passage_node_side_of_a_link()
+    {
+        // the canal's links: seaW → w (passage end is the target), e → seaE (passage end is the source)
+        var (_, graph, _, _, _) = Canal();
+        foreach (var link in new[] { 0, 1 })
+        {
+            Assert.True(graph.IsLink(link));
+            Assert.NotEqual(graph.IsPassageNode(graph.Source(link)), graph.IsPassageNode(graph.Target(link)));
+        }
+        Assert.True(graph.IsPassageNode(graph.Target(0)));
+        Assert.True(graph.IsPassageNode(graph.Source(1)));
+    }
+
+    [Fact]
     public void Component_is_bounded()
     {
         var g = new G();

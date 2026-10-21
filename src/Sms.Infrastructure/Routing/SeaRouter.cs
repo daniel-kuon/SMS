@@ -356,8 +356,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             MinDepthM: minDepthM, UncertainFactor: o.UncertainDepthFactor, StrictDepth: strict, AvoidUnknownBridges: avoidUnknownBridges,
             UnknownBridgePenaltyM: Math.Max(o.UnknownBridgePenaltyM, o.BridgeOpeningPenaltyM)); // a known or opening span wins over an unknown one
         // the builder lets a passage end's link into the water graph cross up to 50 m of land (a harbour point on its pier): from a marina
-        // channel that is a link straight across the mole (Großenbrode). Links on the path that cross land with water on both sides
-        // cost Limits.PenaltyM (20 km) extra and the search runs again: they stay usable where nothing else leads on, as before
+        // channel that is a link straight across the mole (Großenbrode). Links on the path that cross land with water on both sides, or
+        // that start with more than LinkLeadLandM of land at the passage end (a chain ending in inland water the coastline counts as land,
+        // linked across an isthmus: Thiessow → Sassnitz across Sellin), cost Limits.PenaltyM (20 km) extra and the search runs again:
+        // they stay usable where nothing else leads on, as before
         var penalized = new HashSet<int>(); var checkedLinks = new HashSet<int>(); var rounds = 0;
         async Task<SeaGraph.Path?> SearchAsync()
         {
@@ -440,8 +442,9 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return new RouteResult(Math.Round((decimal)(metres / Nm), 1), Math.Round((decimal)(straightM / Nm), 1), line, version, "sea-graph", timings, warnings);
     }
 
-    /// <summary>The link edges among these that cross land with water on both sides (SeaGraph.CrossesInteriorLand), against the land clipped
-    /// around each; a straight passage edge only with more than StraightPassageLandM of such land (a canal line a few metres off its water polygon stays).</summary>
+    /// <summary>The link edges among these that cross land with water on both sides (SeaGraph.CrossesInteriorLand) or start with more than
+    /// LinkLeadLandM of land at the passage end (the Baaber Bek chain's end link across the Sellin isthmus), against the land clipped around
+    /// each; a straight passage edge only with more than StraightPassageLandM of such land (a canal line a few metres off its water polygon stays).</summary>
     private async Task<List<int>> LandLinksAsync(SeaGraph graph, List<int> links, int version, CancellationToken ct)
     {
         var bad = new List<int>();
@@ -460,7 +463,13 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             foreach (var e in group)
             {
                 var cs = graph.Coords(e);
-                if (graph.IsLink(e) ? SeaGraph.CrossesInteriorLand(cs[0], cs[^1], OnLand) : SeaGraph.InteriorLandM(cs[0], cs[^1], OnLand, 5) > StraightPassageLandM) bad.Add(e);
+                if (graph.IsLink(e))
+                {
+                    // LeadingLandM starts at the passage end (CrossesInteriorLand is symmetric)
+                    var (p, w) = graph.IsPassageNode(graph.Source(e)) ? (cs[0], cs[^1]) : (cs[^1], cs[0]);
+                    if (SeaGraph.CrossesInteriorLand(p, w, OnLand) || SeaGraph.LeadingLandM(p, w, OnLand) > LinkLeadLandM) bad.Add(e);
+                }
+                else if (SeaGraph.InteriorLandM(cs[0], cs[^1], OnLand, 5) > StraightPassageLandM) bad.Add(e);
             }
         }
         return bad;
@@ -996,6 +1005,9 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     private const double StraightPassageLandM = 20;
+    /// <summary>A link from a passage end that crosses more land than this before reaching water (a passage ending in inland water the
+    /// coastline counts as land, linked across an isthmus) is penalized like a link across a mole; the NOK lock approaches at Holtenau are 572 m.</summary>
+    private const double LinkLeadLandM = 600;
     private static double Bearing(Coordinate a, Coordinate b) => (Math.Atan2((b.X - a.X) * Math.Cos(a.Y * Math.PI / 180), b.Y - a.Y) * 180 / Math.PI + 360) % 360;
 
     /// <summary>A pulled leg within this of the graph path or of a route end may come closer to the coast than CoastClearanceM.</summary>

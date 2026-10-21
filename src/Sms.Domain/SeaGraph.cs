@@ -94,6 +94,8 @@ public sealed class SeaGraph
     public bool Ferry(int e) => _ferry is not null && _ferry[e];
     /// <summary>A straight link between a passage vertex and a water node (the builder lets these cross up to 50 m of land, a mole or pier).</summary>
     public bool IsLink(int e) => (_src[e] >= _firstPassage) != (_tgt[e] >= _firstPassage) && _geomStart[e] == _geomStart[e + 1];
+    /// <summary>A node id of a passage vertex (passage edges and links hook into them).</summary>
+    public bool IsPassageNode(int id) => id >= _firstPassage;
     /// <summary>A straight edge between two passage vertices that is not an assumed passage: a gap link between two channel pieces
     /// (the builder links ends up to 200 m apart without a land test) or a two-point channel or fairway piece.</summary>
     public bool IsStraightPassage(int e) => IsPassage(e) && _geomStart[e] == _geomStart[e + 1] && !IsAssumed(e);
@@ -149,6 +151,18 @@ public sealed class SeaGraph
             else if (water) landAfterWater = true;
         }
         return false;
+    }
+
+    /// <summary>Metres of land at the start of the leg a → b before the first sample in water (0 when a lies in water, the leg's length when
+    /// no sample is water): the shore a passage end stands on – or the isthmus a link jumps when the passage ends in inland water the
+    /// coastline counts as land (the Baaber Bek chain in the Selliner See, linked 1.4 km across Sellin to the Baltic).</summary>
+    public static double LeadingLandM(Coordinate a, Coordinate b, Func<Coordinate, bool> onLand, double stepM = 5)
+    {
+        var len = Haversine(a.Y, a.X, b.Y, b.X);
+        var n = Math.Max(2, (int)Math.Ceiling(len / stepM));
+        var k = 0;
+        while (k <= n && onLand(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n))) k++;
+        return Math.Min(k, n) * len / n;
     }
 
     /// <summary>The longest stretch (metres, sampled every stepM) of the leg a→b that lies on land with water before and after it: an
