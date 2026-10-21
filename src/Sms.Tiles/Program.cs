@@ -145,17 +145,17 @@ app.MapGet("/tiles/seamark/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, in
                        split_part(COALESCE(s."TagsJson"->>('seamark:' || s."Type" || ':function'), ''), ';', 1) AS function,
                        ST_AsMVTGeom(s."Location", b.geom, 4096, 64, true) AS geom
                 FROM "Seamarks" s, b
-                WHERE s."Line" IS NULL AND s."Location" && ST_Expand(b.geom, (ST_XMax(b.geom) - ST_XMin(b.geom)) / 64)
+                WHERE (s."Line" IS NULL OR ST_IsClosed(s."Line")) AND s."Location" && ST_Expand(b.geom, (ST_XMax(b.geom) - ST_XMin(b.geom)) / 64)
                   AND (@z >= 12 OR s."Type" IN ('light_major', 'light_minor', 'harbour', 'buoy_cardinal', 'buoy_safe_water', 'buoy_isolated_danger', 'beacon_cardinal', 'landmark'))
                 UNION ALL
                 SELECT s."OsmId", s."OsmType", s."Type", s."Category", s."Name", s."Colour", s."Shape", s."Light", s."Sectors", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL::float8, NULL::boolean, NULL,
                        ST_AsMVTGeom(s."Line", b.geom, 4096, 64, true) AS geom
                 FROM "Seamarks" s, b
-                WHERE s."Line" IS NOT NULL AND s."Line" && b.geom AND @z >= 10
+                WHERE s."Line" IS NOT NULL AND s."Line" && b.geom AND @z >= 10 AND (NOT ST_IsClosed(s."Line") OR s."Type" = ANY(@areas))
             )
             SELECT COALESCE(ST_AsMVT(q, 'seamark', 4096, 'geom'), ''::bytea) FROM q
             """);
-        cmd.Parameters.AddWithValue("z", z); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y);
+        cmd.Parameters.AddWithValue("z", z); cmd.Parameters.AddWithValue("x", x); cmd.Parameters.AddWithValue("y", y); cmd.Parameters.AddWithValue("areas", AreaTypes);
         var result = await cmd.ExecuteScalarAsync(ct);
         var bytes = result as byte[] ?? [];
         entry.Size = bytes.Length + 64;
@@ -172,4 +172,10 @@ app.MapGet("/tiles/seamark/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, in
 app.MapDefaultEndpoints();
 app.Run();
 
-public partial class Program;
+public partial class Program
+{
+    /// <summary>Charted areas whose border is drawn (closed rings of these types also go into the line part of the seamark tile;
+    /// every closed ring keeps its centre point for the symbol and name). Same list as SEAMARK_AREA_TYPES in sms-web core/map.ts.</summary>
+    static readonly string[] AreaTypes = ["restricted_area", "military_area", "anchorage", "dumping_ground", "marine_farm", "cable_area", "pipeline_area",
+        "fairway", "dredged_area", "separation_zone", "precautionary_area", "inshore_traffic_zone"];
+}

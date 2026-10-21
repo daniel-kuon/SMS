@@ -21,7 +21,11 @@ export function mapConfig(): Promise<MapConfig> {
 // MapLibre's worker is a separate ES module; under Vite/esbuild pre-bundling its relative URL breaks, so it is served as an asset (angular.json).
 maplibregl.setWorkerUrl('/maplibre-gl-worker.mjs');
 
-export const LEGACY_VIEW = { center: [10.523529052734373, 54.40774166820069] as [number, number], zoom: 9 };
+/** Sea-mark types whose closed rings the tile server sends as border lines (same list as Sms.Tiles AreaTypes). */
+export const SEAMARK_AREA_TYPES = ['restricted_area', 'military_area', 'anchorage', 'dumping_ground', 'marine_farm', 'cable_area', 'pipeline_area',
+  'fairway', 'dredged_area', 'separation_zone', 'precautionary_area', 'inshore_traffic_zone'];
+
+export const LEGACY_VIEW ={ center: [10.523529052734373, 54.40774166820069] as [number, number], zoom: 9 };
 
 /**
  * Creates a MapLibre map with the vector base style (OpenFreeMap/OpenMapTiles by default) and the
@@ -503,19 +507,30 @@ export function addSeamarkOverlay(map: MlMap, tilesUrl: string): void {
     paint: { 'circle-color': colour, 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.5, 11, 4], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1, 'circle-opacity': 0.95 },
   });
   map.addSprite('fnc', `${location.origin}/seamarks/fnc`); // chart symbols (quantenschaum/mapping via Open Waters Seamap, CC-BY)
-  // line marks: leading lines / recommended tracks (dashed black), cables and pipelines (magenta), fairway and restricted edges
+  // line marks, OpenSeaMap-like: leading lines / recommended tracks dashed black, ferry routes blue, cables and pipelines magenta
+  // (submarine ones from z13), and the borders of charted areas (the tile server sends the closed rings of SEAMARK_AREA_TYPES)
+  // thin and faint: restricted / military / anchorage / farm areas magenta, fairway / dredged / traffic separation areas purple
+  const type: ExpressionSpecification = ['get', 'type'];
+  const shore: ExpressionSpecification = ['==', type, 'shoreline_construction'];
+  const area: ExpressionSpecification = ['in', type, ['literal', SEAMARK_AREA_TYPES]];
+  const submarine: ExpressionSpecification = ['in', type, ['literal', ['cable_submarine', 'pipeline_submarine', 'cable_area', 'pipeline_area']]];
   map.addLayer({
-    id: 'seamark-lines', type: 'line', source: 'seamark', 'source-layer': 'seamark', minzoom: 10, filter: ['==', ['geometry-type'], 'LineString'],
+    id: 'seamark-lines', type: 'line', source: 'seamark', 'source-layer': 'seamark', minzoom: 10,
+    filter: ['all', ['==', ['geometry-type'], 'LineString'], ['any', ['!', submarine], ['>=', ['zoom'], 13]]],
     paint: {
-      // quays, piers and breakwaters solid grey; ferry routes blue; cables and pipelines magenta; leading lines and tracks black – all but the shore dashed
-      'line-color': ['case', ['==', ['get', 'type'], 'shoreline_construction'], '#757575', ['==', ['get', 'type'], 'ferry_route'], '#1565c0', ['in', ['get', 'type'], ['literal', ['cable_submarine', 'cable_overhead', 'pipeline_submarine', 'pipeline_overhead']]], '#a30075', ['in', ['get', 'type'], ['literal', ['fairway', 'restricted_area', 'separation_line', 'separation_boundary', 'separation_zone']]], '#7b1fa2', '#212121'],
+      'line-color': ['case', shore, '#757575', ['==', type, 'ferry_route'], '#1565c0',
+        ['in', type, ['literal', ['cable_submarine', 'cable_overhead', 'pipeline_submarine', 'pipeline_overhead', 'cable_area', 'pipeline_area']]], '#a30075',
+        ['in', type, ['literal', ['restricted_area', 'military_area', 'anchorage', 'dumping_ground', 'marine_farm']]], '#c2185b',
+        ['in', type, ['literal', ['fairway', 'dredged_area', 'separation_line', 'separation_boundary', 'separation_zone', 'separation_lane', 'precautionary_area', 'inshore_traffic_zone', 'recommended_traffic_lane']]], '#7b1fa2', '#212121'],
       // one zoom curve only (MapLibre rejects a layer with two zoom-based subexpressions, which silently dropped the whole lines layer)
-      'line-width': ['interpolate', ['linear'], ['zoom'], 10, ['case', ['==', ['get', 'type'], 'shoreline_construction'], 0.6, 0.8], 17, ['case', ['==', ['get', 'type'], 'shoreline_construction'], 4, 2.3]],
-      'line-dasharray': ['case', ['==', ['get', 'type'], 'shoreline_construction'], ['literal', [1, 0]], ['literal', [4, 3]]], 'line-opacity': 0.9,
+      'line-width': ['interpolate', ['linear'], ['zoom'], 10, ['case', shore, 0.6, area, 0.6, submarine, 0.6, 0.8], 17, ['case', shore, 4, area, 1.4, submarine, 1.2, 2.3]],
+      'line-dasharray': ['case', shore, ['literal', [1, 0]], area, ['literal', [6, 4]], ['literal', [4, 3]]],
+      'line-opacity': ['case', area, 0.55, submarine, 0.6, 0.9],
     },
   });
   map.addLayer({
-    id: 'seamark-line-labels', type: 'symbol', source: 'seamark', 'source-layer': 'seamark', minzoom: 12, filter: ['==', ['geometry-type'], 'LineString'],
+    // area names stay at the area's centre (seamark-labels), not repeated along its border
+    id: 'seamark-line-labels', type: 'symbol', source: 'seamark', 'source-layer': 'seamark', minzoom: 12, filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!', area]],
     layout: { 'symbol-placement': 'line', 'text-field': ['coalesce', ['get', 'name'], ''], 'text-size': 10, 'text-font': ['Noto Sans Regular'], 'text-offset': [0, -0.8] },
     paint: { 'text-color': '#263238', 'text-halo-color': '#ffffff', 'text-halo-width': 1 },
   });

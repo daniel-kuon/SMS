@@ -24,7 +24,8 @@ public static class SeamarkEndpoints
             if (!await current.IsAdminAsync(ct)) return Results.Forbid();
             var p = bbox.Split(',');
             if (p.Length != 4) return Invalid("bbox", "bbox=south,west,north,east");
-            var query = $"[out:json][timeout:300];nwr[\"seamark:type\"]({bbox});out center tags;";
+            // out geom: ways with their geometry and relations with their members' geometry (lines and area borders); the centre comes from the bounds
+            var query = $"[out:json][timeout:300];nwr[\"seamark:type\"]({bbox});out geom;";
             using var doc = await Overpass.QueryAsync(http, cfg, query, ct);
             if (doc is null) return Results.Problem(statusCode: 502, title: "Overpass ist zurzeit nicht erreichbar – später erneut versuchen oder eine Overpass-JSON-Datei hochladen.");
             var r = await ImportAsync(doc, db, ct);
@@ -65,6 +66,7 @@ public static class SeamarkEndpoints
                 double lat, lng;
                 if (el.TryGetProperty("center", out var c)) { lat = c.GetProperty("lat").GetDouble(); lng = c.GetProperty("lon").GetDouble(); }
                 else if (el.TryGetProperty("lat", out var la)) { lat = la.GetDouble(); lng = el.GetProperty("lon").GetDouble(); }
+                else if (el.TryGetProperty("bounds", out var bd)) { lat = (bd.GetProperty("minlat").GetDouble() + bd.GetProperty("maxlat").GetDouble()) / 2; lng = (bd.GetProperty("minlon").GetDouble() + bd.GetProperty("maxlon").GetDouble()) / 2; }
                 else { skipped++; continue; }
                 if (!el.TryGetProperty("tags", out var tags) || !tags.TryGetProperty("seamark:type", out var t)) { skipped++; continue; }
                 var seamarkType = t.GetString()!;
@@ -77,7 +79,12 @@ public static class SeamarkEndpoints
                 mark.Shape = Tag(tags, $"seamark:{seamarkType}:shape");
                 var (light, sectors) = Lights.Describe(tags.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? ""));
                 mark.Light = light; mark.Sectors = sectors;
-                mark.Line = type == "way" && el.TryGetProperty("geometry", out var geometry) ? ToMercatorLine(geometry) : null;
+                mark.Line = type switch
+                {
+                    "way" when el.TryGetProperty("geometry", out var geometry) => ToMercatorLine(geometry),
+                    "relation" when el.TryGetProperty("members", out var members) => OuterLine(members),
+                    _ => null,
+                };
                 mark.TagsJson = tags.GetRawText();
                 mark.Location = ToMercator(lat, lng);
                 mark.ImportedAt = DateTimeOffset.UtcNow;
@@ -89,12 +96,26 @@ public static class SeamarkEndpoints
 
     private static string? Tag(JsonElement tags, string key) => tags.TryGetProperty(key, out var v) ? v.GetString() : null;
 
-    /// <summary>Overpass "geometry" of a way → Mercator line (null for closed rings and degenerate ways; areas keep their centre point).</summary>
+    /// <summary>Overpass "geometry" of a way → Mercator line; a closed ring (an area: restricted area, anchorage …) stays a closed line
+    /// for its border, its point symbol sits at <see cref="Seamark.Location"/>. Null for degenerate ways.</summary>
     public static LineString? ToMercatorLine(JsonElement geometry)
     {
-        var pts = geometry.EnumerateArray().Select(c => ToMercator(c.GetProperty("lat").GetDouble(), c.GetProperty("lon").GetDouble()).Coordinate).ToArray();
-        if (pts.Length < 2 || pts[0].Equals2D(pts[^1])) return null;
-        return new LineString(pts) { SRID = 3857 };
+        var pts = geometry.EnumerateArray().Where(c => c.ValueKind == JsonValueKind.Object)
+            .Select(c => ToMercator(c.GetProperty("lat").GetDouble(), c.GetProperty("lon").GetDouble()).Coordinate).ToArray();
+        return pts.Length < 2 ? null : new LineString(pts) { SRID = 3857 };
+    }
+
+    /// <summary>Border of a multipolygon relation (Overpass "out geom" members): the outer ways joined, the longest ring or line kept.</summary>
+    // ponytail: one ring per row (Line is a LineString); a multipolygon with several outer rings shows only its largest border
+    public static LineString? OuterLine(JsonElement members)
+    {
+        var merger = new NetTopologySuite.Operation.Linemerge.LineMerger();
+        foreach (var m in members.EnumerateArray())
+            if (m.GetProperty("type").GetString() == "way" && (!m.TryGetProperty("role", out var role) || role.GetString() is "outer" or "")
+                && m.TryGetProperty("geometry", out var g) && ToMercatorLine(g) is { } line) merger.Add(line);
+        var longest = merger.GetMergedLineStrings().OfType<LineString>().MaxBy(l => l.Length);
+        if (longest is not null) longest.SRID = 3857;
+        return longest;
     }
 
     /// <summary>WGS84 → Web Mercator (EPSG:3857), the projection vector tiles are cut in.</summary>

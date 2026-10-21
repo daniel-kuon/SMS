@@ -33,12 +33,21 @@ public class LightsTests
     }
 
     [Fact]
-    public void Way_geometry_becomes_a_line_but_closed_rings_stay_points()
+    public void Way_geometry_becomes_a_line_and_closed_rings_and_relations_their_border()
     {
         using var open = JsonDocument.Parse("""[{"lat":54.1,"lon":10.1},{"lat":54.2,"lon":10.2}]""");
         var line = SeamarkEndpoints.ToMercatorLine(open.RootElement);
         Assert.NotNull(line); Assert.Equal(3857, line.SRID); Assert.Equal(2, line.NumPoints);
         using var ring = JsonDocument.Parse("""[{"lat":54.1,"lon":10.1},{"lat":54.2,"lon":10.2},{"lat":54.1,"lon":10.3},{"lat":54.1,"lon":10.1}]""");
-        Assert.Null(SeamarkEndpoints.ToMercatorLine(ring.RootElement));
+        Assert.True(SeamarkEndpoints.ToMercatorLine(ring.RootElement)!.IsClosed);
+        Assert.Null(SeamarkEndpoints.ToMercatorLine(JsonDocument.Parse("""[{"lat":54.1,"lon":10.1}]""").RootElement));
+        // a multipolygon whose outer ring is split over two ways: joined into one closed border, the inner way ignored
+        using var members = JsonDocument.Parse("""
+            [{"type":"way","role":"outer","geometry":[{"lat":54.1,"lon":10.1},{"lat":54.2,"lon":10.2},{"lat":54.1,"lon":10.3}]},
+             {"type":"way","role":"outer","geometry":[{"lat":54.1,"lon":10.3},{"lat":54.0,"lon":10.2},{"lat":54.1,"lon":10.1}]},
+             {"type":"way","role":"inner","geometry":[{"lat":54.1,"lon":10.15},{"lat":54.12,"lon":10.2},{"lat":54.1,"lon":10.15}]}]
+            """);
+        var border = SeamarkEndpoints.OuterLine(members.RootElement);
+        Assert.NotNull(border); Assert.True(border.IsClosed); Assert.Equal(5, border.NumPoints); Assert.Equal(3857, border.SRID);
     }
 }
