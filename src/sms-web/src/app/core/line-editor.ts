@@ -7,6 +7,8 @@ import { geometryToLines, insertInto, Lines, moveShared, nearestVertex, Pos, rem
 export interface LineEditorOptions {
   /** A polygon ring (drawn closed, the closing segment can take vertices too; no branches). */
   closed?: boolean;
+  /** One line only: no junctions by double-click (a ruler). */
+  noBranches?: boolean;
   colour?: string;
   /** Applied to a dropped/added vertex, e.g. snapping to a buoy. */
   snap?: (p: Pos) => Pos;
@@ -16,6 +18,9 @@ export interface LineEditorOptions {
 }
 
 /** Marker elements sit inside the map container: their clicks reach the map's click handlers too, which should ignore them. */
+/** A screen box of px around a point: queryRenderedFeatures with it gives lines an invisible hit padding (easier to click and hover). */
+export const around = (p: { x: number; y: number }, px = 5): [PointLike, PointLike] => [[p.x - px, p.y - px], [p.x + px, p.y + px]];
+
 export const isMarkerEvent = (ev: Event) => !!(ev.target as HTMLElement | null)?.closest?.('.maplibregl-marker');
 
 /**
@@ -23,8 +28,7 @@ export const isMarkerEvent = (ev: Event) => !!(ev.target as HTMLElement | null)?
  * so the line is looked up by its id property (geometryOf) and its stored coordinates are used – a branch attached there joins it exactly.
  */
 export function vertexNear(map: MlMap, point: { x: number; y: number }, layers: string[], geometryOf: (id: unknown) => Geometry | null | undefined, tolPx = 10): Pos | null {
-  const box: [PointLike, PointLike] = [[point.x - tolPx, point.y - tolPx], [point.x + tolPx, point.y + tolPx]];
-  const verts = map.queryRenderedFeatures(box, { layers: layers.filter(l => map.getLayer(l)) }).flatMap(f => geometryToLines(geometryOf(f.properties?.['id'])).flat());
+  const verts = map.queryRenderedFeatures(around(point, tolPx), { layers: layers.filter(l => map.getLayer(l)) }).flatMap(f => geometryToLines(geometryOf(f.properties?.['id'])).flat());
   const i = nearestVertex(verts.map(v => { const q = map.project(v); return [q.x, q.y] as Pos; }), [point.x, point.y], tolPx);
   return i < 0 ? null : verts[i];
 }
@@ -95,7 +99,7 @@ export class LineEditor {
   }
   /** Makes a vertex (of this line or another one on the map) the attach node; the same node again, or null, clears it. Not for rings. */
   attachAt(p: Pos | null): void {
-    if (this.opts.closed) return;
+    if (this.opts.closed || this.opts.noBranches) return;
     this.attachNode = p && !(this.attachNode && samePos(this.attachNode, p)) ? p : null;
     this.rebuild(); this.opts.onAttach?.(this.attachNode);
   }

@@ -16,7 +16,7 @@ import { bounds, createMap, MlMap } from '../../core/map';
 import { Api, errorMessage } from '../../core/api';
 import { haversineM } from '../../core/track-playback';
 import { formatPosition } from '../../core/seamark-icons';
-import { isMarkerEvent, LineEditor, vertexNear } from '../../core/line-editor';
+import { around, isMarkerEvent, LineEditor, vertexNear } from '../../core/line-editor';
 import { cleanLines, geometryToLines, Lines, linesToGeometry, vertexCount } from '../../core/line-network';
 import { geometryCoords, lengthNm } from './routing-corrections';
 
@@ -294,7 +294,7 @@ export class FairwayFeedback {
     });
     map.on('mousemove', (e: MapMouseEvent) => {
       if (this.mode()) return;
-      map.getCanvas().style.cursor = map.queryRenderedFeatures(e.point, { layers: this.clickable() }).length ? 'pointer' : '';
+      map.getCanvas().style.cursor = map.queryRenderedFeatures(around(e.point), { layers: this.clickable() }).length ? 'pointer' : '';
     });
     map.on('moveend', () => { clearTimeout(this.loadTimer); this.loadTimer = setTimeout(() => this.load(), 300); });
     document.addEventListener('keydown', this.onKey);
@@ -327,7 +327,7 @@ export class FairwayFeedback {
     if (this.mode() === 'draw') { if (!this.editor?.tryInsert(e.point)) this.editor?.append(p); return; }
     if (isLineKind(this.pending()?.kind) && this.editor?.tryInsert(e.point)) return; // the finished line stays editable
     if (this.mode() === 'comment') { this.mode.set(null); map.getCanvas().style.cursor = ''; this.openForm({ kind: 'Comment', objectRef: null, geometry: { type: 'Point', coordinates: p }, title: this.t('admin.fb.kind.Comment') }); return; }
-    const f = map.queryRenderedFeatures(e.point, { layers: this.clickable() })[0];
+    const f = map.queryRenderedFeatures(around(e.point), { layers: this.clickable() })[0];
     const id = f?.properties?.['id'];
     if (f?.layer.id === 'fb-buoys') { const b = this.data().buoys.find(x => x.id === id); if (b) this.select({ type: 'buoy', b }); }
     else if (f) { const x = this.data().passages.find(q => q.id === id); if (x) this.select({ type: 'passage', p: x }); }

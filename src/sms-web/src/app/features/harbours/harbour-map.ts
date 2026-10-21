@@ -30,8 +30,11 @@ import { UploadZone } from '../../shared/shared';
 import { loadForecast, loadTides, TideForecast, WeatherCard, WeatherDialog, WeatherForecast } from '../../core/weather';
 import { ShipContextService } from '../../core/ship-context';
 import { applyDepthShading, applyHazardFilter } from '../../core/map';
-import { formatDecimal, formatDepthBand, formatNautical, insertVia, joinLegs, LatLng, nearestLeg, PointInfo, RouteLeg } from '../../core/map-point';
+import { formatDecimal, formatDepthBand, formatNautical, insertVia, joinLegs, LatLng, nearestLeg, nearestOnPolyline, PointInfo, RouteLeg } from '../../core/map-point';
 import { parseRouteLink, RouteLink, routeLinkParams, withParams } from '../../core/route-link';
+import { LineEditor } from '../../core/line-editor';
+import { Lines } from '../../core/line-network';
+import { formatBearing, measureLegs } from '../../core/measure';
 /** Show only the places up to this distance when there are any; otherwise the ones up to the 5 km that the API returns. */
 const NEAR_RADIUS_M = 3000;
 
@@ -59,6 +62,13 @@ function viaEl(removable = false): HTMLElement {
   }
   return el;
 }
+/** The hover handle on the route: the line editor's hollow dot in the route's blue; mouse events pass through to the route below. */
+function routeHandleEl(): HTMLElement {
+  const el = document.createElement('div');
+  el.style.cssText = 'width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.7);border:3px solid #1e88e5;box-shadow:0 0 3px rgba(0,0,0,.5);pointer-events:none';
+  return el;
+}
+const ROUTE_HANDLE_PX = 8;
 const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.round(haversineM(a.lat, a.lng, b.lat, b.lng) / 185.2) / 10;
 
 @Component({
@@ -67,6 +77,21 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     <div class="layout">
       <div class="map-wrap">
         <div #map class="map"></div>
+        <button type="button" class="ruler" [class.active]="measuring()" (click)="toggleMeasure()" [title]="'measure.start' | translate" [attr.aria-label]="'measure.start' | translate" [attr.aria-pressed]="measuring()"><mat-icon>straighten</mat-icon></button>
+        @if (measuring()) {
+          <div class="measure" role="region" [attr.aria-label]="'measure.title' | translate">
+            <div class="head"><b class="grow">{{ 'measure.title' | translate }}</b>
+              <button mat-icon-button class="clear-measure" (click)="clearMeasure()" [disabled]="!measure().legs.length" [title]="'measure.clear' | translate" [attr.aria-label]="'measure.clear' | translate"><mat-icon>delete_sweep</mat-icon></button>
+              <button mat-icon-button (click)="toggleMeasure()" [title]="'measure.end' | translate" [attr.aria-label]="'measure.end' | translate"><mat-icon>close</mat-icon></button></div>
+            @if (measure().legs.length) {
+              <table>
+                <thead><tr><th>#</th><th>{{ 'measure.length' | translate }}</th><th>{{ 'measure.bearing' | translate }}</th></tr></thead>
+                <tbody>@for (l of measure().legs; track $index) { <tr><td>{{ $index + 1 }}</td><td>{{ nm(l.nm) }}</td><td>{{ bearing(l.bearing) }}</td></tr> }</tbody>
+                <tfoot><tr><td>{{ 'measure.total' | translate }}</td><td colspan="2">{{ nm(measure().totalNm) }}</td></tr></tfoot>
+              </table>
+            } @else { <p class="muted">{{ 'measure.hint' | translate }}</p> }
+          </div>
+        }
         @if (point(); as p) {
           <div class="point-bar" role="region" [attr.aria-label]="'mapPoint.title' | translate">
             <div class="pos"><b>{{ nautical(p) }}</b> <span class="muted">{{ decimal(p) }}</span>
@@ -195,6 +220,12 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
     .route-box { position: absolute; left: 8px; bottom: 28px; z-index: 3; background: rgba(255,255,255,.97); border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.3); padding: 4px 8px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
     .route-box .legend { display: flex; align-items: center; gap: 6px; min-height: 28px; } .route-box label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; } .route-box .current { padding-left: 19px; }
     .route-box .swatch { display: inline-block; width: 22px; border-top: 4px solid #1e88e5; } .route-box .swatch.saved { border-top: 3px dashed #757575; }
+    .ruler { position: absolute; left: 10px; top: 84px; z-index: 2; width: 29px; height: 29px; padding: 0; border: none; border-radius: 4px; background: #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.1); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .ruler mat-icon { font-size: 20px; width: 20px; height: 20px; } .ruler.active { background: #1e88e5; color: #fff; }
+    .measure { position: absolute; left: 48px; top: 84px; z-index: 3; min-width: 200px; max-height: calc(100% - 200px); overflow-y: auto; background: rgba(255,255,255,.97); border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.3); padding: 2px 4px 6px 10px; font-size: 13px; }
+    .measure .head { display: flex; align-items: center; } .measure .grow { flex: 1; } .measure p { margin: 0 6px 4px 0; max-width: 220px; }
+    .measure table { border-collapse: collapse; width: 100%; } .measure th { text-align: left; color: #666; font-weight: 500; } .measure th, .measure td { padding: 2px 8px 2px 0; } .measure td:not(:first-child) { font-variant-numeric: tabular-nums; }
+    .measure tfoot td { border-top: 1px solid #ccc; font-weight: 600; }
     .route-box.above-bar { bottom: 140px; } /* the point bar spans the bottom */
     .panel { width: 0; overflow: hidden; transition: width .2s; background: white; box-shadow: -2px 0 8px rgba(0,0,0,.15); }
     .panel.open { width: 420px; max-width: 100vw; padding: 12px; overflow-y: auto; }
@@ -335,33 +366,66 @@ export class HarbourMapPage {
     map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['!=', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 4 } });
     map.addLayer({ id: 'route-on-land', type: 'line', source: 'route', filter: ['==', ['get', 'onLand'], true], paint: { 'line-color': '#1e88e5', 'line-width': 1.5, 'line-dasharray': [1, 2] } });
-    // an invisible wide line over the route: the grab handle for dragging a via point out of it
-    map.addLayer({ id: 'route-hit', type: 'line', source: 'route', filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'onLand'], true]], paint: { 'line-color': '#000000', 'line-width': 14, 'line-opacity': 0.01 } });
+    // an invisible wide line over the route (8 px either side, at least 5 px past the drawn line): hover handle and grab area for dragging a via point out of it
+    map.addLayer({ id: 'route-hit', type: 'line', source: 'route', filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'onLand'], true]], paint: { 'line-color': '#000000', 'line-width': 2 * ROUTE_HANDLE_PX, 'line-opacity': 0.01 } });
     map.addLayer({ id: 'route-line-dashed', type: 'line', source: 'route', filter: ['==', ['get', 'dashed'], true], paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-dasharray': [2, 2] } });
     map.addLayer({ id: 'route-check-depth', type: 'circle', source: 'route', filter: ['==', ['get', 'checkDepth'], true], paint: { 'circle-radius': 5, 'circle-color': '#9c97d6', 'circle-stroke-color': '#34357a', 'circle-stroke-width': 2 } });
     map.addLayer({ id: 'route-label', type: 'symbol', source: 'route', layout: { 'symbol-placement': 'line-center', 'text-field': ['get', 'label'], 'text-size': 12, 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#0d47a1', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
 
     map.on('moveend', () => this.refresh());
-    map.on('click', 'harbour-points', e => { const id = e.features?.[0]?.properties?.['id']; if (id) this.select(id); });
+    map.on('click', 'harbour-points', e => { if (this.ruler) return; const id = e.features?.[0]?.properties?.['id']; if (id) this.select(id); });
     map.on('click', e => {
       if (onMarker(e.originalEvent)) return;   // a via/start marker, not the map
+      if (this.ruler) { if (!this.ruler.tryInsert(e.point)) this.ruler.append([e.lngLat.lng, e.lngLat.lat]); return; }   // measuring: no point bar, no routing
       if (map.queryRenderedFeatures(e.point, { layers: ['harbour-points', 'harbour-clusters'] }).length === 0 && !poiAt(map, e.point)) this.clickPoint(e.lngLat.lat, e.lngLat.lng);
     });
     map.on('mouseenter', 'route-hit', () => { if (this.editable()) map.getCanvas().style.cursor = 'grab'; });
     map.on('mouseleave', 'route-hit', () => { if (!this.dragging) map.getCanvas().style.cursor = ''; });
     map.on('mousedown', 'route-hit', e => this.dragRoute(e));
-    map.on('click', 'harbour-clusters', e => { const f = e.features?.[0]; if (f) map.easeTo({ center: (f.geometry as GeoPoint).coordinates as [number, number], zoom: map.getZoom() + 2 }); });
+    map.on('mousemove', e => this.hoverRoute(e));
+    map.on('mouseout', () => this.routeHandle?.remove());
+    map.on('click', 'harbour-clusters', e => { if (this.ruler) return; const f = e.features?.[0]; if (f) map.easeTo({ center: (f.geometry as GeoPoint).coordinates as [number, number], zoom: map.getZoom() + 2 }); });
     map.on('mouseenter', 'harbour-points', e => { map.getCanvas().style.cursor = 'pointer'; const id = e.features?.[0]?.properties?.['id']; if (id) this.hoverHarbour(id); });
     map.on('mouseleave', 'harbour-points', () => { map.getCanvas().style.cursor = ''; this.hideRoute(); });
     map.on('contextmenu', e => this.contextMenu(e));
     applyHazardFilter(map, this.shipCtx.hazardDepthM()); applyDepthShading(map, this.shipCtx.minDepthM(), this.shipCtx.warnDepthM());
     this.refresh();
     const h = this.harbour();
+    if (this.link) this.reveal = null;   // a route link shows the route, not the harbour
     if (h) { setPoiFocus(map, h.id ? h : null); this.revealHarbour(h); }
     if (this.link) { this.openLink(this.link); this.link = null; }
   }
 
-  ngOnDestroy(): void { this.unsyncView?.(); this.map?.remove(); }
+  ngOnDestroy(): void { this.endMeasure(); this.unsyncView?.(); this.map?.remove(); }
+
+  // --- measuring: a ruler line (the passage line editor: click adds, drag moves, × deletes, click on the line inserts) with its legs listed ---
+  private ruler?: LineEditor;
+  measuring = signal(false);
+  private measureLines = signal<Lines>([[]]);
+  measure = computed(() => measureLegs(this.measureLines()[0] ?? []));
+  nm = (v: number) => `${v.toLocaleString(appI18n.lang(), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${this.translate.instant('measure.unit')}`;
+  bearing = formatBearing;
+  private onMeasureKey = (e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (e.key === 'Escape' && tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') this.endMeasure();
+  };
+  toggleMeasure(): void {
+    const map = this.map; if (!map) return;
+    if (this.ruler) { this.endMeasure(); return; }
+    this.routeHandle?.remove();
+    this.ruler = new LineEditor(map, { colour: '#d81b60', noBranches: true, onChange: l => this.measureLines.set(l) });
+    this.measuring.set(true);
+    map.doubleClickZoom.disable(); map.getCanvas().style.setProperty('cursor', 'crosshair');
+    document.addEventListener('keydown', this.onMeasureKey);
+  }
+  clearMeasure(): void { this.ruler?.set([[]]); this.measureLines.set([[]]); }
+  private endMeasure(): void {
+    if (!this.ruler) return;
+    this.ruler.destroy(); this.ruler = undefined;
+    this.measuring.set(false); this.measureLines.set([[]]);
+    this.map?.doubleClickZoom.enable(); this.map?.getCanvas().style.removeProperty('cursor');
+    document.removeEventListener('keydown', this.onMeasureKey);
+  }
 
   private revealHarbour(h: Harbour): void {
     const map = this.map, how = this.reveal;
@@ -468,9 +532,21 @@ export class HarbourMapPage {
   private course: { from: LatLng; to: LatLng; vias: LatLng[]; legs: number[][][] } | null = null;
   routing = signal(false);
   private routeSeq = 0;
+  /** The calculation of an opened link: its result (with the saved route) is fitted into view once. */
+  private fitSeq = -1;
   private viaMarkers: maplibregl.Marker[] = [];
   dragging = false;
-  editable = () => !!this.course?.legs.length && this.pinned && !this.routing();
+  editable = () => !!this.course?.legs.length && this.pinned && !this.routing() && !this.ruler;
+  /** The small handle on the route where the mouse is near it (within ROUTE_HANDLE_PX): where a drag pulls out a via point. Click-through. */
+  private routeHandle?: maplibregl.Marker;
+  private hoverRoute(e: MapMouseEvent): void {
+    const map = this.map, coords = this.courseRoute()?.coordinates;
+    const near = !!map && !!coords && this.editable() && !this.dragging && !onMarker(e.originalEvent)
+      && map.queryRenderedFeatures(e.point, { layers: ['route-hit'] }).length > 0;
+    const r = near ? nearestOnPolyline(coords!.map(c => { const q = map!.project(c); return [q.x, q.y] as [number, number]; }), [e.point.x, e.point.y]) : null;
+    if (!r || r.dist > ROUTE_HANDLE_PX) { this.routeHandle?.remove(); return; }
+    (this.routeHandle ??= new maplibregl.Marker({ element: routeHandleEl() })).setLngLat(map!.unproject(r.point)).addTo(map!);
+  }
 
   /** "Route hierher": a pinned route from the start to the clicked point, the distance in a popup there. */
   routeHere(): void { const s = this.start(), p = this.point(); if (s && p) this.startCourse({ lat: s.lat, lng: s.lng }, p); }
@@ -511,7 +587,9 @@ export class HarbourMapPage {
     this.routeStart.set(link.from);
     (this.startMarker ??= new maplibregl.Marker({ element: dotEl('#2e7d32') })).setLngLat([link.from.lng, link.from.lat]).addTo(map);
     this.startCourse(link.from, link.to, link.vias);
-    if (!viewFromUrl(this.location.path())) map.fitBounds(bounds(link.ref?.coordinates ?? [link.from, ...link.vias, link.to].map(p => [p.lng, p.lat] as [number, number])), { padding: 60, animate: false });
+    // the whole route once, even when the link has a view (c): now the saved route and the route points, again when the first calculation is in
+    map.fitBounds(bounds([...(link.ref?.coordinates ?? []), ...[link.from, ...link.vias, link.to].map(p => [p.lng, p.lat] as [number, number])]), { padding: 60, animate: false });
+    this.fitSeq = this.routeSeq;
   }
 
   /** "Route im Link speichern": the route's inputs and line into the URL (the view stays), the URL to the clipboard. */
@@ -545,6 +623,7 @@ export class HarbourMapPage {
         c.legs = legs.map(l => l.geometry.coordinates);
         this.courseRoute.set({ coordinates: r.coordinates, distanceNm: r.distanceNm });
         this.pinned = false; this.draw(r.coordinates, r.distanceNm, r.straight, !!r.warnings.length, r.warnings); this.pinned = true;
+        if (seq === this.fitSeq) { this.fitSeq = -1; map.fitBounds(bounds([...r.coordinates, ...(this.refRoute()?.coordinates ?? [])]), { padding: 60, animate: false }); }
         popup?.setDOMContent(textEl(r.straight ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${straight} sm${routeWarningText(r.warnings)}`));
       },
       // 422 "no sea route" (a point too far from navigable water or not connected): no line across land, the reason in the popup
@@ -566,6 +645,7 @@ export class HarbourMapPage {
     const leg = nearestLeg(c.legs, e.lngLat.lng, e.lngLat.lat), canvas = map.getCanvas(), rect = canvas.getBoundingClientRect();
     const x0 = e.originalEvent.clientX, y0 = e.originalEvent.clientY;
     let at = e.lngLat, ghost: maplibregl.Marker | undefined;
+    this.routeHandle?.remove();
     this.dragging = true; canvas.style.cursor = 'grabbing';
     const move = (ev: MouseEvent) => {
       if (!ghost && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;   // a click, not a drag
@@ -627,7 +707,7 @@ export class HarbourMapPage {
     if (this.pinned && !force) return;
     if (force) {
       const p = this.pointPopup; this.pointPopup = undefined; p?.remove();
-      this.course = null; this.routeSeq++; this.syncVias(); this.routing.set(false); this.pinned = false; this.courseRoute.set(null);
+      this.course = null; this.routeSeq++; this.syncVias(); this.routeHandle?.remove(); this.routing.set(false); this.pinned = false; this.courseRoute.set(null);
       if (this.map?.getLayer('route-line')) this.map.setPaintProperty('route-line', 'line-opacity', 1);
     }
     this.hovered = null;

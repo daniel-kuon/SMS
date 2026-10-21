@@ -14,7 +14,7 @@ import { bounds, createMap, MlMap } from '../../core/map';
 import { Api, errorMessage } from '../../core/api';
 import { haversineM } from '../../core/track-playback';
 import { formatPosition } from '../../core/seamark-icons';
-import { isMarkerEvent, LineEditor, vertexNear } from '../../core/line-editor';
+import { around, isMarkerEvent, LineEditor, vertexNear } from '../../core/line-editor';
 import { cleanLines, geometryToLines, Lines, vertexCount } from '../../core/line-network';
 import { firstValueFrom } from 'rxjs';
 
@@ -201,7 +201,7 @@ export class RoutingCorrections {
     map.addLayer({ id: 'corr-points', type: 'circle', source: 'corrections', paint: { 'circle-radius': ['case', MARKED, 8, 5], 'circle-color': ['case', ['==', ['get', 'kind'], 'Lock'], '#6d4c41', ['==', ['get', 'kind'], 'OpeningBridge'], '#00897b', '#7b1fa2'],
       'circle-stroke-color': ['case', SEL, '#ff1744', HOVER, '#ffd600', '#fff'], 'circle-stroke-width': ['case', MARKED, 3, 1.5], 'circle-opacity': ['case', MARKED, 1, ['get', 'active'], 1, 0.4] } });
     this.applyFilter();
-    const featureAt = (e: MapMouseEvent) => map.queryRenderedFeatures(e.point, { layers: ['corr-points', 'corr-lines', 'corr-blocks'] })[0]?.properties?.['id'] as string | undefined;
+    const featureAt = (e: MapMouseEvent) => map.queryRenderedFeatures(around(e.point), { layers: ['corr-points', 'corr-lines', 'corr-blocks'] })[0]?.properties?.['id'] as string | undefined;
     map.on('click', (e: MapMouseEvent) => {
       if (this.drawing()) { if (!isMarkerEvent(e.originalEvent) && !this.editor?.tryInsert(e.point)) this.editor?.append([e.lngLat.lng, e.lngLat.lat]); return; }
       const id = featureAt(e); const c = id ? this.items().find(x => x.id === id) : undefined;
