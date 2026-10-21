@@ -444,12 +444,47 @@ public class StringPullTests
     [Fact]
     public void PullFlags_marks_kept_passage_segments_only()
     {
-        var p = Line((0, 0), (1, 1), (2, 1), (3, 1), (4, 0));
+        var p = Line((0, 0), (1, 1), (2, 1.5), (3, 1), (4, 0));
         var (pts, fx) = StringPull.PullFlags(p, [false, true, true, false], Open, trimM: 0);
         Assert.Equal(p, pts); // a short run is never skipped
         Assert.Equal([false, true, true, false], fx);
         var (free, ffx) = StringPull.PullFlags(p, [false, false, false, false], Open);
         Assert.Equal([p[0], p[^1]], free); Assert.Equal([false], ffx);
+    }
+
+    [Fact]
+    public void Pull_drops_a_back_step_inside_a_fixed_run()
+    {
+        List<Coordinate> p = [new(10, 54.00), new(10, 54.01), new(10, 54.0099), new(10, 54.02)]; // C: a 111 m back-step on the line
+        var pulled = StringPull.Pull(p, [true, true, true], Open);
+        Assert.DoesNotContain(p[1], pulled); // A → C → D or A → D: straight, no back-step
+        Assert.True(StringPull.Length(pulled) < StringPull.Length([p[0], p[^1]]) + 1);
+        Assert.Equal(p, StringPull.Pull(p, [true, true, true], Open, shapeM: 0));
+        // a skip that only follows the shape also has to pass followBlocked (piers along a harbour channel)
+        Assert.Equal(p, StringPull.Pull(p, [true, true, true], Open, followBlocked: (_, _) => true));
+    }
+
+    [Fact]
+    public void Pull_cuts_a_fairway_hop_that_overshoots_the_goal()
+    {
+        List<Coordinate> p = [new(10, 54.000), new(10, 54.025), new(10.0006, 54.0236)]; // P 41 m off A→G, 154 m beyond G
+        Assert.Equal([p[0], p[^1]], StringPull.Pull(p, [true, false], Open));
+        Assert.Equal(p, StringPull.Pull(p, [true, false], Open, shapeM: 0));
+    }
+
+    [Fact]
+    public void Pull_keeps_a_bend_of_a_fixed_run()
+    {
+        List<Coordinate> p = [new(10, 54), new(10.003, 54.0018), new(10.006, 54)]; // B 200 m off the chord
+        Assert.Equal(p, StringPull.Pull(p, [true, true], Open));
+        Assert.Equal(p, StringPull.Pull(p, [true, true], Open, shapeM: 0));
+    }
+
+    [Fact]
+    public void Follows_rejects_points_far_beyond_the_end()
+    {
+        List<Coordinate> p = [new(10, 54.000), new(10, 54.046), new(10, 54.010)]; // P on the line, 4 km beyond G
+        Assert.Equal(p, StringPull.Pull(p, [true, false], Open, trimM: 3000));
     }
 
     // a square island round (5, 0), 2 × 2 grid units

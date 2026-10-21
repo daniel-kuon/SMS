@@ -45,7 +45,8 @@ export interface Leg { id: string; order: number; alternative: number; fromHarbo
  *  Kind "bridge": asked without an air draft, the route passes under a fixed bridge at lat/lng (distanceM: its charted clearance).
  *  Kind "bridgeUnknown": the route passes under a fixed bridge without a charted clearance at lat/lng.
  *  Kind "uncertainDepth": no route leads through definitely deep water and buoyed channels only; this one crosses water whose band floor lies
- *  below the minimum depth at lat/lng (distanceM: length of that stretch). */
+ *  below the minimum depth at lat/lng (distanceM: length of that stretch).
+ *  Kind "cardinal": the route runs through the danger quadrant of a cardinal mark at lat/lng (one per mark). */
 export interface RouteWarning { kind: string; lat: number; lng: number; note: string; snappedLat?: number | null; snappedLng?: number | null; distanceM?: number | null; }
 /** " · ⚠ <notes>" for a route's warnings (the same note once, with a count), "" without any. */
 export function routeWarningText(warnings?: RouteWarning[] | null): string {

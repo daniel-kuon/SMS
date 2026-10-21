@@ -462,8 +462,10 @@ public static class StringPull
     }
 
     /// <param name="maxTests">Blocked tests per point at most (the cheapest allowed candidates): bounds the work along a winding coast.</param>
-    public static List<Coordinate> Pull(IReadOnlyList<Coordinate> p, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, double trimM = 3000, double maxLegM = 30_000, int maxTests = 64) =>
-        PullFlags(p, fixedSeg, blocked, trimM, maxLegM, maxTests).points;
+    /// <param name="shapeM">A leg may skip passage points that all lie within this of its line (spur, back-step, overshoot); ≤ 0 = off.</param>
+    /// <param name="followBlocked">Blocks such a shape-following skip in addition to <paramref name="blocked"/> (piers: the passage ran between them).</param>
+    public static List<Coordinate> Pull(IReadOnlyList<Coordinate> p, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, double trimM = 3000, double maxLegM = 30_000, int maxTests = 64, double shapeM = 60, Func<Coordinate, Coordinate, bool>? followBlocked = null) =>
+        PullFlags(p, fixedSeg, blocked, trimM, maxLegM, maxTests, shapeM, followBlocked).points;
 
     /// <summary>
     /// Corner cutting after the pull: the pull can only bend at the path's own points, so where the graph path swung wide (a long
@@ -511,7 +513,7 @@ public static class StringPull
     }
 
     /// <summary>Pull, also returning per result segment whether it is passage geometry (a kept segment of a fixed run; a leg that skips points is free).</summary>
-    public static (List<Coordinate> points, List<bool> fixedSeg) PullFlags(IReadOnlyList<Coordinate> p, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, double trimM = 3000, double maxLegM = 30_000, int maxTests = 64)
+    public static (List<Coordinate> points, List<bool> fixedSeg) PullFlags(IReadOnlyList<Coordinate> p, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, double trimM = 3000, double maxLegM = 30_000, int maxTests = 64, double shapeM = 60, Func<Coordinate, Coordinate, bool>? followBlocked = null)
     {
         var n = p.Count;
         if (n < 3) return (p.ToList(), fixedSeg.ToList());
@@ -527,8 +529,26 @@ public static class StringPull
         var along = new double[n];
         for (var k = 1; k < n; k++) along[k] = along[k - 1] + SeaGraph.Haversine(p[k - 1].Y, p[k - 1].X, p[k].Y, p[k].X);
         double Trim(int r) => Math.Min(trimM, (along[runE[r]] - along[runS[r]]) / 2);
-        // a leg i → j (j > i + 1) keeps the shape of every run it touches
-        bool Allowed(int i, int j)
+        // a leg i → j (j > i + 1) keeps the shape of every run it touches - or follows it: every skipped point lies within shapeM of
+        // the leg's line (a spur or back-step inside a fairway line, a hop that overshoots the harbour and comes back: the shape is kept
+        // within shapeM, only the detour goes)
+        bool Follows(int i, int j)
+        {
+            if (shapeM <= 0) return false;
+            var cos = Math.Cos(p[i].Y * Math.PI / 180);
+            double ax = p[i].X * cos, ay = p[i].Y, dx = p[j].X * cos - ax, dy = p[j].Y - ay, l2 = dx * dx + dy * dy;
+            if (l2 == 0) return false;
+            var len = Math.Sqrt(l2) * SeaGraph.MPerDeg;
+            for (var k = i + 1; k < j; k++)
+            {
+                double px = p[k].X * cos - ax, py = p[k].Y - ay;
+                var t = (px * dx + py * dy) / l2;
+                if (t < -0.05 || t * len > len + trimM) return false; // behind the start, or beyond the end by more than the trim
+                if (Math.Abs(px * dy - py * dx) / Math.Sqrt(l2) * SeaGraph.MPerDeg > shapeM) return false;
+            }
+            return true;
+        }
+        bool Keeps(int i, int j)
         {
             var ri = run[i]; var rj = run[j];
             if (ri >= 0 && ri == rj) return false; // across the inside of a run
@@ -553,8 +573,9 @@ public static class StringPull
             var tests = 0;
             foreach (var (c, i) in cands)
             {
-                if (!Allowed(i, j)) continue;
-                if (!blocked(p[i], p[j])) { best[j] = c; prev[j] = i; break; }
+                var keeps = Keeps(i, j);
+                if (!keeps && !Follows(i, j)) continue;
+                if (!blocked(p[i], p[j]) && (keeps || followBlocked is null || !followBlocked(p[i], p[j]))) { best[j] = c; prev[j] = i; break; }
                 if (++tests >= maxTests) break;
             }
         }

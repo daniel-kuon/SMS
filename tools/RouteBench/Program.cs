@@ -8,6 +8,7 @@
 //        or "import-bridges" s,w,n,e: road/railway bridges without a clearance over routing water from Overpass (as the admin endpoint import-bridges)
 //        or "backfill-bridges": unknown_bridge (edges under a fixed bridge without a clearance, Obstacles.Apply) for the active graph version, without a rebuild
 //        or "backfill-ferry": ferry (edges along a stored ferry track, kind Ferry, within Routing:FerryCorridorM; their adjacent_depth_m/floor_m dropped) for the active graph version, without a rebuild
+//        env SMS_BENCH_CARDINALS=factor|hard: routes on the active graph with grid edges through a cardinal's danger wedge priced x factor in memory (CardinalPenaltyFactor simulated, passage edges not)
 //        env SMS_BENCH_FERRY=file: routes on the active graph with the edges along the ferry lines in the file ("lat,lng lat,lng …" per line) flagged in memory, a backfill-ferry simulated
 using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
@@ -257,6 +258,37 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_PASSAGES") is { Length: > 0 } 
     var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
     graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
     Console.WriteLine($"simulation: {added} passage edges added from {extraFile}");
+}
+
+if (Environment.GetEnvironmentVariable("SMS_BENCH_CARDINALS") is { Length: > 0 } cardArg)
+{
+    // CardinalMarks.Apply in memory: grid edges (not passage edges) through a cardinal's danger wedge cost x factor by the share inside ("hard": closed)
+    using var scope = sp.CreateScope();
+    var router = scope.ServiceProvider.GetRequiredService<SeaRouter>();
+    var version = await router.ActiveVersionAsync(default);
+    var g = await SeaRouter.LoadGraphAsync(new Npgsql.NpgsqlConnection(cs), version, sp.GetRequiredService<ILoggerFactory>().CreateLogger("bench"));
+    T F<T>(string name) => (T)typeof(Sms.Domain.SeaGraph).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(g)!;
+    var marks = await CardinalMarks.LoadAsync(scope.ServiceProvider.GetRequiredService<SmsDbContext>());
+    var hard = cardArg == "hard"; var factor = hard ? 1e6 : double.Parse(cardArg, System.Globalization.CultureInfo.InvariantCulture);
+    var index = new NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Prepared.IPreparedGeometry>();
+    foreach (var (p, side) in marks) { var w = CardinalMarks.Wedge(p, side); index.Insert(w.EnvelopeInternal, NetTopologySuite.Geometries.Prepared.PreparedGeometryFactory.Prepare(w)); }
+    index.Build();
+    var cost = F<float[]>("_cost"); var touched = 0;
+    Parallel.For(0, g.EdgeCount, e =>
+    {
+        if (g.IsPassage(e)) return;
+        var line = Geo.Factory.CreateLineString(g.Coords(e));
+        var hits = index.Query(line.EnvelopeInternal);
+        if (hits.Count == 0) return;
+        var share = ChannelPreference.ShareInside(line, hits, 25);
+        if (share <= 0) return;
+        cost[e] = (float)(cost[e] * (1 + share * (factor - 1))); Interlocked.Increment(ref touched);
+    });
+    var sim = new Sms.Domain.SeaGraph(F<double[]>("_x"), F<double[]>("_y"), F<int[]>("_src"), F<int[]>("_tgt"), cost, F<float[]>("_depth"), F<float[]>("_clear"), F<int[]>("_geomStart"), F<double[]>("_geom"), F<int>("_firstPassage"), F<bool[]?>("_isolated"),
+        assumed: F<bool[]?>("_assumed"), adjacent: F<float[]?>("_adjacent"), floor: F<float[]?>("_floor"), unknownBridge: F<bool[]?>("_unknownBridge"), ferry: F<bool[]?>("_ferry"));
+    var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
+    graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
+    Console.WriteLine($"simulation: {marks.Count} cardinals, {touched} grid edges through a danger wedge x{factor}");
 }
 
 if (Environment.GetEnvironmentVariable("SMS_BENCH_FERRY") is { Length: > 0 } ferryFile)

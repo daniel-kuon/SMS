@@ -17,7 +17,8 @@ public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, Lin
 /// Kind "startOnLand"/"endOnLand": the clicked point (Lat/Lng) lay on land, the route starts/ends at the nearest navigable water (Snapped*, DistanceM away).
 /// Kind "checkDepth": the route runs through water charted (or, without data in the coastal strip, next to a band) shallower than the ship's warning depth at Lat/Lng, DistanceM the length of that stretch.
 /// Kind "uncertainDepth": no route leads through definitely deep water and buoyed channels only; this one crosses water whose band floor lies below the minimum depth at Lat/Lng (DistanceM: length).
-/// Kind "bridge": a fixed bridge with a known clearance (DistanceM) on a route asked for without an air draft; "bridgeUnknown": a fixed bridge without a charted clearance.</summary>
+/// Kind "bridge": a fixed bridge with a known clearance (DistanceM) on a route asked for without an air draft; "bridgeUnknown": a fixed bridge without a charted clearance.
+/// Kind "cardinal": the route runs through the danger quadrant of a cardinal mark (Lat/Lng: a route point inside it), one per mark.</summary>
 public sealed record RouteWarning(string Kind, double Lat, double Lng, string Note, double? SnappedLat = null, double? SnappedLng = null, double? DistanceM = null);
 public sealed record NearbyResult(Guid HarbourId, decimal DistanceNm, decimal StraightLineNm);
 public sealed record GraphStatus(int ActiveVersion, string? BuiltAt, string? Region, long Nodes, long Edges);
@@ -57,7 +58,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var b = await db.Harbours.AsNoTracking().Where(h => h.Id == to).Select(h => h.Location).FirstOrDefaultAsync(ct);
         if (a is null || b is null) return null;
         var straight = Math.Round((decimal)(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / Nm), 1);
-        if (cached is not null) return new RouteResult(cached.DistanceNm, straight, cached.Geometry, version, "sea-graph", Warnings: [.. (await WarningsAlongAsync([cached.Geometry], ct, warnDepthM))[0], .. await BridgeWarningsAsync(cached.Geometry, version, ct, withKnown: true)]);
+        if (cached is not null) return new RouteResult(cached.DistanceNm, straight, cached.Geometry, version, "sea-graph", Warnings: [.. (await WarningsAlongAsync([cached.Geometry], ct, warnDepthM))[0], .. await BridgeWarningsAsync(cached.Geometry, version, ct, withKnown: true), .. await CardinalWarningsAsync(cached.Geometry, version, ct)]);
         var start = await AccessNodeAsync(from, version, ct);
         var end = await AccessNodeAsync(to, version, ct);
         if (start is null || end is null) return null;
@@ -403,7 +404,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         timings["astar"] = clock.ElapsedMilliseconds; timings["astar-rounds"] = rounds; timings["penalized-links"] = penalized.Count; timings["cost"] = (long)(path?.Cost ?? -1); clock.Restart();
         if (path is null) { logger.LogInformation("No sea route between {From} and {To}", from, to); return null; }
         span?.SetTag("routing.settled", path.Settled);
-        Stage("astar", path.Points);
+        Stage("astar", path.Points, path.Fixed);
         // the points of assumed edges: their legs cross the coastline land by design and are not rerouted round it
         var assumedPoints = new HashSet<Coordinate>();
         foreach (var e in path.Edges ?? []) if (graph.IsAssumed(e)) assumedPoints.UnionWith(graph.Coords(e));
@@ -425,6 +426,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             warnings.AddRange(DepthBands.Stretches(line, pieces).Select(p => new RouteWarning("uncertainDepth", Math.Round(p.At.Y, 5), Math.Round(p.At.X, 5), UncertainDepthNote, DistanceM: Math.Round(p.LengthM))));
         }
         warnings.AddRange(await BridgeWarningsAsync(line, version, ct, withKnown: airDraftM is null, (path.Edges ?? []).Where(graph.UnknownBridge).Select(e => Geo.Factory.CreateLineString(graph.Coords(e))).ToList()));
+        warnings.AddRange(await CardinalWarningsAsync(line, version, ct));
         if (warnDepthM is { } wd)
         {
             // graph edges without charted depth that count as the band next to them (the smoothed line runs along them)
@@ -462,6 +464,15 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         }
         return bad;
     }
+
+    public const string CardinalNote = "Kardinaltonne – Route führt durch die Gefahrenseite, vor Ort prüfen";
+
+    /// <summary>"cardinal" warnings: one per danger wedge the route still crosses (mostly a narrow sound with the mark next to its only channel),
+    /// at a route point inside it.</summary>
+    private async Task<List<RouteWarning>> CardinalWarningsAsync(LineString route, int version, CancellationToken ct) =>
+        (await StaticsAsync(version, ct)).Cardinals.Query(route.EnvelopeInternal).Where(w => w.Intersects(route))
+            .Select(w => route.Intersection(w).Coordinate).Where(c => c is not null)
+            .Select(c => new RouteWarning("cardinal", Math.Round(c.Y, 5), Math.Round(c.X, 5), CardinalNote)).ToList();
 
     /// <summary>A point bridge (a charted span) this close to the route counts as passed under.</summary>
     private const double BridgeWarnM = 300;
@@ -618,10 +629,10 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// (every ≤ 1 km) – otherwise the pulled string could only bend at grid nodes and kept a dog-leg when the direct line to the
     /// next node grazed the coast. Passage geometry outside charted deep water keeps its shape.
     /// </summary>
-    private sealed record SmoothStatics(STRtree<(Geometry geom, double? clearance, CorrectionKind kind)> Bridges, STRtree<Geometry> Zone);
+    private sealed record SmoothStatics(STRtree<(Geometry geom, double? clearance, CorrectionKind kind)> Bridges, STRtree<Geometry> Zone, STRtree<Polygon> Cardinals);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<Task<SmoothStatics>>> _statics = new();
 
-    /// <summary>Per graph version: the bridge pieces after chains and charted spans, and the channel zone pieces; built on first use.</summary>
+    /// <summary>Per graph version: the bridge pieces after chains and charted spans, the channel zone pieces and the cardinal danger wedges; built on first use.</summary>
     private Task<SmoothStatics> StaticsAsync(int version, CancellationToken ct)
     {
         foreach (var old in _statics.Keys.Where(k => k != version).ToList()) _statics.TryRemove(old, out _);
@@ -655,7 +666,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             }
         }
         zone.Build();
-        return new SmoothStatics(bridges, zone);
+        return new SmoothStatics(bridges, zone, CardinalMarks.Index(await CardinalMarks.LoadAsync(sdb)));
     }
 
     /// <summary>Pier corrections, indexed once per process; the pier import resets it.</summary>
@@ -716,6 +727,11 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             foreach (var g in shallow) index.Insert(g.Geom.EnvelopeInternal, PreparedGeometryFactory.Prepare(g.Geom));
         }
         index.Build();
+        // cardinal marks: no pulled leg, pier detour or chamfer enters a danger quadrant (the A* path's own legs stay as they are); a tree
+        // of its own, not in index - a path leg through a wedge must not count as rough and lose the coast clearance
+        var cardinals = new STRtree<IPreparedGeometry>();
+        foreach (var w in statics.Cardinals.Query(env)) cardinals.Insert(w.EnvelopeInternal, PreparedGeometryFactory.Prepare(w));
+        cardinals.Build();
         // after a strict search: water whose band floor lies below the minimum depth blocks the pull outside the harbour approach (the
         // search closed it there), so no shortcut leaves the buoyed channel or the definitely deep water across it
         var uncertain = new STRtree<IPreparedGeometry>();
@@ -797,7 +813,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             try { (path, fixedSeg) = PierAvoidance.Apply(path, fixedSeg, cuts, Obstructed, clearM: 5, windowM: 300); }
             catch (Exception ex) when (ex is TopologyException or ArgumentException) { logger.LogWarning(ex, "Land detour skipped"); }
             if (timings is not null) timings["land-cuts"] = cuts.Count;
-            Stage("landcut", path);
+            Stage("landcut", path, fixedSeg);
         }
         // coast clearance (Routing:CoastClearanceM): a pulled leg keeps it, except within ClearCorridorM of the graph path itself - in a
         // narrow sound, channel, passage or harbour approach the path runs closer and the pull may not stray from it - and within
@@ -857,16 +873,20 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         {
             var seg = Geo.Factory.CreateLineString([p, q]);
             foreach (var g in index.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
+            foreach (var g in cardinals.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
             return InUncertain(seg) || InUnchartedZone(seg, zone, deep);
         }
         var tests = 0L;
         bool Blocked(Coordinate p, Coordinate q) { tests++; return Obstructed(p, q) || TooClose(p, q, exempt: true); }
-        var (result, resultFixed) = StringPull.PullFlags(path, fixedSeg, Blocked, builder.Options.PassageTrimM);
+        // piers are rerouted round after the pull; a leg that skips passage points within StringPull's shapeM must not cross one
+        // (a harbour channel between the jetties: Sandhamn, the leg slid 50 m off it across eight of them)
+        var piers = await PiersAsync();
+        var crossesPier = piers.Count > 0 ? PierAvoidance.Crossing(piers) : null;
+        var (result, resultFixed) = StringPull.PullFlags(path, fixedSeg, Blocked, builder.Options.PassageTrimM, followBlocked: crossesPier);
         Lap("smooth-pull");
         if (timings is not null) { timings["smooth-points"] = path.Count; timings["smooth-tests"] = tests; timings["pulled-points"] = result.Count; }
-        Stage("pulled", result);
+        Stage("pulled", result, resultFixed);
         // piers, jetties, breakwaters are not in the land: legs that cross one are rerouted round it locally, the blockers above still blocking
-        var piers = await PiersAsync();
         Func<Coordinate, Coordinate, bool> finalBlocked = Blocked;
         if (piers.Count > 0)
         {
@@ -874,16 +894,15 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             {
                 // detour legs round a pier head lie next to the pier by nature: land, bridges, depth and zone block them, the clearance does not
                 var (avoided, avoidedFixed) = PierAvoidance.Apply(result, resultFixed, piers, Obstructed);
-                Stage("piers", avoided);
+                Stage("piers", avoided, avoidedFixed);
                 Lap("smooth-piers");
                 // the detours are local: a detour round a pier head can make the next route point an out-and-back (the harbour access
                 // node behind a jetty, a grid node beyond a mole's head – Großenbrode). A second pull over the finished points, piers
                 // blocking now too, drops every point the route can do without (it never gets longer, passage shapes stay)
-                var crossesPier = PierAvoidance.Crossing(piers);
-                finalBlocked = (p, q) => crossesPier(p, q) || Blocked(p, q);
+                finalBlocked = (p, q) => crossesPier!(p, q) || Blocked(p, q);
                 (result, resultFixed) = StringPull.PullFlags(avoided, avoidedFixed, finalBlocked, builder.Options.PassageTrimM);
                 if (timings is not null) { timings["pier-points"] = avoided.Count; timings["repulled-points"] = result.Count; }
-                Stage("repulled", result);
+                Stage("repulled", result, resultFixed);
             }
             catch (Exception ex) when (ex is NetTopologySuite.Geometries.TopologyException or ArgumentException) { logger.LogWarning(ex, "Pier avoidance skipped"); } // a bad OSM pier must never cost the route
         }
@@ -896,18 +915,39 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         for (var k = 1; k < result.Count - 1; k++) if (!resultFixed[k - 1] && !resultFixed[k]) { var e = new Envelope(result[k - 1], result[k + 1]); e.ExpandToInclude(result[k]); tightBoxes.Add(e); }
         var tightDeep = await DeepAsync(tightBoxes, Math.Max(limit, 0));
         var chamferBlocked = finalBlocked;
-        (result, _) = StringPull.Tighten(result, resultFixed, (p, q) => chamferBlocked(p, q) || TooClose(p, q, exempt: false) || !Charted(p, q, tightDeep, 25));
+        (result, resultFixed) = StringPull.Tighten(result, resultFixed, (p, q) => chamferBlocked(p, q) || TooClose(p, q, exempt: false) || !Charted(p, q, tightDeep, 25));
         if (timings is not null) timings["final-points"] = result.Count;
-        Stage("tightened", result);
+        Stage("tightened", result, resultFixed);
+        if (LogStages)
+            // per corner ≥ 45°: which blockers keep the shortcut u → w (scratchpad attribute.py reads these lines)
+            for (var i = 1; i < result.Count - 1; i++)
+            {
+                Coordinate u = result[i - 1], v = result[i], w = result[i + 1];
+                var t = (Bearing(v, w) - Bearing(u, v) + 540) % 360 - 180;
+                if (Math.Abs(t) < 45) continue;
+                var seg = Geo.Factory.CreateLineString([u, w]);
+                var hits = index.Query(seg.EnvelopeInternal).Where(g => g.Intersects(seg)).Select(g => g.Geometry.GeometryType + (landOnly.Query(seg.EnvelopeInternal).Contains(g) ? ":land" : ":depth/bridge")).ToList();
+                var reasons = new List<string>();
+                if (resultFixed[i - 1] || resultFixed[i]) reasons.Add("fixed" + (resultFixed[i - 1] ? "-in" : "") + (resultFixed[i] ? "-out" : ""));
+                if (hits.Count > 0) reasons.Add("index[" + string.Join(",", hits.Distinct()) + "]");
+                if (cardinals.Query(seg.EnvelopeInternal).Any(g => g.Intersects(seg))) reasons.Add("cardinal");
+                if (InUncertain(seg)) reasons.Add("uncertain");
+                if (InUnchartedZone(seg, zone, deep)) reasons.Add("zone");
+                if (TooClose(u, w, exempt: true)) reasons.Add("coast<" + clearM);
+                if (piers.Count > 0 && PierAvoidance.Crossing(piers)(u, w)) reasons.Add("pier");
+                if (!Charted(u, w, tightDeep, 25)) reasons.Add("notcharted");
+                logger.LogInformation("corner {I} {Lat},{Lng} turn {Turn} saves {Save} m: {Reasons}", i, v.Y.ToString("F5", System.Globalization.CultureInfo.InvariantCulture), v.X.ToString("F5", System.Globalization.CultureInfo.InvariantCulture), Math.Round(t), Math.Round(RoutingGraphBuilder.Haversine(u.Y, u.X, v.Y, v.X) + RoutingGraphBuilder.Haversine(v.Y, v.X, w.Y, w.X) - RoutingGraphBuilder.Haversine(u.Y, u.X, w.Y, w.X)), reasons.Count == 0 ? "FREE" : string.Join(" ", reasons));
+            }
         Lap("smooth-tighten");
         return result;
     }
 
     // SMS_ROUTE_STAGES=1 logs the polyline after each smoothing stage (RouteBench, debugging)
     private static readonly bool LogStages = Environment.GetEnvironmentVariable("SMS_ROUTE_STAGES") == "1";
-    private void Stage(string name, List<Coordinate> points)
+    private void Stage(string name, List<Coordinate> points, List<bool>? fixedSeg = null)
     {
-        if (LogStages) logger.LogInformation("stage {Stage} ({Count}): {Points}", name, points.Count, string.Join(" ", points.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
+        // a point followed by a passage segment carries a "*"
+        if (LogStages) logger.LogInformation("stage {Stage} ({Count}): {Points}", name, points.Count, string.Join(" ", points.Select((c, i) => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}") + (fixedSeg is not null && i < fixedSeg.Count && fixedSeg[i] ? "*" : ""))));
     }
 
     /// <summary>The land pieces (clipped to the leg's box + 300 m) that legs of the path cross with water before and after them; assumed legs skipped.</summary>
@@ -935,6 +975,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     private const double StraightPassageLandM = 20;
+    private static double Bearing(Coordinate a, Coordinate b) => (Math.Atan2((b.X - a.X) * Math.Cos(a.Y * Math.PI / 180), b.Y - a.Y) * 180 / Math.PI + 360) % 360;
 
     /// <summary>A pulled leg within this of the graph path or of a route end may come closer to the coast than CoastClearanceM.</summary>
     private const double ClearCorridorM = 40, ClearEndM = 500;
