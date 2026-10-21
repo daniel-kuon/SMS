@@ -13,7 +13,7 @@ namespace Sms.Domain;
 /// virtually at the projected point (an end on a canal follows the canal instead of jumping to the nearest junction).
 /// Edges between two passage vertices (ids ≥ firstPassageNode) are "fixed": their geometry is kept by the smoothing.
 /// Assumed edges (AssumedPassages: a ferry line or buoy gap across the coastline land) are reported per path, or closed by the limits.
-/// Edges under a fixed bridge without a charted clearance (UnknownBridge) are passed, or closed by Limits.AvoidUnknownBridges.
+/// Edges under a fixed bridge without a charted clearance (UnknownBridge) are passed at Limits.UnknownBridgePenaltyM extra, or closed by Limits.AvoidUnknownBridges.
 /// Edges along a scheduled ferry track (Ferry) are never uncertain; the charted band block still applies.
 /// </summary>
 public sealed class SeaGraph
@@ -214,7 +214,8 @@ public sealed class SeaGraph
     /// <param name="StrictDepth">Such uncertain edges are closed outside the harbour approach (the router's first search; it falls back
     /// to the ×UncertainFactor rule only when nothing else leads there).</param>
     /// <param name="AvoidUnknownBridges">Edges under a fixed bridge without a charted clearance are closed.</param>
-    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000, double? MinDepthM = null, double UncertainFactor = 1, bool StrictDepth = false, bool AvoidUnknownBridges = false);
+    /// <param name="UnknownBridgePenaltyM">Extra cost of an edge under a fixed bridge without a charted clearance (when passed).</param>
+    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000, double? MinDepthM = null, double UncertainFactor = 1, bool StrictDepth = false, bool AvoidUnknownBridges = false, double UnknownBridgePenaltyM = 0);
     /// <summary>A route end projected onto a passage edge: on segment Segment of its geometry, at Fraction of its length.</summary>
     public sealed record Snap(int Edge, int Segment, double Fraction, Coordinate Point, double DistanceM);
     /// <summary>A route end: the clicked point and either a node or a snap onto an edge.</summary>
@@ -289,7 +290,7 @@ public sealed class SeaGraph
             if (l.StrictDepth && !Exempt(e, l, from, to)) return double.PositiveInfinity;
             c *= l.UncertainFactor;
         }
-        return c;
+        return UnknownBridge(e) ? c + l.UnknownBridgePenaltyM : c;
     }
 
     /// <summary>The edges of a path the strict search closes (uncertain water outside the harbour approach): where a fallback route warns.</summary>

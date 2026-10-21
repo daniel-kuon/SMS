@@ -34,6 +34,9 @@ public sealed class RoutingOptions
     public double LockPenaltyM { get; set; } = 1852;
     /// <summary>Extra cost (metres) for an opening bridge: waiting for the next opening, about half a lock.</summary>
     public double BridgeOpeningPenaltyM { get; set; } = 926;
+    /// <summary>Extra search cost (metres) for passing under a fixed bridge without a charted clearance, at least BridgeOpeningPenaltyM: a charted
+    /// or opening span next to it wins (Nykøbing F: the bascule, not the fixed approach span beside it).</summary>
+    public double UnknownBridgePenaltyM { get; set; } = 1852;
     /// <summary>A ship (or request) with a draft but no minimum depth of its own routes with minimum depth = draft + this (DepthBands.MinDepth).</summary>
     public double DepthSafetyMarginM { get; set; } = 0.5;
     /// <summary>Open water within this distance of a derived fairway counts as unmarked/shallow: grid edges there cost ×ChannelPenaltyFactor (0 = off).</summary>

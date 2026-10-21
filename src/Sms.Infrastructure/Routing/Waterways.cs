@@ -18,7 +18,7 @@ public sealed record Obstacle(bool IsLock, double Lat, double Lng, double? Clear
 /// </summary>
 public static class Waterways
 {
-    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["bridge"="movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0});way["bridge"](if:length()>300)({0}););out geom;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
+    public const string OverpassQuery = """[out:json][timeout:180];way["waterway"~"^(canal|river|fairway)$"]["motorboat"!~"no"]["boat"!~"no"]({0})->.w;(way.w["CEMT"];way.w["ship"~"yes|designated"];way.w["boat"~"yes|designated"];way.w["motorboat"~"yes|designated"];way.w["waterway"="fairway"];way.w["seamark:type"="fairway"];);out geom;(nwr["seamark:type"="bridge"]({0});nwr["bridge"]["seamark:bridge:clearance_height"]({0});nwr["bridge:movable"]({0});nwr["bridge"="movable"]({0});nwr["waterway"="lock_gate"]({0});nwr["lock"="yes"]({0});nwr["seamark:type"="gate"]({0}););out geom;(way["seamark:type"="fairway"]({0});relation["seamark:type"="fairway"]({0});way["seamark:type"~"^(restricted_area|military_area)$"]({0});relation["seamark:type"~"^(restricted_area|military_area)$"]({0}););out geom;""";
 
     /// <summary>Navigable for yachts: an explicit boat/motorboat/ship permission, a CEMT class, or a fairway.</summary>
     public static bool IsNavigable(IReadOnlyDictionary<string, string> tags)
@@ -257,13 +257,6 @@ public static class Waterways
         return rings;
     }
 
-    private static double LengthM(LineString l)
-    {
-        var m = 0.0;
-        for (var i = 1; i < l.NumPoints; i++) m += RoutingGraphBuilder.Haversine(l.GetCoordinateN(i - 1).Y, l.GetCoordinateN(i - 1).X, l.GetCoordinateN(i).Y, l.GetCoordinateN(i).X);
-        return m;
-    }
-
     private static double AreaKm2(Geometry g)
     {
         var cos = Math.Cos(g.Centroid.Y * Math.PI / 180);
@@ -313,9 +306,9 @@ public static class Waterways
                 var coords = geom.EnumerateArray().Select(g => new Coordinate(g.GetProperty("lon").GetDouble(), g.GetProperty("lat").GetDouble())).ToArray();
                 if (coords.Length >= 2 && !coords[0].Equals2D(coords[^1])) line = new LineString(coords) { SRID = 4326 };
             }
-            // a long bridge way (Great Belt, Øresund: >800 m) counts even without a charted clearance – its charted span nodes carry it
-            var longBridge = line is not null && tags.ContainsKey("bridge") && LengthM(line) > 300;
-            var isBridge = tags.GetValueOrDefault("seamark:type") == "bridge" || (tags.ContainsKey("bridge") && (tags.ContainsKey("seamark:bridge:clearance_height") || opening)) || longBridge;
+            // a road/railway bridge without a charted clearance (Great Belt, Øresund) is the unknown-bridge import's (IsPlainBridge): taking long
+            // ones here too made every long bridge twice ("Brücke X" and "Brücke ohne Höhenangabe – X")
+            var isBridge = tags.GetValueOrDefault("seamark:type") == "bridge" || (tags.ContainsKey("bridge") && (tags.ContainsKey("seamark:bridge:clearance_height") || opening));
             var isLock = tags.GetValueOrDefault("waterway") == "lock_gate" || tags.GetValueOrDefault("lock") == "yes" || tags.GetValueOrDefault("seamark:type") == "gate";
             if (!isBridge && !isLock) continue;
             double lat, lng;
@@ -343,7 +336,9 @@ public static class Waterways
     /// <summary>
     /// Fixed bridges of unknown clearance: the plain road/railway bridge ways of an Overpass-style document (<see cref="IsPlainBridge"/>) that
     /// cross water the routing graph uses - a passage or inland water area they intersect, or open water (not the active graph's land, inside
-    /// its region) at their midpoint; a bridge over a creek or a river the graph does not know stays out. They become derived Bridge corrections
+    /// its region) at their midpoint; a bridge over a creek or a river the graph does not know stays out. A way within 20 m (Hausdorff) of an
+    /// active Bridge/OpeningBridge correction is that bridge already (a manual opening span, a charted line, an unknown one of the neighbouring
+    /// chunk) and stays out too; the waterway import's old clearance-less long-bridge lines (gone with the next waterway import) do not count. They become derived Bridge corrections
     /// without a clearance (note <see cref="UnknownBridgeNote"/>), replacing those inside <paramref name="replace"/> (null: none replaced).
     /// The graph picks them up at the next build.
     /// </summary>
@@ -373,9 +368,12 @@ public static class Waterways
         var wkb = bridges.Select(b => b.line.AsBinary()).ToArray();
         var onWater = (await db.Database.SqlQueryRaw<long>("""
             SELECT b.i AS "Value" FROM unnest({0}::bytea[]) WITH ORDINALITY AS b(w, i), LATERAL (SELECT ST_SetSRID(ST_GeomFromWKB(b.w), 4326) AS g) x, LATERAL (SELECT ST_LineInterpolatePoint(x.g, 0.5) AS m) p
-            WHERE EXISTS (SELECT 1 FROM "RoutingCorrections" c WHERE c."Active" AND c."Kind" IN ('Passage', 'Water') AND c."Geometry" && x.g AND ST_Intersects(c."Geometry", x.g))
+            WHERE (EXISTS (SELECT 1 FROM "RoutingCorrections" c WHERE c."Active" AND c."Kind" IN ('Passage', 'Water') AND c."Geometry" && x.g AND ST_Intersects(c."Geometry", x.g))
                OR ({1} > 0 AND p.m && ST_MakeEnvelope({2}, {3}, {4}, {5}, 4326)
-                   AND NOT EXISTS (SELECT 1 FROM routing_land l WHERE l.graph_version = {1} AND l.geom && p.m AND ST_Intersects(l.geom, p.m)))
+                   AND NOT EXISTS (SELECT 1 FROM routing_land l WHERE l.graph_version = {1} AND l.geom && p.m AND ST_Intersects(l.geom, p.m))))
+              AND NOT EXISTS (SELECT 1 FROM "RoutingCorrections" d WHERE d."Active" AND d."Kind" IN ('Bridge', 'OpeningBridge') AND d."Geometry" && ST_Expand(x.g, 0.0005)
+                   AND NOT (d."Source" = 'Derived' AND d."Kind" = 'Bridge' AND d."ClearanceM" IS NULL AND d."Note" NOT LIKE 'Brücke ohne Höhenangabe%')
+                   AND ST_HausdorffDistance(ST_Transform(d."Geometry", 3857), ST_Transform(x.g, 3857)) * cosd(ST_Y(p.m)) < 20)
             """, wkb, version, region[0], region[1], region[2], region[3]).ToListAsync(ct)).Select(i => (int)i - 1).ToList();
         foreach (var i in onWater)
             db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Bridge, Source = CorrectionSource.Derived, Geometry = bridges[i].line, ClearanceM = null, Active = true, CreatedById = userId,

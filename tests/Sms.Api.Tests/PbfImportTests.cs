@@ -88,7 +88,7 @@ public class PbfImportTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(54.505, marina.GetProperty("lat").GetDouble(), 2); // centre of the way (closed ring: first node counted twice)
         var detail = await admin.GetFromJsonAsync<JsonElement>($"/api/harbours/{marina.GetProperty("id").GetGuid()}");
         Assert.True(detail.GetProperty("facilities").GetProperty("fuel").GetBoolean());
-        var corrections = (await admin.GetFromJsonAsync<JsonElement>("/api/admin/routing/corrections")).EnumerateArray().ToList();
+        var corrections = (await admin.GetFromJsonAsync<JsonElement>("/api/admin/routing/corrections?bbox=54.3,9.5,54.9,10.4")).EnumerateArray().ToList(); // without bbox: the manual ones only
         Assert.Contains(corrections, c => c.GetProperty("note").GetString()!.StartsWith("PBF-Kanal"));
         Assert.Contains(corrections, c => c.GetProperty("kind").GetString() == "Bridge" && c.GetProperty("clearanceM").GetDouble() == 6);
         Assert.Equal(3, (await admin.GetFromJsonAsync<JsonElement>("/api/seamarks/status")).GetProperty("count").GetInt32());

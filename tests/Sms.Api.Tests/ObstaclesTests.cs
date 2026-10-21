@@ -72,6 +72,10 @@ public class ObstaclesTests
         // without a charted span the whole line keeps its own clearance
         var plain = Obstacles.Apply(new[] { outside }, Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, 20)]), 1852, 926, 60);
         Assert.Equal(20, plain[0].ClearanceM);
+        // a span point without a clearance on a line without one (new Storstrøm bridge, northern channel): that window is passed as unknown, not closed
+        var unknownSpan = Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, (double?)null), (span, Sms.Domain.CorrectionKind.Bridge, 65), (F.CreatePoint(new Coordinate(11.01, 55.3405)), Sms.Domain.CorrectionKind.Bridge, (double?)null)]);
+        var passed = Assert.Single(Obstacles.Apply(new[] { outside }, unknownSpan, 1852, 926, 60));
+        Assert.Null(passed.ClearanceM); Assert.True(passed.UnknownBridge);
     }
 
     [Fact]
@@ -94,8 +98,8 @@ public class ObstaclesTests
             ] }
             """);
         var obstacles = Waterways.ParseObstacles(doc);
-        Assert.Equal(8, obstacles.Count); // the 100 m residential bridge without clearance is not an obstacle, the 7 km Øresund bridge is
-        var oeresund = obstacles.Single(o => o.Name == "Øresundsbron"); Assert.NotNull(oeresund.Line); Assert.Null(oeresund.ClearanceM); Assert.InRange(oeresund.Lat, 55.58, 55.60);
+        Assert.Equal(7, obstacles.Count); // road bridges without a clearance, short or long (Øresund), are the unknown-bridge import's
+        Assert.DoesNotContain(obstacles, o => o.Name == "Øresundsbron");
         Assert.Null(obstacles.Single(o => o.Name == "Rendsburger Hochbrücke").Line); // a node
         var east = obstacles.Single(o => o.Name == "Østbroen");
         Assert.NotNull(east.Line); Assert.Equal(2, east.Line!.NumPoints); Assert.Equal(65, east.ClearanceM);

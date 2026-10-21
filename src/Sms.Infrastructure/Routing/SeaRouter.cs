@@ -353,7 +353,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // at x UncertainDepthFactor), strict kept within the detour bound (UncertainDetourFactor), else the relaxed route warns there
         var strict = minDepthM is not null && o.UncertainDepthFactor != 1;
         var limits = new SeaGraph.Limits(air, minDepthM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat, NoAssumed: !o.AssumedPassages,
-            MinDepthM: minDepthM, UncertainFactor: o.UncertainDepthFactor, StrictDepth: strict, AvoidUnknownBridges: avoidUnknownBridges);
+            MinDepthM: minDepthM, UncertainFactor: o.UncertainDepthFactor, StrictDepth: strict, AvoidUnknownBridges: avoidUnknownBridges,
+            UnknownBridgePenaltyM: Math.Max(o.UnknownBridgePenaltyM, o.BridgeOpeningPenaltyM)); // a known or opening span wins over an unknown one
         // the builder lets a passage end's link into the water graph cross up to 50 m of land (a harbour point on its pier): from a marina
         // channel that is a link straight across the mole (Großenbrode). Links on the path that cross land with water on both sides
         // cost Limits.PenaltyM (20 km) extra and the search runs again: they stay usable where nothing else leads on, as before
@@ -518,12 +519,32 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         {
             if ((h.at - lastAt) * WaterGraphTiler.MPerDegLat < 500) continue; // ponytail: planar degrees along the line, fine for "the same bridge"
             lastAt = h.at;
-            if (h.clearance is not { } cl) { result.Add(new RouteWarning("bridgeUnknown", Math.Round(h.where.Y, 5), Math.Round(h.where.X, 5), UnknownBridgeNote)); continue; }
+            if (h.clearance is not { } cl) { result.Add(new RouteWarning("bridgeUnknown", Math.Round(h.where.Y, 5), Math.Round(h.where.X, 5), await UnknownBridgeNoteAsync(h.where, ct))); continue; }
             if (!withKnown) continue;
             var low = cl < defaultAir ? string.Format(De, ", niedriger als die angenommene Masthöhe von {0:0} m: die Route führt nur hier durch", defaultAir) : "";
             result.Add(new RouteWarning("bridge", Math.Round(h.where.Y, 5), Math.Round(h.where.X, 5), string.Format(De, "Brücke mit {0:0.0} m Durchfahrtshöhe{1} – Durchfahrtshöhe des Schiffs prüfen (nicht angegeben)", cl, low), DistanceM: cl));
         }
         return result;
+    }
+
+    /// <summary>The "bridgeUnknown" note with the bridge's name, from the nearest clearance-less bridge correction within 50 m of where the route passes.</summary>
+    private async Task<string> UnknownBridgeNoteAsync(Coordinate where, CancellationToken ct)
+    {
+        var pt = Geo.Factory.CreatePoint(where); pt.SRID = 4326;
+        var notes = await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Bridge && c.ClearanceM == null && c.Note != null && c.Geometry.IsWithinDistance(pt, 50 / WaterGraphTiler.MPerDegLat))
+            .OrderBy(c => c.Geometry.Distance(pt)).Select(c => c.Note!).Take(5).ToListAsync(ct);
+        return UnknownBridgeNoteFor(notes.Select(BridgeName).FirstOrDefault(n => n is not null));
+    }
+    public static string UnknownBridgeNoteFor(string? name) => name is null ? UnknownBridgeNote : $"Brücke {name} mit unbekannter Durchfahrtshöhe – vor Ort prüfen";
+    /// <summary>The name in a bridge correction's note: "Brücke ohne Höhenangabe – Brovejen", "Brücke Brovejen", "Brücke Brovejen (Quelle: …)" give
+    /// "Brovejen"; "Brücke ohne Höhenangabe" and "Brücke" give null.</summary>
+    public static string? BridgeName(string note)
+    {
+        var n = note;
+        if (n.IndexOf(" (Quelle:", StringComparison.Ordinal) is var q and >= 0) n = n[..q];
+        n = n.StartsWith(Waterways.UnknownBridgeNote, StringComparison.Ordinal) ? n[Waterways.UnknownBridgeNote.Length..].TrimStart(' ', '–', '-')
+            : n.StartsWith("Brücke", StringComparison.Ordinal) ? n["Brücke".Length..] : n;
+        return n.Trim() is { Length: > 0 } name ? name : null;
     }
 
     /// <summary>Warnings for the assumed edges a path used (their midpoints), each with the note of the nearest "Annahme" correction.</summary>

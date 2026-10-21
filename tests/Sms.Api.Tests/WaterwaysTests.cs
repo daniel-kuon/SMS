@@ -69,6 +69,18 @@ public class WaterwaysTests
     }
 
     [Fact]
+    public void Unknown_bridge_warnings_name_the_bridge()
+    {
+        Assert.Equal("Brovejen", SeaRouter.BridgeName("Brücke ohne Höhenangabe – Brovejen"));
+        Assert.Equal("Brovejen", SeaRouter.BridgeName("Brücke Brovejen"));
+        Assert.Equal("Masnedsundbroen", SeaRouter.BridgeName("Brücke Masnedsundbroen (Quelle: https://ing.dk/x)"));
+        Assert.Null(SeaRouter.BridgeName("Brücke ohne Höhenangabe"));
+        Assert.Null(SeaRouter.BridgeName("Brücke"));
+        Assert.Equal("Brücke Brovejen mit unbekannter Durchfahrtshöhe – vor Ort prüfen", SeaRouter.UnknownBridgeNoteFor("Brovejen"));
+        Assert.Equal(SeaRouter.UnknownBridgeNote, SeaRouter.UnknownBridgeNoteFor(null));
+    }
+
+    [Fact]
     public void Ferry_lines_skip_cable_ferries_and_take_the_relation_name()
     {
         using var doc = JsonDocument.Parse("""

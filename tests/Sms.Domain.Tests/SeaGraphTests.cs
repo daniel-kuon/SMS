@@ -373,6 +373,9 @@ public class SeaGraphTests
         Assert.True(graph.UnknownBridge(under));
         Assert.Contains(g.C(up), graph.Route(new(g.C(a), a), new(g.C(b), b), new(AirDraftM: 15))!.Points);
         Assert.Contains(g.C(down), graph.Route(new(g.C(a), a), new(g.C(b), b), new(AirDraftM: 15, AvoidUnknownBridges: true))!.Points);
+        // passed at a cost: a small penalty keeps the shorter way under the bridge, one larger than the detour sends the route round
+        Assert.Contains(g.C(up), graph.Route(new(g.C(a), a), new(g.C(b), b), new(UnknownBridgePenaltyM: 1))!.Points);
+        Assert.Contains(g.C(down), graph.Route(new(g.C(a), a), new(g.C(b), b), new(UnknownBridgePenaltyM: 1e9))!.Points);
     }
 }
 
