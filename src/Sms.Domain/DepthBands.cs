@@ -31,6 +31,10 @@ public static class DepthBands
     /// <summary>A band (by its floor) the route should be checked in: the floor lies below the warning depth.</summary>
     public static bool Warns(double floorM, double? warnDepthM) => warnDepthM is { } w && floorM < w;
 
+    /// <summary>"Tonnen first" with a bound: the strict route (uncertain water closed) is kept when it is no more than factor × the uncertain
+    /// water of the relaxed route longer than that route; factor ≤ 0 keeps it always (the rule before).</summary>
+    public static bool KeepsStrict(double strictM, double relaxedM, double uncertainM, double factor) => factor <= 0 || strictM <= relaxedM + factor * uncertainM;
+
     /// <summary>
     /// The depth an edge counts with: its charted floor (the shallowest depth area it crosses), else – water without depth data in the
     /// coastal strip, which the raster leaves out because it is shallower than its first band – the floor of the shallowest band within

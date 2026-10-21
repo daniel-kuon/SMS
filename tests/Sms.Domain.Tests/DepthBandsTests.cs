@@ -69,4 +69,19 @@ public class DepthBandsTests
         Assert.DoesNotContain(w, x => x.FloorM == 3.6576 && x.LengthM == 100); // the deeper lone piece is dropped first
         Assert.True(w.Zip(w.Skip(1)).All(p => p.First.At.X < p.Second.At.X)); // route order
     }
+
+    [Fact]
+    public void Strict_route_is_kept_only_within_the_detour_bound()
+    {
+        // Femø → Rødvig: 124.3 km round Møn against 89.4 km through 4.3 km of uncertain water – a detour of 8 × the uncertain stretch
+        Assert.False(DepthBands.KeepsStrict(124305, 89379, 4343, 5));
+        // Nyborg → Svendborg: 4.6 km round 1.2 km of band (3.8 ×) – kept
+        Assert.True(DepthBands.KeepsStrict(49000, 44400, 1200, 5));
+        // the strict route shorter in metres (it only cost more, Vordingborg → Femø) – kept
+        Assert.True(DepthBands.KeepsStrict(37974, 38210, 1055, 5));
+        // exactly at the bound – kept
+        Assert.True(DepthBands.KeepsStrict(110_000, 100_000, 2000, 5));
+        // 0 = the rule before: the strict route whenever one exists
+        Assert.True(DepthBands.KeepsStrict(124305, 89379, 4343, 0));
+    }
 }

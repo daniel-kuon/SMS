@@ -91,19 +91,22 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     private const double HarbourSnapM = 150;
 
     /// <summary>
-    /// Route end for a map click: (1) a linked harbour within HarbourSnapM – its access node, even when the harbour lies behind
+    /// Route end for a map click: (1) a linked harbour within HarbourSnapM – its access node, the route ending at the harbour's location, even when the harbour lies behind
     /// a dike beyond the snap distance (the builder links up to HarbourAccessM, the final leg draws the link); (2) otherwise
     /// the nearest node (SnapAsync), unless a passage edge is closer – a contracted canal stretch has no node inside, so the
     /// end is projected onto it and the edge split there (the leg to the projection must not cross land while a node is at hand).
     /// </summary>
     private async Task<SeaGraph.End?> EndAsync(Point p, int version, SeaGraph graph, CancellationToken ct, bool toWater = true)
     {
-        var access = await db.Database.SqlQueryRaw<long>("""
-            SELECT a.node_id AS "Value" FROM "Harbours" h JOIN routing_harbour_access a ON a.harbour_id = h."Id" AND a.graph_version = {0}
+        var access = await db.Database.SqlQueryRaw<SnapRow>("""
+            SELECT a.node_id AS "Id", 0::float8 AS "Metres", ST_X(h."Location"::geometry) AS "X", ST_Y(h."Location"::geometry) AS "Y", false AS "Isolated"
+            FROM "Harbours" h JOIN routing_harbour_access a ON a.harbour_id = h."Id" AND a.graph_version = {0}
             WHERE ST_DWithin(h."Location", ST_SetSRID(ST_MakePoint({1}, {2}), 4326)::geography, {3})
             ORDER BY ST_Distance(h."Location", ST_SetSRID(ST_MakePoint({1}, {2}), 4326)::geography) LIMIT 1
             """, version, p.X, p.Y, HarbourSnapM).ToListAsync(ct);
-        if (access.Count > 0) return new SeaGraph.End(p.Coordinate, (int)access[0]);
+        // the route ends at the harbour itself, as a harbour-to-harbour route does, not at the click next to it: Stickenhörn's logbook
+        // position lies 125 m off on the far side of the mole, and the route went round the mole's head into the arsenal basin
+        if (access.Count > 0) return new SeaGraph.End(new Coordinate(access[0].X, access[0].Y), (int)access[0].Id);
         var (node, metres, maxM, onLand, visible) = await SnapAsync(p, version, ct);
         var onEdge = graph.SnapToPassage(p.Coordinate, node is null ? maxM : metres);
         // on the edge, the node in sight stays a second way in (SeaGraph.Anchors): the search takes the cheaper
@@ -345,8 +348,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // no air draft given: a typical yacht's mast (Routing:DefaultAirDraftM) - fixed bridges charted lower are closed unless no other route exists
         var air = airDraftM ?? (o.DefaultAirDraftM > 0 ? o.DefaultAirDraftM : null);
         // "Tonnen first", strict: water whose band floor lies below the minimum depth (not a buoyed channel) is closed outside the harbour
-        // approach; only when no route exists that way the search runs again with it at x UncertainDepthFactor, and the route warns there
-        // (Oknö: the route came up through the unbuoyed 1.83-3.66 m skerries to the Öknöström bridge)
+        // approach (Oknö: the route came up through the unbuoyed 1.83-3.66 m skerries to the Öknöström bridge); relaxed first (that water
+        // at x UncertainDepthFactor), strict kept within the detour bound (UncertainDetourFactor), else the relaxed route warns there
         var strict = minDepthM is not null && o.UncertainDepthFactor != 1;
         var limits = new SeaGraph.Limits(air, minDepthM is { } dm ? await DepthFloorAsync(dm, ct) : null, o.HarbourAccessM / WaterGraphTiler.MPerDegLat, NoAssumed: !o.AssumedPassages,
             MinDepthM: minDepthM, UncertainFactor: o.UncertainDepthFactor, StrictDepth: strict, AvoidUnknownBridges: avoidUnknownBridges);
@@ -369,15 +372,23 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 penalized.UnionWith(bad);
             }
         }
-        // the strict search, and the cost rule only when it finds nothing
+        double PathM(SeaGraph.Path p) => StringPull.Length(p.Points);
+        double UncertainM(SeaGraph.Path p) => graph.UncertainEdges(p.Edges ?? [], limits, from, to).Sum(e => StringPull.Length(graph.Coords(e)));
+        // "Tonnen first" with a bound: the relaxed route first (uncertain water × UncertainFactor) – with no uncertain water on it the strict
+        // search would find the same; otherwise the strict route, kept unless its detour exceeds UncertainDetourFactor × the uncertain water
+        // it avoids (Femø → Rødvig: 63 nm round Møn against 2.3 nm of the 1.8–3.7 m band in five fairway gaps; the 46 nm route warns there)
         async Task<SeaGraph.Path?> DepthFallbackAsync()
         {
-            limits = limits with { StrictDepth = strict }; rounds = 0;
-            var p = await SearchAsync();
-            if (p is not null || !strict) return p;
             limits = limits with { StrictDepth = false }; rounds = 0;
-            timings["depth-fallback"] = 1;
-            return await SearchAsync();
+            var relaxed = await SearchAsync();
+            if (!strict || relaxed is null) return relaxed;
+            var uncertainM = UncertainM(relaxed);
+            if (uncertainM == 0) { limits = limits with { StrictDepth = true }; return relaxed; }
+            limits = limits with { StrictDepth = true }; rounds = 0;
+            var strictPath = await SearchAsync();
+            if (strictPath is not null && DepthBands.KeepsStrict(PathM(strictPath), PathM(relaxed), uncertainM, o.UncertainDetourFactor)) return strictPath;
+            limits = limits with { StrictDepth = false }; timings["depth-fallback"] = 1;
+            return relaxed;
         }
         var path = await DepthFallbackAsync();
         if (path is null && (avoidUnknownBridges || (airDraftM is null && air is not null)))

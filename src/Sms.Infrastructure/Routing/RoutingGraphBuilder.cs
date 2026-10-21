@@ -89,6 +89,10 @@ public sealed class RoutingOptions
     /// <summary>"Tonnen first": edges in water whose band floor lies below the ship's minimum depth (the band's middle may pass, the
     /// floor does not: not definitely deep enough) cost ×this outside buoyed channels, so the buoyed channel wins wherever one leads. 1 = off.</summary>
     public double UncertainDepthFactor { get; set; } = 3;
+    /// <summary>The strict route (uncertain water closed) is kept only while it is at most this many times the uncertain water the relaxed
+    /// route crosses longer than that route; beyond, the relaxed route with its uncertainDepth warnings. 0 = the strict route whenever one
+    /// exists (Femø → Rødvig: 63 nm round Møn to avoid 2.3 nm of the 1.8–3.7 m band in five fairway gaps, 46 nm through them).</summary>
+    public double UncertainDetourFactor { get; set; } = 5;
 
     public sealed class RegionBox { public double MinLng { get; set; } = 7.6; public double MinLat { get; set; } = 53.3; public double MaxLng { get; set; } = 12.6; public double MaxLat { get; set; } = 55.4; }
 }

@@ -312,6 +312,12 @@ public class SeaGraphTests
         var fallback = graph.Route(A, C, limits)!;
         Assert.Equal([band], graph.UncertainEdges(fallback.Edges!, limits, A, C));
         Assert.Empty(graph.UncertainEdges(fallback.Edges!, limits with { ExemptDeg = 0.05 }, A, C));
+        // the router's detour bound: round the band is 2 × 6.8 km for 2.6 km of band (4.2 ×) – the strict route is kept at factor 5, not at 3
+        var strictPath = graph.Route(A, C, limits with { StrictDepth = true })!;
+        var uncertainM = graph.UncertainEdges(fallback.Edges!, limits, A, C).Sum(e => StringPull.Length(graph.Coords(e)));
+        Assert.InRange(uncertainM, 2500, 2700);
+        Assert.True(DepthBands.KeepsStrict(StringPull.Length(strictPath.Points), StringPull.Length(fallback.Points), uncertainM, 5));
+        Assert.False(DepthBands.KeepsStrict(StringPull.Length(strictPath.Points), StringPull.Length(fallback.Points), uncertainM, 3));
         // a buoyed channel (no floor) and open water without data stay open
         g.Depth[band] = float.NaN;
         Assert.DoesNotContain(g.C(detour), g.Build().Route(A, C, limits with { StrictDepth = true })!.Points);
