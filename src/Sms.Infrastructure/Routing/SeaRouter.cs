@@ -16,7 +16,7 @@ public sealed record RouteResult(decimal DistanceNm, decimal StraightLineNm, Lin
 /// <summary>Something the route assumes that the chart data does not show; Kind "assumedPassage": a passage through a strait the coastline closes.
 /// Kind "startOnLand"/"endOnLand": the clicked point (Lat/Lng) lay on land, the route starts/ends at the nearest navigable water (Snapped*, DistanceM away).
 /// Kind "checkDepth": the route runs through water charted (or, without data in the coastal strip, next to a band) shallower than the ship's warning depth at Lat/Lng, DistanceM the length of that stretch.
-/// Kind "uncertainDepth": no route leads through definitely deep water and buoyed channels only; this one crosses water whose band floor lies below the minimum depth at Lat/Lng (DistanceM: length).
+/// Kind "uncertainDepth": no route leads through definitely deep water and buoyed channels only; this one crosses water whose band floor lies below the minimum depth at Lat/Lng (DistanceM: length), measured along the smoothed line; every stretch is listed.
 /// Kind "bridge": a fixed bridge with a known clearance (DistanceM) on a route asked for without an air draft; "bridgeUnknown": a fixed bridge without a charted clearance.
 /// Kind "cardinal": the route runs through the danger quadrant of a cardinal mark (Lat/Lng: a route point inside it), one per mark.</summary>
 public sealed record RouteWarning(string Kind, double Lat, double Lng, string Note, double? SnappedLat = null, double? SnappedLng = null, double? DistanceM = null);
@@ -419,7 +419,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         foreach (var e in path.Edges ?? []) if (graph.IsAssumed(e)) assumedPoints.UnionWith(graph.Coords(e));
         // the pull keeps what the search kept: no shortcut through uncertain water after a strict search, none under an avoided bridge
         var avoidedBridges = limits.AvoidUnknownBridges && !(path.Edges ?? []).Any(graph.UnknownBridge);
-        var smoothed = await SmoothAsync(path.Points, path.Fixed, version, ct, air, minDepthM, timings, assumedPoints, limits.StrictDepth, avoidedBridges);
+        var (smoothed, uncertainPieces) = await SmoothAsync(path.Points, path.Fixed, version, ct, air, minDepthM, timings, assumedPoints, limits.StrictDepth, avoidedBridges);
         timings["smooth"] = clock.ElapsedMilliseconds;
         var metres = 0.0;
         for (var i = 1; i < smoothed.Count; i++) metres += RoutingGraphBuilder.Haversine(smoothed[i - 1].Y, smoothed[i - 1].X, smoothed[i].Y, smoothed[i].X);
@@ -428,12 +428,11 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var warnings = await WarningsAtAsync(path.Assumed ?? [], ct);
         if (from.OnLand is { } fl) warnings.Insert(0, LandWarning("startOnLand", fl, a, "Start liegt an Land – Route beginnt am nächsten Wasser"));
         if (to.OnLand is { } tl) warnings.Add(LandWarning("endOnLand", tl, b, "Ziel liegt an Land – Route endet am nächsten Wasser"));
+        // the warnings follow the smoothed line (its 25 m samples in the uncertain band, the pull's own rule), not the search path's edges:
+        // the pull cuts corners, the chamfers and the slide move legs, so the stretches lie elsewhere. Every stretch is listed (the client
+        // shows one note with a count), merged within 1 km along the route
         if (strict && !limits.StrictDepth)
-        {
-            var pieces = graph.UncertainEdges(path.Edges ?? [], limits, from, to)
-                .Select(e => { var l = Geo.Factory.CreateLineString(graph.Coords(e)); return new DepthBands.Piece(l.Centroid.Coordinate, graph.Floor(e), double.NaN, LengthM(l)); }).ToList();
-            warnings.AddRange(DepthBands.Stretches(line, pieces).Select(p => new RouteWarning("uncertainDepth", Math.Round(p.At.Y, 5), Math.Round(p.At.X, 5), UncertainDepthNote, DistanceM: Math.Round(p.LengthM))));
-        }
+            warnings.AddRange(DepthBands.Stretches(line, uncertainPieces, max: int.MaxValue).Select(p => new RouteWarning("uncertainDepth", Math.Round(p.At.Y, 5), Math.Round(p.At.X, 5), UncertainDepthNote, DistanceM: Math.Round(p.LengthM))));
         warnings.AddRange(await BridgeWarningsAsync(line, version, ct, withKnown: airDraftM is null, (path.Edges ?? []).Where(graph.UnknownBridge).Select(e => Geo.Factory.CreateLineString(graph.Coords(e))).ToList()));
         warnings.AddRange(await CardinalWarningsAsync(line, version, ct));
         if (warnDepthM is { } wd)
@@ -746,9 +745,11 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return tree;
     }
 
-    /// <param name="strictDepth">The search closed uncertain water (band floor below minDepthM) outside the harbour approach: the pull does too.</param>
+    /// <param name="strictDepth">The search closed uncertain water (band floor below minDepthM) outside the harbour approach: the pull does too.
+    /// After a relaxed search no leg of the pull, chamfer or slide crosses more of that water than the points it replaces did.</param>
     /// <param name="avoidUnknownBridges">The search kept clear of bridges without a charted clearance: their lines block the pull.</param>
-    private async Task<List<Coordinate>> SmoothAsync(List<Coordinate> path, List<bool> fixedSeg, int version, CancellationToken ct, double? airDraftM = null, double? minDepthM = null, Dictionary<string, long>? timings = null, IReadOnlySet<Coordinate>? assumedPoints = null, bool strictDepth = false, bool avoidUnknownBridges = false)
+    /// <returns>The smoothed points and its stretches in the uncertain band (<see cref="DepthBands.Piece"/> per run of 25 m samples: the "uncertainDepth" warnings).</returns>
+    private async Task<(List<Coordinate> points, List<DepthBands.Piece> uncertain)> SmoothAsync(List<Coordinate> path, List<bool> fixedSeg, int version, CancellationToken ct, double? airDraftM = null, double? minDepthM = null, Dictionary<string, long>? timings = null, IReadOnlySet<Coordinate>? assumedPoints = null, bool strictDepth = false, bool avoidUnknownBridges = false)
     {
         var clock = Stopwatch.StartNew();
         void Lap(string k) { if (timings is not null) timings[k] = clock.ElapsedMilliseconds; clock.Restart(); }
@@ -807,8 +808,15 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         uncertain.Build(); uncertainAll.Build();
         Coordinate start = path[0], goal = path[^1]; var approachM = builder.Options.HarbourAccessM;
         bool InUncertain(LineString seg) => UncertainM(seg, uncertain, 1) > 0;
-        // metres of the leg (samples every ~25 m) in the tree's water outside the harbour approach and the known-navigable water the graph
-        // exempts too: ferry corridors, dense sailing traffic cells, measured DTM cells deep enough; stops at the first hit when stopM is 1
+        // a sample point in the tree's water outside the harbour approach and the known-navigable water the graph exempts too: ferry
+        // corridors, dense sailing traffic cells, measured DTM cells deep enough
+        bool UncertainAt(Coordinate c, List<IPreparedGeometry> hits)
+        {
+            if (RoutingGraphBuilder.Haversine(c.Y, c.X, start.Y, start.X) <= approachM || RoutingGraphBuilder.Haversine(c.Y, c.X, goal.Y, goal.X) <= approachM) return false;
+            var pt = Geo.Factory.CreatePoint(c);
+            return hits.Any(u => u.Contains(pt)) && !statics.Ferries.Contains(c) && !known.Traffic.Contains(c) && !(known.Dtm.Depth(c.Y, c.X) >= minDepthM);
+        }
+        // metres of the leg (samples every ~25 m) in such water; stops at the first hit when stopM is 1
         double UncertainM(LineString seg, STRtree<IPreparedGeometry> tree, int stopM = int.MaxValue)
         {
             var hits = tree.Query(seg.EnvelopeInternal).Where(u => u.Intersects(seg)).ToList();
@@ -818,13 +826,42 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             var len = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X); var n = Math.Max(1, (int)Math.Ceiling(len / 25));
             var inside = 0;
             for (var k = 0; k <= n; k++)
-            {
-                var c = new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n);
-                if (RoutingGraphBuilder.Haversine(c.Y, c.X, start.Y, start.X) <= approachM || RoutingGraphBuilder.Haversine(c.Y, c.X, goal.Y, goal.X) <= approachM) continue;
-                var pt = Geo.Factory.CreatePoint(c);
-                if (hits.Any(u => u.Contains(pt)) && !statics.Ferries.Contains(c) && !known.Traffic.Contains(c) && !(known.Dtm.Depth(c.Y, c.X) >= minDepthM) && ++inside * len / n >= stopM) break;
-            }
+                if (UncertainAt(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n), hits) && ++inside * len / n >= stopM) break;
             return inside * len / n;
+        }
+        double UncertainLegM(Coordinate p, Coordinate q) => UncertainM(Geo.Factory.CreateLineString([p, q]), uncertainAll);
+        // after a relaxed search the uncertain band does not block, but no leg may cross more of it than the points it replaces did (the
+        // search paid UncertainFactor to go round it; + one sample of slack): the budget per leg p → q is the band metres of the points
+        // between them, keyed by the point objects the pull hands back (a chamfer's or a detour's new points have none: not judged here,
+        // Tighten and Slide carry the same rule per corner, PierAvoidance's detours are local)
+        var noWorse = !strictDepth && uncertainAll.Count > 0 ? new List<Func<Coordinate, Coordinate, double>> { UncertainLegM } : null;
+        Func<Coordinate, Coordinate, bool> NoWorse(IReadOnlyList<Coordinate> pts)
+        {
+            if (noWorse is null) return (_, _) => false;
+            var at = new Dictionary<Coordinate, double>(ReferenceEqualityComparer.Instance); var sum = 0.0; at[pts[0]] = 0;
+            for (var k = 1; k < pts.Count; k++) { sum += UncertainLegM(pts[k - 1], pts[k]); at[pts[k]] = sum; }
+            return (p, q) => at.TryGetValue(p, out var a) && at.TryGetValue(q, out var b) && UncertainLegM(p, q) > Math.Abs(b - a) + 25;
+        }
+        // the stretches of the points in the band: one piece per run of at least two uncertain samples (a lone sample is a sliver), its
+        // middle sample, the band floor and the run's metres - the "uncertainDepth" warnings of the final line
+        List<DepthBands.Piece> UncertainPieces(IReadOnlyList<Coordinate> pts)
+        {
+            var pieces = new List<DepthBands.Piece>(); var run = new List<Coordinate>(); var runM = 0.0;
+            void Flush() { if (run.Count > 1) pieces.Add(new DepthBands.Piece(run[run.Count / 2], limit, double.NaN, runM)); run.Clear(); runM = 0; }
+            for (var k = 1; k < pts.Count; k++)
+            {
+                var seg = Geo.Factory.CreateLineString([pts[k - 1], pts[k]]);
+                var hits = uncertainAll.Query(seg.EnvelopeInternal).Where(u => u.Intersects(seg)).ToList();
+                var a = pts[k - 1]; var b = pts[k];
+                var len = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X); var n = Math.Max(1, (int)Math.Ceiling(len / 25));
+                for (var i = k == 1 ? 0 : 1; i <= n; i++)
+                {
+                    var c = new Coordinate(a.X + (b.X - a.X) * i / n, a.Y + (b.Y - a.Y) * i / n);
+                    if (hits.Count > 0 && UncertainAt(c, hits)) { run.Add(c); runM += len / n; } else Flush();
+                }
+            }
+            Flush();
+            return pieces;
         }
         Lap("smooth-depth");
         // the channel zone (water next to a buoy chain, minus the chain's own corridor) blocks where the chart has no depth deep
@@ -945,8 +982,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             foreach (var g in cardinals.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
             return InUncertain(seg) || InUnchartedZone(seg, zone, deep);
         }
-        var tests = 0L;
-        bool Blocked(Coordinate p, Coordinate q) { tests++; return Obstructed(p, q) || TooClose(p, q, exempt: true); }
+        var tests = 0L; var budget = NoWorse(path);
+        bool Blocked(Coordinate p, Coordinate q) { tests++; return Obstructed(p, q) || TooClose(p, q, exempt: true) || budget(p, q); }
         // piers are rerouted round after the pull; a leg that skips passage points within StringPull's shapeM must not cross one
         // (a harbour channel between the jetties: Sandhamn, the leg slid 50 m off it across eight of them)
         var piers = await PiersAsync();
@@ -969,6 +1006,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 // node behind a jetty, a grid node beyond a mole's head – Großenbrode). A second pull over the finished points, piers
                 // blocking now too, drops every point the route can do without (it never gets longer, passage shapes stay)
                 finalBlocked = (p, q) => crossesPier!(p, q) || Blocked(p, q);
+                budget = NoWorse(avoided); // the band budget of the detoured points (the pulled legs' metres, within the search path's)
                 (result, resultFixed) = StringPull.PullFlags(avoided, avoidedFixed, finalBlocked, builder.Options.PassageTrimM);
                 if (timings is not null) { timings["pier-points"] = avoided.Count; timings["repulled-points"] = result.Count; }
                 Stage("repulled", result, resultFixed);
@@ -984,7 +1022,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         for (var k = 1; k < result.Count - 1; k++) if (!resultFixed[k - 1] || !resultFixed[k]) { var e = new Envelope(result[k - 1], result[k + 1]); e.ExpandToInclude(result[k]); tightBoxes.Add(e); }
         var tightDeep = await DeepAsync(tightBoxes, Math.Max(limit, 0));
         var chamferBlocked = finalBlocked;
-        (result, resultFixed) = StringPull.Tighten(result, resultFixed, (p, q) => chamferBlocked(p, q) || TooClose(p, q, exempt: false) || !Charted(p, q, tightDeep, 25));
+        (result, resultFixed) = StringPull.Tighten(result, resultFixed, (p, q) => chamferBlocked(p, q) || TooClose(p, q, exempt: false) || !Charted(p, q, tightDeep, 25), worse: noWorse);
         Stage("tightened", result, resultFixed);
         Lap("smooth-tighten");
         if (builder.Options.SlidePasses > 0)
@@ -992,7 +1030,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             // vertex slide: the pull's own blockers; per corner no more metres of uncharted water (and, after a relaxed search, of the
             // uncertain band) than the corner's own legs had
             var worse = new List<Func<Coordinate, Coordinate, double>> { (p, q) => UnchartedM(p, q, tightDeep, 25) };
-            if (!strictDepth && uncertainAll.Count > 0) worse.Add((p, q) => UncertainM(Geo.Factory.CreateLineString([p, q]), uncertainAll));
+            if (noWorse is not null) worse.AddRange(noWorse);
             var slideTests = 0L;
             (result, resultFixed) = StringPull.Slide(result, resultFixed, (p, q) => { slideTests++; return chamferBlocked(p, q); }, worse, builder.Options.PassageTrimM, builder.Options.SlidePasses);
             if (timings is not null) timings["slide-tests"] = slideTests;
@@ -1021,7 +1059,9 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 logger.LogInformation("corner {I} {Lat},{Lng} turn {Turn} saves {Save} m: {Reasons}", i, v.Y.ToString("F5", System.Globalization.CultureInfo.InvariantCulture), v.X.ToString("F5", System.Globalization.CultureInfo.InvariantCulture), Math.Round(t), Math.Round(RoutingGraphBuilder.Haversine(u.Y, u.X, v.Y, v.X) + RoutingGraphBuilder.Haversine(v.Y, v.X, w.Y, w.X) - RoutingGraphBuilder.Haversine(u.Y, u.X, w.Y, w.X)), reasons.Count == 0 ? "FREE" : string.Join(" ", reasons));
             }
         Lap("smooth-tighten");
-        return result;
+        var pieces = uncertainAll.Count > 0 ? UncertainPieces(result) : [];
+        Lap("smooth-warn");
+        return (result, pieces);
     }
 
     // SMS_ROUTE_STAGES=1 logs the polyline after each smoothing stage (RouteBench, debugging)

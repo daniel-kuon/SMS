@@ -48,8 +48,8 @@ public static class DepthBands
 
     /// <summary>
     /// "checkDepth" warnings of a route from its pieces: in route order, a piece starting within mergeM (along the route) after the end of
-    /// the previous stretch joins it; a stretch keeps its shallowest piece as location and band and sums the lengths. At most max
-    /// stretches - the shallowest, then the longest - listed in route order.
+    /// the previous stretch joins it; a stretch keeps its shallowest piece (the longest of equally shallow ones) as location and band and
+    /// sums the lengths. At most max stretches - the shallowest, then the longest - listed in route order.
     /// </summary>
     public static List<Piece> Stretches(LineString route, IEnumerable<Piece> pieces, double mergeM = 1000, int max = 5)
     {
@@ -63,7 +63,7 @@ public static class DepthBands
             if (stretches.Count > 0 && at - p.LengthM / 2 - stretches[^1].end <= mergeM)
             {
                 var s = stretches[^1];
-                stretches[^1] = (p.FloorM < s.shallowest.FloorM ? p : s.shallowest, s.length + p.LengthM, s.at, Math.Max(s.end, at + p.LengthM / 2));
+                stretches[^1] = (p.FloorM < s.shallowest.FloorM || (p.FloorM == s.shallowest.FloorM && p.LengthM > s.shallowest.LengthM) ? p : s.shallowest, s.length + p.LengthM, s.at, Math.Max(s.end, at + p.LengthM / 2));
             }
             else stretches.Add((p, p.LengthM, at, at + p.LengthM / 2));
         }

@@ -612,6 +612,19 @@ public class StringPullTests
     }
 
     [Fact]
+    public void Tighten_chamfers_only_as_far_as_the_corner_gets_no_worse()
+    {
+        static double Band(Coordinate u, Coordinate v) => u.Y < 54.02 && v.Y < 54.02 ? 1000 : 0; // a leg wholly south of y = 2 counts as 1 km of the uncertain band
+        var p = Line((0, 0), (2, 3), (4, 0)); // the way across is free, but the chord would add 1 km of band the corner's legs never had
+        var (t, fx) = StringPull.Tighten(p, [false, false], Open, worse: [Band]);
+        Assert.Equal(3, t.Count); Assert.Equal(2, fx.Count); // chamfered down to the band's edge (the second chamfer point is dropped: its leg on is free), not dropped
+        Assert.InRange(t[1].Y, 54.02, 54.0205); // it stops where the chamfer leg would lie wholly in the band
+        var q = Line((0, 0), (2, 1), (4, 0)); // the corner's own legs are in the band: the chord is no worse, v is dropped
+        Assert.Equal([q[0], q[^1]], StringPull.Tighten(q, [false, false], Open, worse: [Band]).points);
+        Assert.Equal([p[0], p[^1]], StringPull.Tighten(p, [false, false], Open).points); // without the budget: dropped, as before
+    }
+
+    [Fact]
     public void Densify_leaves_passage_segments_alone()
     {
         var p = Line((0, 0), (5, 0), (10, 0));

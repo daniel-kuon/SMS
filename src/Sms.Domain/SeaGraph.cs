@@ -504,7 +504,9 @@ public static class StringPull
     /// <param name="minGainM">A chamfer that saves less than this is not made (the corner is tight enough).</param>
     /// <param name="clearM">A chamfer keeps this far off what blocks it: the same leg shifted by clearM away from v must be free too (a leg
     /// found by bisection would touch the coast).</param>
-    public static (List<Coordinate> points, List<bool> fixedSeg) Tighten(IReadOnlyList<Coordinate> points, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, int passes = 4, double minGainM = 10, double clearM = 20)
+    /// <param name="worse">Optional, as in <see cref="Slide"/>: per leg, metres of what the route must not get more of; the chamfer (or the leg that drops v)
+    /// may not exceed the corner's two old legs in any of them.</param>
+    public static (List<Coordinate> points, List<bool> fixedSeg) Tighten(IReadOnlyList<Coordinate> points, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, int passes = 4, double minGainM = 10, double clearM = 20, IReadOnlyList<Func<Coordinate, Coordinate, double>>? worse = null)
     {
         var p = points.ToList(); var fx = fixedSeg.ToList();
         static double D(Coordinate a, Coordinate b) => SeaGraph.Haversine(a.Y, a.X, b.Y, b.X);
@@ -517,7 +519,9 @@ public static class StringPull
                 if (fx[i - 1] || fx[i]) continue;
                 Coordinate u = p[i - 1], v = p[i], w = p[i + 1];
                 if (D(u, v) + D(v, w) - D(u, w) < minGainM) continue;
-                if (!blocked(u, w)) { p.RemoveAt(i); fx.RemoveAt(i); i--; changed = true; continue; }
+                var budget = worse?.Select(m => m(u, v) + m(v, w) + 1).ToArray();
+                bool Worse(Coordinate a, Coordinate b) => budget is not null && worse!.Where((m, k) => m(a, b) > budget[k]).Any();
+                if (!blocked(u, w) && !Worse(u, w)) { p.RemoveAt(i); fx.RemoveAt(i); i--; changed = true; continue; }
                 // the unit normal of u→w pointing away from v (local metric frame), as a shift in degrees
                 var cos = Math.Cos(v.Y * Math.PI / 180);
                 double nx = -(w.Y - u.Y), ny = (w.X - u.X) * cos; var nl = Math.Sqrt(nx * nx + ny * ny);
@@ -525,7 +529,7 @@ public static class StringPull
                 nx /= nl; ny /= nl;
                 if (nx * (v.X - u.X) * cos + ny * (v.Y - u.Y) > 0) { nx = -nx; ny = -ny; }
                 double sx = nx * clearM / (SeaGraph.MPerDeg * cos), sy = ny * clearM / SeaGraph.MPerDeg;
-                bool Free(Coordinate a, Coordinate b) => !blocked(a, b) && !blocked(new Coordinate(a.X + sx, a.Y + sy), new Coordinate(b.X + sx, b.Y + sy));
+                bool Free(Coordinate a, Coordinate b) => !blocked(a, b) && !Worse(a, b) && !blocked(new Coordinate(a.X + sx, a.Y + sy), new Coordinate(b.X + sx, b.Y + sy));
                 double lo = 0, hi = 1;
                 for (var k = 0; k < 12; k++) { var mid = (lo + hi) / 2; if (Free(Lerp(v, u, mid), Lerp(v, w, mid))) lo = mid; else hi = mid; }
                 var a = Lerp(v, u, lo); var b = Lerp(v, w, lo);

@@ -71,6 +71,18 @@ public class DepthBandsTests
     }
 
     [Fact]
+    public void Uncapped_stretches_list_every_one_and_a_tie_sits_at_the_longest_piece()
+    {
+        // "uncertainDepth": every piece has the same floor (the one band between the limit and the minimum depth), max = int.MaxValue lists all
+        var route = F.CreateLineString([new Coordinate(10, 54), new Coordinate(10 + 30 / 65.5, 54)]);
+        var pieces = new[] { P(1, 1.8288, 50), P(1.4, 1.8288, 600), P(1.9, 1.8288, 100), P(5, 1.8288, 75), P(9, 1.8288, 75), P(13, 1.8288, 75), P(17, 1.8288, 75), P(21, 1.8288, 75), P(25, 1.8288, 75) };
+        var w = DepthBands.Stretches(route, pieces, max: int.MaxValue);
+        Assert.Equal(7, w.Count); // the first three merge (within 1 km of each other), six lone pieces 4 km apart stay
+        Assert.Equal(750, w[0].LengthM); Assert.Equal(1.4, (w[0].At.X - 10) * 65.5, 3); // located at the longest piece, not the first
+        Assert.Equal(5, DepthBands.Stretches(route, pieces).Count); // the default cap still holds for "checkDepth"
+    }
+
+    [Fact]
     public void Strict_route_is_kept_only_within_the_detour_bound()
     {
         // Femø → Rødvig: 124.3 km round Møn against 89.4 km through 4.3 km of uncertain water – a detour of 8 × the uncertain stretch
