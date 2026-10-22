@@ -99,6 +99,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
               <button mat-icon-button class="close" (click)="closePoint()" [attr.aria-label]="'common.close' | translate"><mat-icon>close</mat-icon></button></div>
             <div class="facts">
               <span class="depth"><mat-icon inline>waves</mat-icon> {{ depthText() }}</span>
+              @if (dtmText(); as d) { <span class="dtm" [title]="'mapPoint.dtmHint' | translate"><mat-icon inline>grid_on</mat-icon> {{ d }}</span> }
               @if (bridgeText(); as b) { <span class="bridge"><mat-icon inline>bridge</mat-icon> {{ b }}</span> }
             </div>
             <div class="actions">
@@ -338,6 +339,12 @@ export class HarbourMapPage {
     effect(() => { const id = this.id(); if (id) this.load(id); else this.harbour.set(null); });
     effect(() => { const h = this.harbour(); if (this.map) setPoiFocus(this.map, h?.id ? h : null); untracked(() => { if (this.activeService()) this.clearService(); }); });
     effect(() => { const min = this.shipCtx.minDepthM(), warn = this.shipCtx.warnDepthM(), hazard = this.shipCtx.hazardDepthM(); if (this.map) { applyHazardFilter(this.map, hazard); applyDepthShading(this.map, min, warn); } });
+    // changed ship settings: the shown route again with the same points (debounced while typing); a route link in the URL follows
+    effect(onCleanup => {
+      const params = this.shipCtx.routeParams();
+      const t = setTimeout(() => untracked(() => this.settingsChanged(params)), 500);
+      onCleanup(() => clearTimeout(t));
+    });
   }
   pickShip(id: string): void { this.shipCtx.select(this.shipCtx.myShips().find(s => s.id === id) ?? null); }
 
@@ -494,6 +501,11 @@ export class HarbourMapPage {
     const i = this.info(); if (i === undefined) return '…'; if (i === null) return '–';
     return i.depth ? formatDepthBand(i.depth.minM, i.depth.maxM, appI18n.lang()) : this.translate.instant('mapPoint.noDepth') as string;
   });
+  /** The EMODnet DTM cell under the point: "EMODnet: 3,4 m (gemessen)". */
+  dtmText = computed(() => {
+    const d = this.info()?.dtm; if (!d) return null;
+    return `EMODnet: ${d.depthM.toLocaleString(appI18n.lang(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m (${this.translate.instant(d.interpolated ? 'mapPoint.interpolated' : 'mapPoint.measured')})`;
+  });
   /** The nearest bridge within 300 m: "Brücke: 12 m Durchfahrtshöhe · 80 m entfernt". */
   bridgeText = computed(() => {
     const b = this.info()?.bridges[0]; if (!b) return null;
@@ -603,10 +615,24 @@ export class HarbourMapPage {
     this.location.replaceState(path, withParams(query, { ref: null }), this.location.getState());
   }
 
+  /** The ship settings the shown route was calculated with (JSON of the routing parameters). */
+  private routedWith = '';
+  private pinnedPort?: NearbyPort;
+  private settingsChanged(params: Record<string, number | string>): void {
+    const key = JSON.stringify(params);
+    if (key === this.routedWith || !this.pinned) return;
+    if (this.course) this.recalc(); else if (this.pinnedPort) this.pinRoute(this.pinnedPort);
+    const [path, query = ''] = this.location.path().split('?');
+    if (!new URLSearchParams(query).has('from')) return;
+    const s = (k: string) => params[k] == null ? null : String(params[k]);
+    this.location.replaceState(path, withParams(query, { minDepth: s('minDepth'), warnDepth: s('warnDepth'), airDraft: s('airDraft') }), this.location.getState());
+  }
+
   /** Routes every leg of the course (the route API per leg, in parallel), joins them and draws the result; the old line stays faded meanwhile. */
   private recalc(): void {
     const c = this.course, map = this.map; if (!c || !map) return;
     const pts = [c.from, ...c.vias, c.to], seq = ++this.routeSeq, popup = this.pointPopup;
+    this.routedWith = JSON.stringify(this.shipCtx.routeParams());
     const busy = (b: boolean) => { this.routing.set(b); if (map.getLayer('route-line')) map.setPaintProperty('route-line', 'line-opacity', b ? 0.45 : 1); const el = popup?.getElement(); if (el) el.style.opacity = b ? '0.6' : ''; };
     busy(true);
     const straight = straightNm(c.from, c.to);
@@ -702,13 +728,13 @@ export class HarbourMapPage {
     if (this.pinned && !force) return;
     if (force) {
       const p = this.pointPopup; this.pointPopup = undefined; p?.remove();
-      this.course = null; this.routeSeq++; this.syncVias(); this.routeHandle?.remove(); this.routing.set(false); this.pinned = false; this.courseRoute.set(null);
+      this.course = null; this.pinnedPort = undefined; this.routeSeq++; this.syncVias(); this.routeHandle?.remove(); this.routing.set(false); this.pinned = false; this.courseRoute.set(null);
       if (this.map?.getLayer('route-line')) this.map.setPaintProperty('route-line', 'line-opacity', 1);
     }
     this.hovered = null;
     (this.map?.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
   }
-  pinRoute(p: NearbyPort): void { this.pinned = false; this.hovered = p.harbourId; this.showRoute(p); this.pinned = true; }
+  pinRoute(p: NearbyPort): void { this.pinnedPort = p; this.routedWith = JSON.stringify(this.shipCtx.routeParams()); this.pinned = false; this.hovered = p.harbourId; this.showRoute(p); this.pinned = true; }
 
   private contextMenu(e: MapMouseEvent): void {
     const map = this.map; if (!map) return;

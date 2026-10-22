@@ -15,7 +15,7 @@ var app = builder.Build();
 app.UseCors();
 var source = new ActivitySource("Sms");
 
-app.MapGet("/", () => Results.Ok(new { service = "sms-tiles", layers = new[] { "seamark", "poi", "depth", "traffic" }, url = "/tiles/seamark/{z}/{x}/{y}.mvt", poiUrl = "/tiles/poi/{z}/{x}/{y}.mvt", depthUrl = "/tiles/depth/{z}/{x}/{y}.mvt", trafficUrl = "/tiles/traffic/{z}/{x}/{y}.mvt", minZoom = 8, maxZoom = 18 }));
+app.MapGet("/", () => Results.Ok(new { service = "sms-tiles", layers = new[] { "seamark", "poi", "depth", "traffic", "dtm" }, url = "/tiles/seamark/{z}/{x}/{y}.mvt", poiUrl = "/tiles/poi/{z}/{x}/{y}.mvt", depthUrl = "/tiles/depth/{z}/{x}/{y}.mvt", trafficUrl = "/tiles/traffic/{z}/{x}/{y}.mvt", dtmUrl = "/tiles/dtm/{z}/{x}/{y}.png", minZoom = 8, maxZoom = 18 }));
 
 // EMODnet vessel density cells (routing_traffic, filled by the admin traffic import) with sailing / pleasure craft hours per km² per month;
 // known = sailing traffic the routing trusts as known-navigable water (Routing:TrafficKnownSailing, 0 = off). Below z9 only cells with ≥ 1 h.
@@ -46,6 +46,36 @@ app.MapGet("/tiles/traffic/{z:int}/{x:int}/{y:int}.mvt", async (int z, int x, in
     ctx.Response.Headers.ETag = etag;
     ctx.Response.Headers.CacheControl = "public,max-age=3600";
     return Results.Bytes(tile, "application/vnd.mapbox-vector-tile");
+});
+
+// EMODnet Bathymetry DTM 2024 (routing_dtm, 1/960° cells) as a 256 px PNG from z9: depth classes in a palette, interpolated cells
+// (no soundings) fainter, land and no data transparent. Chunks are decoded to one class byte per cell and kept in a cache of their own.
+var dtmChunks = new MemoryCache(new MemoryCacheOptions { SizeLimit = 48 }); // ponytail: at most 48 decoded chunks (~44 MB); a z9 tile touches up to 4
+var emptyPng = DtmTiles.Png(new byte[256 * 256]);
+app.MapGet("/tiles/dtm/{z:int}/{x:int}/{y:int}.png", async (int z, int x, int y, NpgsqlDataSource db, IMemoryCache cache, HttpContext ctx, CancellationToken ct) =>
+{
+    if (z < 0 || z > 22 || x < 0 || y < 0 || x >= 1 << z || y >= 1 << z) return Results.NotFound();
+    if (z < 9) return Results.Bytes(emptyPng, "image/png");
+    var tile = await cache.GetOrCreateAsync($"dtm/{z}/{x}/{y}", async entry =>
+    {
+        entry.SlidingExpiration = TimeSpan.FromMinutes(30);
+        var chunks = new Dictionary<(int, int), byte[]>();
+        foreach (var key in DtmTiles.ChunksOf(z, x, y))
+            chunks[key] = (await dtmChunks.GetOrCreateAsync(key, async e =>
+            {
+                var c = await DtmTiles.LoadAsync(db, key.lng, key.lat, ct);
+                e.Size = c.Length == 0 ? 0 : 1; e.SlidingExpiration = TimeSpan.FromMinutes(30);
+                return c;
+            }))!;
+        var bytes = chunks.Values.Any(c => c.Length > 0) ? DtmTiles.Png(DtmTiles.Render(z, x, y, chunks)) : emptyPng;
+        entry.Size = bytes.Length + 64;
+        return bytes;
+    }) ?? emptyPng;
+    var etag = $"\"{Convert.ToHexStringLower(System.IO.Hashing.XxHash64.Hash(tile))}\"";
+    if (ctx.Request.Headers.IfNoneMatch.Contains(etag)) return Results.StatusCode(304);
+    ctx.Response.Headers.ETag = etag;
+    ctx.Response.Headers.CacheControl = "public,max-age=3600";
+    return Results.Bytes(tile, "image/png");
 });
 
 // charted depth areas (routing_depth, filled by the admin depth import: Open Waters Seascape, fathom steps) as polygons with min/max depth
@@ -209,4 +239,96 @@ public partial class Program
     /// every closed ring keeps its centre point for the symbol and name). Same list as SEAMARK_AREA_TYPES in sms-web core/map.ts.</summary>
     static readonly string[] AreaTypes = ["restricted_area", "military_area", "anchorage", "dumping_ground", "marine_farm", "cable_area", "pipeline_area",
         "fairway", "dredged_area", "separation_zone", "precautionary_area", "inshore_traffic_zone"];
+}
+
+/// <summary>The DTM raster tiles: routing_dtm chunks (row 0 = north, water cells only behind a bit mask, little-endian float32 elevation,
+/// interpolation_flag bytes) decoded to a class byte per cell, sampled at each pixel centre and written as a palette PNG.</summary>
+static class DtmTiles
+{
+    const int Cells = 960;
+    /// <summary>Depth class bounds (m): below 1.8, 1.8-2.3, 2.3-3.7, 3.7-5.5, 5.5-10, deeper.</summary>
+    static readonly double[] Bounds = [1.8, 2.3, 3.7, 5.5, 10];
+    /// <summary>Shallow to deep; named in DTM_TITLE in sms-web core/map.ts.</summary>
+    static readonly uint[] Colours = [0xc62828, 0xef6c00, 0xfbc02d, 0x7cb342, 0x29b6f6, 0x1565c0];
+
+    /// <summary>Palette index: 0 none, 1-6 measured classes shallow to deep, 7-12 the same classes interpolated (fainter).</summary>
+    public static byte Class(double depth, bool interpolated)
+    {
+        if (!(depth > 0)) return 0;
+        var c = 1; while (c <= Bounds.Length && depth >= Bounds[c - 1]) c++;
+        return (byte)(interpolated ? c + Bounds.Length + 1 : c);
+    }
+
+    /// <summary>One palette index per cell; empty when the chunk is not imported.</summary>
+    public static async Task<byte[]> LoadAsync(NpgsqlDataSource db, int lng, int lat, CancellationToken ct)
+    {
+        await using var cmd = db.CreateCommand("SELECT water, elevation, interpolated FROM routing_dtm WHERE min_lng = @x AND min_lat = @y AND cells = @n");
+        cmd.Parameters.AddWithValue("x", (double)lng); cmd.Parameters.AddWithValue("y", (double)lat); cmd.Parameters.AddWithValue("n", Cells);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return [];
+        byte[] water = r.GetFieldValue<byte[]>(0), elev = r.GetFieldValue<byte[]>(1), interp = r.GetFieldValue<byte[]>(2);
+        var cls = new byte[Cells * Cells];
+        for (int i = 0, k = 0; i < cls.Length; i++)
+        {
+            if ((water[i >> 3] & (1 << (i & 7))) == 0) continue;
+            cls[i] = Class(-System.Buffers.Binary.BinaryPrimitives.ReadSingleLittleEndian(elev.AsSpan(k * 4)), interp[k] != 0); k++;
+        }
+        return cls;
+    }
+
+    static double Lat(int z, double py) => Math.Atan(Math.Sinh(Math.PI * (1 - 2 * py / (256.0 * (1 << z))))) * 180 / Math.PI;
+    static double Lng(int z, double px) => px / (256.0 * (1 << z)) * 360 - 180;
+
+    /// <summary>The 1 degree chunks (south-west corners) a tile touches.</summary>
+    public static IEnumerable<(int lng, int lat)> ChunksOf(int z, int x, int y)
+    {
+        int w = (int)Math.Floor(Lng(z, x * 256 + 0.5)), e = (int)Math.Floor(Lng(z, x * 256 + 255.5)), n = (int)Math.Floor(Lat(z, y * 256 + 0.5)), s = (int)Math.Floor(Lat(z, y * 256 + 255.5));
+        for (var lat = s; lat <= n; lat++) for (var lng = w; lng <= e; lng++) yield return (lng, lat);
+    }
+
+    /// <summary>256 x 256 palette indices, each pixel the cell under its centre.</summary>
+    public static byte[] Render(int z, int x, int y, Dictionary<(int, int), byte[]> chunks)
+    {
+        var px = new byte[256 * 256];
+        var cols = new long[256];
+        for (var c = 0; c < 256; c++) cols[c] = (long)Math.Floor(Lng(z, x * 256 + c + 0.5) * Cells);
+        for (var r = 0; r < 256; r++)
+        {
+            var gy = (long)Math.Floor(Lat(z, y * 256 + r + 0.5) * Cells);
+            var ky = (int)Math.Floor((double)gy / Cells); var row = (Cells - 1 - (gy - (long)ky * Cells)) * Cells;
+            for (var c = 0; c < 256; c++)
+            {
+                var kx = (int)Math.Floor((double)cols[c] / Cells);
+                if (chunks.TryGetValue((kx, ky), out var chunk) && chunk.Length > 0) px[r * 256 + c] = chunk[row + cols[c] - (long)kx * Cells];
+            }
+        }
+        return px;
+    }
+
+    /// <summary>An 8-bit palette PNG (256 x 256) with per-entry alpha (tRNS): measured 200, interpolated 90, index 0 transparent.</summary>
+    public static byte[] Png(byte[] px)
+    {
+        using var ms = new MemoryStream();
+        ms.Write([0x89, (byte)'P', (byte)'N', (byte)'G', 13, 10, 26, 10]);
+        void Chunk(string type, byte[] data)
+        {
+            var head = new byte[8];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(head, data.Length); System.Text.Encoding.ASCII.GetBytes(type, 0, 4, head, 4);
+            ms.Write(head); ms.Write(data);
+            var crc = new System.IO.Hashing.Crc32(); crc.Append(head.AsSpan(4)); crc.Append(data);
+            var sum = new byte[4]; System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(sum, crc.GetCurrentHashAsUInt32()); ms.Write(sum);
+        }
+        Chunk("IHDR", [0, 0, 1, 0, 0, 0, 1, 0, 8, 3, 0, 0, 0]);
+        var palette = new List<byte> { 0, 0, 0 }; var alpha = new List<byte> { 0 };
+        foreach (var a in new byte[] { 200, 90 }) foreach (var c in Colours) { palette.AddRange([(byte)(c >> 16), (byte)(c >> 8), (byte)c]); alpha.Add(a); }
+        Chunk("PLTE", [.. palette]); Chunk("tRNS", [.. alpha]);
+        using (var raw = new MemoryStream())
+        {
+            using (var zs = new System.IO.Compression.ZLibStream(raw, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+                for (var r = 0; r < 256; r++) { zs.WriteByte(0); zs.Write(px, r * 256, 256); }
+            Chunk("IDAT", raw.ToArray());
+        }
+        Chunk("IEND", []);
+        return ms.ToArray();
+    }
 }

@@ -1,6 +1,6 @@
 import { fromShip, parseContext, routeParams } from './ship-context';
 import { routeWarningText } from './models';
-import { depthFillColour, depthHatchFilter, TRAFFIC_ATTRIBUTION, TRAFFIC_FILL } from './map';
+import { depthFillColour, depthHatchFilter, DTM_ATTRIBUTION, DTM_TITLE, TRAFFIC_ATTRIBUTION, TRAFFIC_FILL } from './map';
 
 describe('ship depth settings', () => {
   it('migrates a stored draft-only context to minimum depth = draft + 0.5 m without warnings', () => {
@@ -36,5 +36,10 @@ describe('ship depth settings', () => {
     expect(JSON.stringify(TRAFFIC_FILL)).toContain('["+",["get","sailing"],["get","pleasure"]]');
     expect(TRAFFIC_ATTRIBUTION).toContain('EMODnet');
     expect(TRAFFIC_ATTRIBUTION).toContain('Cogea Srl');
+  });
+
+  it('credits the EMODnet DTM and marks its layer not for navigation', () => {
+    expect(DTM_ATTRIBUTION).toBe('EMODnet Bathymetry DTM 2024 (CC BY 4.0)');
+    expect(DTM_TITLE).toContain('nicht zur Navigation');
   });
 });

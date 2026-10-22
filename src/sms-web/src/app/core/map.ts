@@ -43,6 +43,7 @@ export async function createMap(container: HTMLElement, options: Partial<MapOpti
   addPoiOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/poi/'));
   addDepthOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/depth/'));
   addTrafficOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/traffic/'));
+  addDtmOverlay(map, cfg.seamarkTilesUrl.replace('/seamark/', '/dtm/').replace(/\.mvt$/, '.png'));
   addWeatherOverlayControl(map);
   (window as unknown as { smsMap?: MlMap }).smsMap = map; // debugging/e2e hook: the current map instance
   return map;
@@ -290,6 +291,26 @@ export function addTrafficOverlay(map: MlMap, tilesUrl: string): void {
   const button = document.createElement('button'); button.type = 'button'; button.className = 'depth-overlay-button'; button.title = 'Verkehrsdichte (Segeln) anzeigen'; button.setAttribute('aria-label', 'Verkehrsdichte anzeigen');
   const refresh = () => { button.textContent = '⛵'; button.classList.toggle('active', on); button.setAttribute('aria-pressed', String(on)); };
   button.onclick = () => { on = !on; for (const id of ['traffic-fill', 'traffic-known']) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); try { localStorage.setItem(TRAFFIC_STORAGE, on ? '1' : '0'); } catch { /* ignore */ } refresh(); };
+  map.addControl({ onAdd: () => { wrap.append(button); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
+  refresh();
+}
+
+const DTM_STORAGE = 'sms.dtmOverlay';
+export const DTM_ATTRIBUTION = 'EMODnet Bathymetry DTM 2024 (CC BY 4.0)';
+/** The tooltip legend: the depth classes and colours of the DTM tiles (Sms.Tiles DtmTiles); interpolated cells (no soundings) are drawn fainter. */
+export const DTM_TITLE = `EMODnet-Tiefen (DTM 2024, 1/16′-Zellen, ab Zoom 9) – nicht zur Navigation! Rot < 1,8 m · Orange 1,8–2,3 · Gelb 2,3–3,7 · Grün 3,7–5,5 · Hellblau 5,5–10 · Blau > 10 m; blass = interpoliert (keine Lotungen)`;
+/** The EMODnet DTM depth classes as a toggleable raster overlay below the sea marks (z9+, cells shown sharp when zoomed in). Off by default, remembered per browser. */
+export function addDtmOverlay(map: MlMap, tilesUrl: string): void {
+  if (map.getSource('dtm')) return;
+  const abs = tilesUrl.startsWith('/') ? `${location.origin}${tilesUrl}` : tilesUrl;
+  map.addSource('dtm', { type: 'raster', tiles: [abs], tileSize: 256, minzoom: 9, maxzoom: 13, attribution: DTM_ATTRIBUTION });
+  let on = false; try { on = localStorage.getItem(DTM_STORAGE) === '1'; } catch { /* ignore */ }
+  const before = ['seamark-sectors-fill', 'seamark-lines', 'seamark-icons', 'seamark-points'].find(id => map.getLayer(id));
+  map.addLayer({ id: 'dtm-raster', type: 'raster', source: 'dtm', minzoom: 9, layout: { visibility: on ? 'visible' : 'none' }, paint: { 'raster-resampling': 'nearest', 'raster-opacity': 0.85 } }, before);
+  const wrap = document.createElement('div'); wrap.className = 'maplibregl-ctrl maplibregl-ctrl-group depth-overlay-ctrl';
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'depth-overlay-button dtm-overlay-button'; button.title = DTM_TITLE; button.setAttribute('aria-label', 'EMODnet-Tiefen anzeigen (nicht zur Navigation)');
+  const refresh = () => { button.textContent = '▦'; button.classList.toggle('active', on); button.setAttribute('aria-pressed', String(on)); };
+  button.onclick = () => { on = !on; map.setLayoutProperty('dtm-raster', 'visibility', on ? 'visible' : 'none'); try { localStorage.setItem(DTM_STORAGE, on ? '1' : '0'); } catch { /* ignore */ } refresh(); };
   map.addControl({ onAdd: () => { wrap.append(button); return wrap; }, onRemove: () => wrap.remove() }, 'top-right');
   refresh();
 }

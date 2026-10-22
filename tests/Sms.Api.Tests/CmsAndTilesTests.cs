@@ -166,4 +166,50 @@ public class CmsAndTilesTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync("/api/admin/routing/import-dtm?bbox=50,4,56,10", null)).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsync("/api/admin/routing/import-dtm", null)).StatusCode);
     }
+
+    [Fact]
+    public async Task Dtm_tiles_and_point_info_show_the_emodnet_depth()
+    {
+        // the Baggensstäket ERDDAP subset as chunk 18,59: 49 water cells, 8 with soundings (59.297396 N 18.263021 E: 18.9 m measured)
+        var chunk = Sms.Infrastructure.Routing.DtmImport.Chunk(Sms.Infrastructure.Routing.DtmRaster.FromNetCdf(await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "fixtures", "dtm_baggensstaket_erddap.nc"))), 18, 59);
+        using (var scope = f.Services.CreateScope())
+        {
+            var conn = (Npgsql.NpgsqlConnection)scope.ServiceProvider.GetRequiredService<Sms.Infrastructure.SmsDbContext>().Database.GetDbConnection();
+            await conn.OpenAsync();
+            await Sms.Infrastructure.Routing.DtmImport.WriteAsync(conn, 18, 59, chunk, CancellationToken.None);
+        }
+        const double lat = 59.297396, lng = 18.263021;
+        var info = await f.Anonymous().GetFromJsonAsync<JsonElement>("/api/routing/point-info?lat=59.297396&lng=18.263021");
+        Assert.Equal(18.9, info.GetProperty("dtm").GetProperty("depthM").GetDouble(), 1);
+        Assert.False(info.GetProperty("dtm").GetProperty("interpolated").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, (await f.Anonymous().GetFromJsonAsync<JsonElement>("/api/routing/point-info?lat=59.31&lng=18.27")).GetProperty("dtm").ValueKind); // land
+
+        // the z14 tile there: a PNG with the > 10 m measured class (palette index 6); below z9 and without data: the transparent tile
+        int x = (int)Math.Floor((lng + 180) / 360 * (1 << 14)), y = (int)Math.Floor((1 - Math.Asinh(Math.Tan(lat * Math.PI / 180)) / Math.PI) / 2 * (1 << 14));
+        var tile = await f.Tiles.GetAsync($"/tiles/dtm/14/{x}/{y}.png");
+        tile.EnsureSuccessStatusCode();
+        Assert.Equal("image/png", tile.Content.Headers.ContentType?.MediaType);
+        Assert.NotNull(tile.Headers.ETag);
+        Assert.Contains((byte)6, PngIndices(await tile.Content.ReadAsByteArrayAsync()));
+        Assert.All(PngIndices(await f.Tiles.GetByteArrayAsync("/tiles/dtm/14/0/0.png")), b => Assert.Equal(0, b));
+        Assert.All(PngIndices(await f.Tiles.GetByteArrayAsync("/tiles/dtm/8/141/75.png")), b => Assert.Equal(0, b));
+        Assert.Equal(HttpStatusCode.NotFound, (await f.Tiles.GetAsync("/tiles/dtm/3/99/99.png")).StatusCode);
+    }
+
+    /// <summary>The palette indices of an unfiltered 8-bit PNG (the IDAT data, row filter bytes removed).</summary>
+    private static byte[] PngIndices(byte[] png)
+    {
+        Assert.Equal(0x89504E47u, System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png));
+        using var idat = new MemoryStream();
+        for (var at = 8; at < png.Length;)
+        {
+            var len = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(at));
+            if (System.Text.Encoding.ASCII.GetString(png, at + 4, 4) == "IDAT") idat.Write(png, at + 8, len);
+            at += len + 12;
+        }
+        idat.Position = 0;
+        using var raw = new MemoryStream();
+        using (var z = new System.IO.Compression.ZLibStream(idat, System.IO.Compression.CompressionMode.Decompress)) z.CopyTo(raw);
+        return raw.ToArray().Where((_, i) => i % 257 != 0).ToArray();
+    }
 }

@@ -4,7 +4,7 @@ import { RouteWarning } from './models';
 export interface LatLng { lat: number; lng: number; }
 
 /** The point-info API's answer: the charted depth band there (null = no depth data) and the bridges within 300 m, nearest first. */
-export interface PointInfo { depth: { minM: number; maxM: number } | null; bridges: { kind: string; clearanceM: number | null; distanceM: number }[]; }
+export interface PointInfo { depth: { minM: number; maxM: number } | null; dtm?: { depthM: number; interpolated: boolean } | null; bridges: { kind: string; clearanceM: number | null; distanceM: number }[]; }
 
 /** One leg of GET /api/routing/route. */
 export interface RouteLeg { distanceNm: number; straightLineNm: number; geometry: { coordinates: number[][] }; method: string; warnings?: RouteWarning[]; }
