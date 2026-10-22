@@ -57,4 +57,22 @@ public class ChannelPreferenceTests
         Assert.DoesNotContain(priced, z => z.Contains(Gap(200))); Assert.Contains(priced, z => z.Contains(Gap(700)));
         Assert.Contains(ChannelPreference.Zone([south, north], [], 1500), z => z.Contains(Gap(200))); // without the gaps: x3 there
     }
+
+    [Fact]
+    public void Uncharted_zone_metres_count_the_samples_inside()
+    {
+        static NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Prepared.IPreparedGeometry> Tree(params Geometry[] gs)
+        {
+            var t = new NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Prepared.IPreparedGeometry>();
+            foreach (var g in gs) t.Insert(g.EnvelopeInternal, NetTopologySuite.Geometries.Prepared.PreparedGeometryFactory.Prepare(g));
+            t.Build();
+            return t;
+        }
+        Polygon Box(double x1, double y1, double x2, double y2) => F.CreatePolygon([new(x1, y1), new(x2, y1), new(x2, y2), new(x1, y2), new(x1, y1)]);
+        var leg = F.CreateLineString([new Coordinate(10, 54), new Coordinate(10, 54 + 2000 / WaterGraphTiler.MPerDegLat)]); // 2 km north
+        var zone = Tree(Box(9.99, 53.99, 10.01, 54.0088)); // the southern half
+        Assert.InRange(SeaRouter.UnchartedZoneM(leg, zone, Tree()), 950, 1050);
+        Assert.Equal(0, SeaRouter.UnchartedZoneM(leg, zone, Tree(Box(9.99, 53.99, 10.01, 54.03)))); // charted deep enough all along
+        Assert.Equal(0, SeaRouter.UnchartedZoneM(leg, Tree(), Tree()));
+    }
 }

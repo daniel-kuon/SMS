@@ -57,10 +57,13 @@ public static class DepthLimits
             if (ferry is { Count: > 0 } && ferry.Along(e.Geom)) { result.Add(e with { MinDepthM = min ?? e.MinDepthM, Ferry = true }); continue; }
             var r = min is not null ? e with { MinDepthM = min } : nearLand is null || !Coastal(e.Geom, nearLand) ? e
                 : Adjacent(e.Geom, index) is { } adj ? e with { AdjacentDepthM = adj } : e with { FloorM = UnknownCoastalFloorM };
-            var hazard = hazardIndex.Count > 0 && hazardIndex.Query(e.Geom.EnvelopeInternal).Any(h => h.Intersects(e.Geom))
+            // the hazard and zone tests only for an edge that would get the traffic flag or a DTM depth: InZone samples every 25 m, and
+            // v80's extra build time (+20 min) lay in the three phases that ran it on every edge (depth limits 7 -> 14 min, passages, links)
+            bool? hazard = null;
+            bool Hazard() => hazard ??= hazardIndex.Count > 0 && hazardIndex.Query(e.Geom.EnvelopeInternal).Any(h => h.Intersects(e.Geom))
                 || zoneIndex.Count > 0 && InZone(e.Geom, zoneIndex.Query(e.Geom.EnvelopeInternal), index, charted: min is not null);
-            if (!hazard && traffic is { Count: > 0 } && traffic.Along(e.Geom)) r = r with { Traffic = true };
-            else if (!hazard && dtm is not null && (r.MinDepthM ?? r.AdjacentDepthM ?? r.FloorM) is { } f && f < DtmGrid.MaxFloorM) r = r with { DtmMinM = dtm.MinDepth(e.Geom) };
+            if (traffic is { Count: > 0 } && traffic.Along(e.Geom) && !Hazard()) r = r with { Traffic = true };
+            else if (dtm is not null && (r.MinDepthM ?? r.AdjacentDepthM ?? r.FloorM) is { } f && f < DtmGrid.MaxFloorM && !Hazard()) r = r with { DtmMinM = dtm.MinDepth(e.Geom) };
             result.Add(r);
         }
         return result;

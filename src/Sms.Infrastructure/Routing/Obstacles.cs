@@ -18,14 +18,18 @@ public static class Obstacles
     /// Long bridges (Great Belt, Fehmarnsund, Øresund) may only be passed at their charted navigation spans: OSM has the bridge
     /// as a way with one clearance and the spans as seamark bridge nodes with their own clearance. A line with span points
     /// is replaced by the window pieces around the spans (the span's clearance) and the remainder (clearance 0, impassable).
-    /// Lines without charted spans are kept whole.
+    /// Lines without charted spans are kept whole. A span point is consumed by its window: it stays as a disc of MatchM (an edge that
+    /// passes the point keeps its clearance even where the line is drawn short or over the next arm), never as a point - in area mode a
+    /// point matches edges within 1.5 km and carried its clearance to the bridge's other spans (the Storstrøm's unknown northern span got
+    /// the main span's 26 m and lost its unknown flag). A point without a line of its kind keeps its match.
     /// </summary>
     public static List<(Geometry geom, CorrectionKind kind, double? clearanceM)> WithSpans(IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles, double spanMatchM = SpanMatchM, double windowM = SpanWindowM)
     {
         var points = obstacles.Where(o => o.geom is Point && o.kind != CorrectionKind.Lock).ToList();
         if (points.Count == 0) return obstacles.ToList();
         var pointIndex = PointIndex(points);
-        var result = new List<(Geometry, CorrectionKind, double?)>(obstacles.Count);
+        var result = new List<(Geometry geom, CorrectionKind kind, double? clearanceM)>(obstacles.Count);
+        var consumed = new HashSet<Geometry>(ReferenceEqualityComparer.Instance);
         foreach (var o in Chains(obstacles))
         {
             if (o.geom is not LineString line || o.kind == CorrectionKind.Lock) { result.Add(o); continue; }
@@ -41,6 +45,7 @@ public static class Obstacles
                 var window = scaled.Intersection(sp.Buffer(windowDeg));
                 if (window.IsEmpty) continue;
                 windows.Add(sp.Buffer(windowDeg));
+                if (p.kind == o.kind) consumed.Add(p.geom); // an opening bridge's point keeps its waiting penalty
                 // overlay results share Coordinate objects with their input: copy before scaling back, or the scaled source line
                 // (and every other piece) is corrupted into a line spanning tens of degrees
                 window = window.Copy(); window.Apply(new Scale(1 / cos));
@@ -50,6 +55,14 @@ public static class Obstacles
             var rest = scaled.Difference(new GeometryCollection(windows.ToArray()).Union()).Copy();
             if (!rest.IsEmpty) { rest.Apply(new Scale(1 / cos)); result.Add((rest, o.kind, 0)); }
         }
+        for (var i = 0; i < result.Count; i++)
+            if (result[i].geom is Point pt && consumed.Contains(pt))
+            {
+                var cos = Math.Cos(pt.Y * Math.PI / 180);
+                var sp = (Point)pt.Copy(); sp.Apply(new Scale(cos));
+                var disc = sp.Buffer(MatchM / WaterGraphTiler.MPerDegLat); disc.Apply(new Scale(1 / cos));
+                result[i] = (disc, result[i].kind, result[i].clearanceM);
+            }
         return result;
     }
 

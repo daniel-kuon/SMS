@@ -72,7 +72,8 @@ public sealed class SeaGraph
         for (var e = 0; e < m; e++)
         {
             var d = Haversine(y[src[e]], x[src[e]], y[tgt[e]], x[tgt[e]]);
-            if (d > 0) f = Math.Min(f, cost[e] / d);
+            // a zero-length link (cost 0) whose two nodes differ by float noise (1e-14 degrees) made the factor 0: A* ran as Dijkstra
+            if (d > 1e-3) f = Math.Min(f, cost[e] / d);
         }
         HeuristicFactor = f == double.MaxValue ? 0 : Math.Max(0, f * (1 - 1e-6)); // float costs: a hair below the true minimum
         var count = 0;
@@ -478,6 +479,28 @@ public static class StringPull
             pts.Add(b); fx.Add(fixedSeg[i - 1]);
         }
         return (pts, fx);
+    }
+
+    /// <summary>
+    /// "No worse than before" budgets for the pull: per measure (metres per leg of what the route must not get more of, with a slack of
+    /// about one sample), a leg p → q is blocked when it measures more than the path's own legs between p and q. Keyed by the path's point
+    /// objects (the pull hands them back); a leg whose end is not a path point (a chamfer's, a detour's new point) is not judged here.
+    /// </summary>
+    public static Func<Coordinate, Coordinate, bool> NoWorse(IReadOnlyList<Coordinate> pts, IReadOnlyList<(Func<Coordinate, Coordinate, double> m, double slack)> measures)
+    {
+        if (measures.Count == 0 || pts.Count == 0) return (_, _) => false;
+        var ats = measures.Select(x =>
+        {
+            var at = new Dictionary<Coordinate, double>(ReferenceEqualityComparer.Instance); var sum = 0.0; at[pts[0]] = 0;
+            for (var k = 1; k < pts.Count; k++) { sum += x.m(pts[k - 1], pts[k]); at[pts[k]] = sum; }
+            return at;
+        }).ToArray();
+        return (p, q) =>
+        {
+            for (var i = 0; i < ats.Length; i++)
+                if (ats[i].TryGetValue(p, out var a) && ats[i].TryGetValue(q, out var b) && measures[i].m(p, q) > Math.Abs(b - a) + measures[i].slack) return true;
+            return false;
+        };
     }
 
     public static double Length(IReadOnlyList<Coordinate> p)

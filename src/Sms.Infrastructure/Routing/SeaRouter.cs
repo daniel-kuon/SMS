@@ -491,6 +491,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
 
     /// <summary>A point bridge (a charted span) this close to the route counts as passed under.</summary>
     private const double BridgeWarnM = 300;
+    /// <summary>An unknown bridge hit this close along the route to a known one is the same crossing drawn twice.</summary>
+    private const double BridgeSameCrossingM = 500;
 
     public const string UncertainDepthNote = "Route führt durch Wasser, das möglicherweise flacher ist als die Mindesttiefe";
     public const string UnknownBridgeNote = "Brücke mit unbekannter Durchfahrtshöhe – vor Ort prüfen";
@@ -524,12 +526,9 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             if (clearance is null && unknownEdges is not null && !unknownEdges.Any(e => g is Point ? e.IsWithinDistance(g, 2 * Obstacles.MatchM / WaterGraphTiler.MPerDegLat) : e.Intersects(g))) continue;
             hits.Add((line.Project(where), where, clearance));
         }
-        // a bridge line and its span point (or the pieces of one bridge) name one bridge: one warning per 500 m of route. A bridge without a
-        // clearance within BridgeMatchAreaM of a known one on the route is the same crossing drawn twice (Rügendamm, Fehmarnsund: the OSM
-        // road lines next to the charted point) - as for the edges (Obstacles.Apply), the known clearance counts
-        var known = hits.Where(h => h.clearance is not null).ToList();
+        // a bridge line and its span point (or the pieces of one bridge) name one bridge: one warning per 500 m of route
         var result = new List<RouteWarning>(); var lastAt = double.NegativeInfinity;
-        foreach (var h in hits.Where(h => h.clearance is not null || !known.Any(k => RoutingGraphBuilder.Haversine(k.where.Y, k.where.X, h.where.Y, h.where.X) <= builder.Options.BridgeMatchAreaM)).OrderBy(h => h.at))
+        foreach (var h in MergeBridgeHits(hits, BridgeSameCrossingM).OrderBy(h => h.at))
         {
             if ((h.at - lastAt) * WaterGraphTiler.MPerDegLat < 500) continue; // ponytail: planar degrees along the line, fine for "the same bridge"
             lastAt = h.at;
@@ -539,6 +538,16 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             result.Add(new RouteWarning("bridge", Math.Round(h.where.Y, 5), Math.Round(h.where.X, 5), string.Format(De, "Brücke mit {0:0.0} m Durchfahrtshöhe{1} – Durchfahrtshöhe des Schiffs prüfen (nicht angegeben)", cl, low), DistanceM: cl));
         }
         return result;
+    }
+
+    /// <summary>A bridge hit without a clearance within <paramref name="sameM"/> along the route of a known one is the same crossing drawn twice
+    /// (Rügendamm, Fehmarnsund: the OSM road lines next to the charted point) - as for the edges (Obstacles.Apply), the known clearance counts.
+    /// Along the route, not as the crow flies: the Storstrøm's unknown northern span lies 1.3 km from the old bridge's 25.2 m span and is a
+    /// crossing of its own.</summary>
+    public static List<(double at, Coordinate where, double? clearance)> MergeBridgeHits(IReadOnlyList<(double at, Coordinate where, double? clearance)> hits, double sameM)
+    {
+        var known = hits.Where(h => h.clearance is not null).ToList();
+        return hits.Where(h => h.clearance is not null || !known.Any(k => Math.Abs(k.at - h.at) * WaterGraphTiler.MPerDegLat <= sameM)).ToList();
     }
 
     /// <summary>The "bridgeUnknown" note with the bridge's name, from the nearest clearance-less bridge correction within 50 m of where the route passes.</summary>
@@ -835,18 +844,6 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             return inside * len / n;
         }
         double UncertainLegM(Coordinate p, Coordinate q) => UncertainM(Geo.Factory.CreateLineString([p, q]), uncertainAll);
-        // after a relaxed search the uncertain band does not block, but no leg may cross more of it than the points it replaces did (the
-        // search paid UncertainFactor to go round it; + one sample of slack): the budget per leg p → q is the band metres of the points
-        // between them, keyed by the point objects the pull hands back (a chamfer's or a detour's new points have none: not judged here,
-        // Tighten and Slide carry the same rule per corner, PierAvoidance's detours are local)
-        var noWorse = !strictDepth && uncertainAll.Count > 0 ? new List<Func<Coordinate, Coordinate, double>> { UncertainLegM } : null;
-        Func<Coordinate, Coordinate, bool> NoWorse(IReadOnlyList<Coordinate> pts)
-        {
-            if (noWorse is null) return (_, _) => false;
-            var at = new Dictionary<Coordinate, double>(ReferenceEqualityComparer.Instance); var sum = 0.0; at[pts[0]] = 0;
-            for (var k = 1; k < pts.Count; k++) { sum += UncertainLegM(pts[k - 1], pts[k]); at[pts[k]] = sum; }
-            return (p, q) => at.TryGetValue(p, out var a) && at.TryGetValue(q, out var b) && UncertainLegM(p, q) > Math.Abs(b - a) + 25;
-        }
         // the stretches of the points in the band: one piece per run of at least two uncertain samples (a lone sample is a sliver), its
         // middle sample, the band floor and the run's metres - the "uncertainDepth" warnings of the final line
         List<DepthBands.Piece> UncertainPieces(IReadOnlyList<Coordinate> pts)
@@ -913,6 +910,16 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         for (var k = 0; k < fixedSeg.Count; k++) if (fixedSeg[k] && Charted(path[k], path[k + 1], deep)) fixedSeg[k] = false;
         (path, fixedSeg) = StringPull.Densify(path, fixedSeg, 1000);
         Lap("smooth-zone");
+        // "no worse than before" budgets (metres per leg, slack of one sample): no leg may cross more of it than the points it replaces did -
+        // after a relaxed search the uncertain band (the search paid UncertainFactor to go round it), and the channel zone's uncharted water
+        // (the graph path's own links and grid legs ride through it: a link up to a fairway junction and back, the cut across the spike
+        // crosses the water the spike already crosses). The pull keys the budget by the path's points (StringPull.NoWorse), Tighten and
+        // Slide carry the same rule per corner; the local detours (land cuts, piers) keep the hard zone rule, their new points have no budget
+        double ZoneM(Coordinate p, Coordinate q) => UnchartedZoneM(Geo.Factory.CreateLineString([p, q]), zone, deep);
+        var measures = new List<(Func<Coordinate, Coordinate, double> m, double slack)>();
+        if (!strictDepth && uncertainAll.Count > 0) measures.Add((UncertainLegM, 25));
+        if (zone.Count > 0) measures.Add((ZoneM, 50));
+        var noWorse = measures.Select(x => x.m).ToList();
         // legs of the graph path across land with water on both sides - a buoy-chain chord over an island or spit (Vaxholm, the
         // Albrektsund canal), a short gap link over an islet: the pull keeps passage geometry as it is, so they are rerouted first,
         // locally round the land pieces they cross (PierAvoidance over the land clipped around the leg), the other blockers still
@@ -920,7 +927,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var cuts = LandCuts(path, landOnly, assumedPoints);
         if (cuts.Count > 0)
         {
-            try { (path, fixedSeg) = PierAvoidance.Apply(path, fixedSeg, cuts, Obstructed, clearM: 5, windowM: 300); }
+            try { (path, fixedSeg) = PierAvoidance.Apply(path, fixedSeg, cuts, ObstructedOrZone, clearM: 5, windowM: 300); }
             catch (Exception ex) when (ex is TopologyException or ArgumentException) { logger.LogWarning(ex, "Land detour skipped"); }
             if (timings is not null) timings["land-cuts"] = cuts.Count;
             Stage("landcut", path, fixedSeg);
@@ -985,15 +992,19 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             var seg = Geo.Factory.CreateLineString([p, q]);
             foreach (var g in index.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
             foreach (var g in cardinals.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
-            return InUncertain(seg) || InUnchartedZone(seg, zone, deep);
+            return InUncertain(seg);
         }
-        var tests = 0L; var budget = NoWorse(path);
+        bool ObstructedOrZone(Coordinate p, Coordinate q) => Obstructed(p, q) || InUnchartedZone(Geo.Factory.CreateLineString([p, q]), zone, deep);
+        var tests = 0L; var budget = StringPull.NoWorse(path, measures);
         bool Blocked(Coordinate p, Coordinate q) { tests++; return Obstructed(p, q) || TooClose(p, q, exempt: true) || budget(p, q); }
         // piers are rerouted round after the pull; a leg that skips passage points within StringPull's shapeM must not cross one
         // (a harbour channel between the jetties: Sandhamn, the leg slid 50 m off it across eight of them)
         var piers = await PiersAsync();
         var crossesPier = piers.Count > 0 ? PierAvoidance.Crossing(piers) : null;
-        var (result, resultFixed) = StringPull.PullFlags(path, fixedSeg, Blocked, builder.Options.PassageTrimM, followBlocked: crossesPier);
+        // piers block the first pull too: a budgeted leg to a harbour pin across a mole could not be detoured (the detour's legs meet the
+        // hard zone rule) and the repull never tests a leg it is handed (end_pier 90 -> 115 in the 222 legs otherwise)
+        Func<Coordinate, Coordinate, bool> firstBlocked = crossesPier is not null ? (p, q) => Blocked(p, q) || crossesPier(p, q) : Blocked;
+        var (result, resultFixed) = StringPull.PullFlags(path, fixedSeg, firstBlocked, builder.Options.PassageTrimM, followBlocked: crossesPier);
         Lap("smooth-pull");
         if (timings is not null) { timings["smooth-points"] = path.Count; timings["smooth-tests"] = tests; timings["pulled-points"] = result.Count; }
         Stage("pulled", result, resultFixed);
@@ -1004,14 +1015,14 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             try
             {
                 // detour legs round a pier head lie next to the pier by nature: land, bridges, depth and zone block them, the clearance does not
-                var (avoided, avoidedFixed) = PierAvoidance.Apply(result, resultFixed, piers, Obstructed);
+                var (avoided, avoidedFixed) = PierAvoidance.Apply(result, resultFixed, piers, ObstructedOrZone);
                 Stage("piers", avoided, avoidedFixed);
                 Lap("smooth-piers");
                 // the detours are local: a detour round a pier head can make the next route point an out-and-back (the harbour access
                 // node behind a jetty, a grid node beyond a mole's head – Großenbrode). A second pull over the finished points, piers
                 // blocking now too, drops every point the route can do without (it never gets longer, passage shapes stay)
                 finalBlocked = (p, q) => crossesPier!(p, q) || Blocked(p, q);
-                budget = NoWorse(avoided); // the band budget of the detoured points (the pulled legs' metres, within the search path's)
+                budget = StringPull.NoWorse(avoided, measures); // the budget of the detoured points (the pulled legs' metres, within the search path's)
                 (result, resultFixed) = StringPull.PullFlags(avoided, avoidedFixed, finalBlocked, builder.Options.PassageTrimM);
                 if (timings is not null) { timings["pier-points"] = avoided.Count; timings["repulled-points"] = result.Count; }
                 Stage("repulled", result, resultFixed);
@@ -1035,7 +1046,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             // vertex slide: the pull's own blockers; per corner no more metres of uncharted water (and, after a relaxed search, of the
             // uncertain band) than the corner's own legs had
             var worse = new List<Func<Coordinate, Coordinate, double>> { (p, q) => UnchartedM(p, q, tightDeep, 25) };
-            if (noWorse is not null) worse.AddRange(noWorse);
+            worse.AddRange(noWorse);
             var slideTests = 0L;
             (result, resultFixed) = StringPull.Slide(result, resultFixed, (p, q) => { slideTests++; return chamferBlocked(p, q); }, worse, builder.Options.PassageTrimM, builder.Options.SlidePasses);
             if (timings is not null) timings["slide-tests"] = slideTests;
@@ -1126,6 +1137,23 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             if (!deep.Query(new Envelope(c)).Any(d => d.Contains(pt)) && ++outside > 0 && stop) break;
         }
         return outside * len / n;
+    }
+
+    /// <summary>Metres of the leg (samples every ~stepM) inside the channel zone and outside every deep-enough depth area.</summary>
+    public static double UnchartedZoneM(LineString seg, STRtree<IPreparedGeometry> zone, STRtree<IPreparedGeometry> deep, double stepM = 50)
+    {
+        var hits = zone.Query(seg.EnvelopeInternal);
+        if (hits.Count == 0 || !hits.Any(z => z.Intersects(seg))) return 0;
+        var a = seg.GetCoordinateN(0); var b = seg.GetCoordinateN(1);
+        var len = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X); var n = Math.Max(1, (int)Math.Ceiling(len / stepM));
+        var inside = 0;
+        for (var k = 0; k <= n; k++)
+        {
+            var c = new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n);
+            var pt = Geo.Factory.CreatePoint(c);
+            if (hits.Any(z => z.Contains(pt)) && !deep.Query(new Envelope(c)).Any(d => d.Contains(pt))) inside++;
+        }
+        return inside * len / n;
     }
 
     /// <summary>True when a sample of the leg (every ~100 m) lies in the channel zone outside every deep-enough depth area.</summary>

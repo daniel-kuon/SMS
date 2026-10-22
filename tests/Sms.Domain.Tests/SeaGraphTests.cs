@@ -625,6 +625,22 @@ public class StringPullTests
     }
 
     [Fact]
+    public void NoWorse_budget_allows_a_leg_that_is_no_worse_than_the_points_it_replaces()
+    {
+        // A, B, C, D 1 km apart in a row; a leg that touches B counts 1 km of "zone" (2.1 km for A → C in the second measure)
+        Coordinate a = new(10.000, 54), b = new(10.0153, 54), c = new(10.0306, 54), d = new(10.0459, 54);
+        bool Touches(Coordinate p, Coordinate q) => Math.Min(p.X, q.X) <= b.X && b.X <= Math.Max(p.X, q.X);
+        double Zone(Coordinate p, Coordinate q) => Touches(p, q) ? 1000 : 0;
+        var blocked = StringPull.NoWorse([a, b, c, d], [(Zone, 50)]);
+        Assert.False(blocked(a, c)); // 1 000 m against the 2 000 m of A → B → C
+        Assert.False(blocked(c, d));
+        Assert.False(blocked(a, new Coordinate(10.03, 54.001))); // not a path point: not judged here
+        double Worse(Coordinate p, Coordinate q) => ReferenceEquals(p, a) && ReferenceEquals(q, c) ? 2100 : Zone(p, q);
+        Assert.True(StringPull.NoWorse([a, b, c, d], [(Worse, 50)])(a, c));
+        Assert.False(StringPull.NoWorse([a, b, c, d], [])(a, c));
+    }
+
+    [Fact]
     public void Densify_leaves_passage_segments_alone()
     {
         var p = Line((0, 0), (5, 0), (10, 0));

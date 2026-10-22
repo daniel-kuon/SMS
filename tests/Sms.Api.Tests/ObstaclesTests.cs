@@ -49,14 +49,14 @@ public class ObstaclesTests
         var span = F.CreatePoint(new Coordinate(11.045, 55.339));
         var raw = new List<(NetTopologySuite.Geometries.Geometry geom, Sms.Domain.CorrectionKind kind, double? clearanceM)> { (line, Sms.Domain.CorrectionKind.Bridge, 20), (span, Sms.Domain.CorrectionKind.Bridge, 65) };
         var pieces = Obstacles.WithSpans(raw);
-        Assert.Equal(3, pieces.Count); // span point, window, remainder
+        Assert.Equal(3, pieces.Count); // window, remainder, the span point as a 60 m disc (consumed by its window)
         Assert.Contains(pieces, p => p.geom is not Point && p.clearanceM == 65);
         Assert.Contains(pieces, p => p.geom is not Point && p.clearanceM == 0);
         Assert.Single(Obstacles.SpanPoints(raw));
         // every piece stays inside the bridge's own extent (overlay results share coordinates with the scaled input: a scale-back
         // on a shared Coordinate once stretched pieces across ten degrees of longitude)
         var two = Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, 20), (span, Sms.Domain.CorrectionKind.Bridge, 65), (F.CreatePoint(new Coordinate(11.07, 55.3405)), Sms.Domain.CorrectionKind.Bridge, 30)]);
-        Assert.All(two.Where(p => p.geom is not Point), p => Assert.True(line.EnvelopeInternal.Contains(p.geom.EnvelopeInternal), p.geom.EnvelopeInternal.ToString()));
+        Assert.All(two.Where(p => p.geom is ILineal), p => Assert.True(line.EnvelopeInternal.Contains(p.geom.EnvelopeInternal), p.geom.EnvelopeInternal.ToString()));
         var atSpan = Edge(1, 2, 11.045, 55.33, 11.045, 55.35);   // crosses inside the window
         var outside = Edge(3, 4, 11.01, 55.33, 11.01, 55.35);    // crosses 2.2 km west of the span
         var away = Edge(5, 6, 11.045, 55.36, 11.045, 55.38);    // north of the bridge
@@ -76,6 +76,23 @@ public class ObstaclesTests
         var unknownSpan = Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, (double?)null), (span, Sms.Domain.CorrectionKind.Bridge, 65), (F.CreatePoint(new Coordinate(11.01, 55.3405)), Sms.Domain.CorrectionKind.Bridge, (double?)null)]);
         var passed = Assert.Single(Obstacles.Apply(new[] { outside }, unknownSpan, 1852, 926, 60));
         Assert.Null(passed.ClearanceM); Assert.True(passed.UnknownBridge);
+    }
+
+    [Fact]
+    public void Span_points_are_consumed_by_their_window()
+    {
+        // the 6 km line without a clearance, a 65 m span at 11.045 and an unknown span 1.3 km west of it (the Storstrøm's northern span):
+        // in area mode (1.5 km point match) the 65 m point reached the unknown window and named it 65 m, unflagged
+        var line = F.CreateLineString([new Coordinate(11.00, 55.34), new Coordinate(11.09, 55.34)]);
+        var span = F.CreatePoint(new Coordinate(11.045, 55.339));
+        var lone = F.CreatePoint(new Coordinate(11.20, 55.40)); // a bridge drawn as a point only: keeps its area match
+        var pieces = Obstacles.WithSpans([(line, Sms.Domain.CorrectionKind.Bridge, (double?)null), (span, Sms.Domain.CorrectionKind.Bridge, 65), (F.CreatePoint(new Coordinate(11.025, 55.3405)), Sms.Domain.CorrectionKind.Bridge, (double?)null), (lone, Sms.Domain.CorrectionKind.Bridge, 30)]);
+        Assert.Single(pieces, p => p.geom is Point); // span points are 60 m discs now, the lone point stays a point
+        Assert.Contains(pieces, p => ReferenceEquals(p.geom, lone));
+        var between = Edge(9, 10, 11.025, 55.33, 11.025, 55.35); // through the unknown span, 1.27 km from the 65 m point
+        var passed = Assert.Single(Obstacles.Apply([between], pieces, 1852, 926, 1500));
+        Assert.Null(passed.ClearanceM); Assert.True(passed.UnknownBridge);
+        Assert.Equal(65, Assert.Single(Obstacles.Apply([Edge(1, 2, 11.045, 55.33, 11.045, 55.35)], pieces, 1852, 926, 1500)).ClearanceM);
     }
 
     [Fact]
@@ -147,8 +164,8 @@ public class ObstaclesTests
         var span = F.CreatePoint(new Coordinate(11.05, 55.3005)); // 55 m off the line
         var far = F.CreatePoint(new Coordinate(11.05, 55.40));
         var pieces = Obstacles.WithSpans([((Geometry)line, Sms.Domain.CorrectionKind.Bridge, (double?)null), ((Geometry)span, Sms.Domain.CorrectionKind.Bridge, 65.0), ((Geometry)far, Sms.Domain.CorrectionKind.Bridge, 3.0)]);
-        Assert.Single(pieces, p => p.geom is not Point && p.clearanceM == 65);
-        Assert.Single(pieces, p => p.geom is not Point && p.clearanceM == 0);
+        Assert.Single(pieces, p => p.geom is ILineal && p.clearanceM == 65); // the window (the span point itself is a 60 m disc)
+        Assert.Single(pieces, p => p.geom is ILineal && p.clearanceM == 0);
         Assert.Equal([span.Coordinate], Obstacles.SpanPoints([((Geometry)line, Sms.Domain.CorrectionKind.Bridge, (double?)null), ((Geometry)span, Sms.Domain.CorrectionKind.Bridge, 65.0), ((Geometry)far, Sms.Domain.CorrectionKind.Bridge, 3.0)]));
     }
 }

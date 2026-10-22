@@ -541,6 +541,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 gapSeen.Add((Math.Min(n.Id, id), Math.Max(n.Id, id)));
                 gapLinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
             }
+            // the links get the bridges and locks the passage edges got (a gap link under the 5 m Masnedsund bridge limited nothing); the
+            // impassable rest of a bridge with charted spans drops the link
+            gapLinks = Obstacles.Apply(gapLinks, obstacles, o.LockPenaltyM, o.BridgeOpeningPenaltyM, Obstacles.MatchM);
             await WriteEdgesAsync(conn, version, Cardinals(ChannelLinkFloors(gapLinks, channelEnds, depthRows, nearLand, ferries, traffic, dtm, hazards, zones)), ct);
             // live union-find: a stray end links to the nearest node of any other component (land-free), and the two merge; chains
             // of such merges pull archipelago fragments together even where no main-component node is within reach
@@ -557,7 +560,10 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 strays++;
                 var n = await NearestWaterLinkAsync(conn, version, nodeIndex, linkLand, p, o.HarbourAccessM, m => Find(m.Id) != Find(id), ct);
                 if (n is null) continue;
-                relinks.Add(new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)])));
+                // ponytail: Apply per link (an index over all obstacles each time; ~280 relinks per build); a link under the impassable rest
+                // of a bridge is dropped and the end stays stray, no next-nearest node is tried
+                if (Obstacles.Apply([new GraphEdge(id, n.Id, Haversine(p.Y, p.X, n.Y, n.X), Geo.Factory.CreateLineString([p, new Coordinate(n.X, n.Y)]))], obstacles, o.LockPenaltyM, o.BridgeOpeningPenaltyM, Obstacles.MatchM) is not [var link]) continue;
+                relinks.Add(link);
                 Union(id, n.Id);
             }
             await WriteEdgesAsync(conn, version, Cardinals(ChannelLinkFloors(relinks, channelEnds, depthRows, nearLand, ferries, traffic, dtm, hazards, zones)), ct);

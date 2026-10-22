@@ -7,6 +7,8 @@
 //        or "backfill-floor": floor_m (coastal water without data, derived channels "Enge" and their links) for the active graph version, without a rebuild
 //        or "import-bridges" s,w,n,e: road/railway bridges without a clearance over routing water from Overpass (as the admin endpoint import-bridges)
 //        or "backfill-bridges": unknown_bridge (edges under a fixed bridge without a clearance, Obstacles.Apply) for the active graph version, without a rebuild
+//        or "backfill-clearance": Obstacles.Apply on the passage-side edges (gap links and relinks never got it: clearance, unknown_bridge; links under the impassable rest of a spanned bridge deleted) for the active graph version, without a rebuild
+//        env SMS_BENCH_CLEARANCE=1: routes on the active graph with that backfill simulated in memory
 //        or "backfill-ferry": ferry (edges along a stored ferry track, kind Ferry, within Routing:FerryCorridorM; their adjacent_depth_m/floor_m dropped) for the active graph version, without a rebuild
 //        env SMS_BENCH_CARDINALS=factor|hard: routes on the active graph with grid edges through a cardinal's danger wedge priced x factor in memory (CardinalPenaltyFactor simulated, passage edges not)
 //        env SMS_BENCH_FERRY=file: routes on the active graph with the edges along the ferry lines in the file ("lat,lng lat,lng …" per line) flagged in memory, a backfill-ferry simulated
@@ -166,6 +168,57 @@ if (args.Length > 2 && args[2] == "backfill-bridges")
     var marked = await cmd.ExecuteNonQueryAsync();
     var known = await new Npgsql.NpgsqlCommand($"UPDATE routing_edge SET unknown_bridge = false WHERE graph_version = {version} AND unknown_bridge AND clearance_m IS NOT NULL", conn) { CommandTimeout = 3600 }.ExecuteNonQueryAsync();
     Console.WriteLine($"v{version}: {pieces.Length} unknown-clearance bridge pieces, {marked} edges marked, {known} of them unmarked again (a known clearance on the edge)");
+    return;
+}
+
+if (args.Length > 2 && args[2] == "backfill-clearance")
+{
+    // RoutingGraphBuilder applies the bridges and locks to the passage edges but (before spec-masnedo R1) not to the gap links and relinks:
+    // a link under the 5 m Masnedsund bridge limited nothing. Clearance only lowered (LEAST, a contracted edge carries the min of its
+    // pieces), the unknown flag as Apply gives it, cost untouched (no lock penalty twice); a link the rule drops is deleted
+    using var scope = sp.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+    var conn = (Npgsql.NpgsqlConnection)db.Database.GetDbConnection(); await conn.OpenAsync();
+    async Task<long> Scalar(string sql) => Convert.ToInt64(await new Npgsql.NpgsqlCommand(sql, conn) { CommandTimeout = 3600 }.ExecuteScalarAsync());
+    var version = (int)await Scalar("SELECT value::int FROM routing_meta WHERE key = 'active_version'");
+    var gridNodes = await Scalar("SELECT value::bigint FROM routing_meta WHERE key = 'grid_nodes'");
+    var clock = Stopwatch.StartNew();
+    var obstacles = Obstacles.WithSpans((await db.RoutingCorrections.Where(c => c.Active && (c.Kind == Sms.Domain.CorrectionKind.Bridge || c.Kind == Sms.Domain.CorrectionKind.Lock || c.Kind == Sms.Domain.CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync())
+        .Select(c => (c.Geometry is NetTopologySuite.Geometries.LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList());
+    var ids = new List<long>(); var edges = new List<GraphEdge>();
+    await using (var r = await new Npgsql.NpgsqlCommand($"SELECT id, source, target, geom, clearance_m, unknown_bridge FROM routing_edge WHERE graph_version = {version} AND (source > {gridNodes} OR target > {gridNodes})", conn) { CommandTimeout = 3600 }.ExecuteReaderAsync())
+        while (await r.ReadAsync()) { ids.Add(r.GetInt64(0)); edges.Add(new GraphEdge(r.GetInt64(1), r.GetInt64(2), 0, r.GetFieldValue<NetTopologySuite.Geometries.LineString>(3), r.IsDBNull(4) ? null : r.GetDouble(4), UnknownBridge: r.GetBoolean(5))); }
+    var at = new Dictionary<NetTopologySuite.Geometries.LineString, int>(ReferenceEqualityComparer.Instance);
+    for (var i = 0; i < edges.Count; i++) at[edges[i].Geom] = i;
+    var changed = new List<(long id, double? c, bool u)>(); var kept = new bool[edges.Count]; int limited = 0, flagged = 0;
+    foreach (var a in Obstacles.Apply(edges, obstacles, 0, 0, Obstacles.MatchM))
+    {
+        var i = at[a.Geom]; kept[i] = true; var e = edges[i];
+        if (a.ClearanceM == e.ClearanceM && a.UnknownBridge == e.UnknownBridge) continue;
+        changed.Add((ids[i], a.ClearanceM, a.UnknownBridge));
+        if (a.ClearanceM != e.ClearanceM) limited++;
+        if (a.UnknownBridge && !e.UnknownBridge) flagged++;
+    }
+    var closed = ids.Where((_, i) => !kept[i]).ToArray();
+    Console.WriteLine($"v{version}: {edges.Count} passage-side edges, {obstacles.Count} bridge/lock pieces: {limited} get a (lower) clearance, {flagged} the unknown-bridge flag, {closed.Length} closed (impassable bridge rest) ({clock.Elapsed.TotalSeconds:0} s)");
+    await new Npgsql.NpgsqlCommand("CREATE TEMP TABLE clr (id bigint, c float8, u boolean)", conn).ExecuteNonQueryAsync();
+    await using (var w = await conn.BeginBinaryImportAsync("COPY clr (id, c, u) FROM STDIN (FORMAT BINARY)"))
+    {
+        foreach (var (id, c, u) in changed)
+        {
+            await w.StartRowAsync(); await w.WriteAsync(id, NpgsqlTypes.NpgsqlDbType.Bigint);
+            if (c is { } cv) await w.WriteAsync(cv, NpgsqlTypes.NpgsqlDbType.Double); else await w.WriteNullAsync();
+            await w.WriteAsync(u, NpgsqlTypes.NpgsqlDbType.Boolean);
+        }
+        await w.CompleteAsync();
+    }
+    var updated = await new Npgsql.NpgsqlCommand($"UPDATE routing_edge e SET clearance_m = LEAST(e.clearance_m, clr.c), unknown_bridge = clr.u FROM clr WHERE e.graph_version = {version} AND e.id = clr.id", conn) { CommandTimeout = 3600 }.ExecuteNonQueryAsync();
+    var del = new Npgsql.NpgsqlCommand($"DELETE FROM routing_edge WHERE graph_version = {version} AND id = ANY(@ids)", conn) { CommandTimeout = 3600 };
+    del.Parameters.AddWithValue("ids", closed);
+    var deleted = await del.ExecuteNonQueryAsync();
+    // harbour routes cached for this version went over the old edges
+    var uncached = await new Npgsql.NpgsqlCommand($"DELETE FROM \"RouteCaches\" WHERE \"GraphVersion\" = {version}", conn).ExecuteNonQueryAsync();
+    Console.WriteLine($"{updated} edges updated, {deleted} deleted, {uncached} cached routes dropped ({clock.Elapsed.TotalSeconds:0} s); restart the API (the graph is loaded once per version)");
     return;
 }
 
@@ -495,6 +548,45 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_ZONE") is { Length: > 0 } zone
     var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
     graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
     Console.WriteLine($"zone simulation ({zoneArg}): {allLines.Count} derived lines, {zoneLines.Count} zone lines ({oldLines.Count} in the graph's zone, {RoutingGraphBuilder.BenchShoalIds.Count} shoal ids), {areas.Count} areas; {blocked} edges lost their known-water evidence, {priced} grid edges repriced ({clock.Elapsed.TotalSeconds:0} s)");
+}
+
+if (Environment.GetEnvironmentVariable("SMS_BENCH_CLEARANCE") == "1")
+{
+    // backfill-clearance in memory (Obstacles.Apply on the passage-side edges), on top of whatever simulation replaced the graph before.
+    // An edge the rule drops (the impassable rest of a bridge with charted spans) gets cost +inf; lock penalties are not re-applied.
+    using var scope = sp.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+    var router = scope.ServiceProvider.GetRequiredService<SeaRouter>();
+    var version = await router.ActiveVersionAsync(default);
+    var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
+    var g = graphs.Contains(version) ? await ((Lazy<Task<Sms.Domain.SeaGraph>>)graphs[version]!).Value : await SeaRouter.LoadGraphAsync(new Npgsql.NpgsqlConnection(cs), version, sp.GetRequiredService<ILoggerFactory>().CreateLogger("bench"));
+    T F<T>(string name) => (T)typeof(Sms.Domain.SeaGraph).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(g)!;
+    var o = sp.GetRequiredService<RoutingGraphBuilder>().Options;
+    var raw = (await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && (c.Kind == Sms.Domain.CorrectionKind.Bridge || c.Kind == Sms.Domain.CorrectionKind.Lock || c.Kind == Sms.Domain.CorrectionKind.OpeningBridge)).Select(c => new { c.Kind, c.Geometry, c.ClearanceM }).ToListAsync())
+        .Select(c => (c.Geometry is NetTopologySuite.Geometries.LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
+    var obstacles = Obstacles.WithSpans(raw);
+    var clear = (float[])F<float[]>("_clear").Clone(); var unknown = (bool[])(F<bool[]?>("_unknownBridge") ?? new bool[g.EdgeCount]).Clone(); var cost = (float[])F<float[]>("_cost").Clone();
+    var edges = new List<GraphEdge>(); var at = new Dictionary<NetTopologySuite.Geometries.LineString, int>(ReferenceEqualityComparer.Instance);
+    for (var e = 0; e < g.EdgeCount; e++)
+    {
+        if (!g.IsPassageNode(g.Source(e)) && !g.IsPassageNode(g.Target(e))) continue;
+        var cs0 = g.Coords(e); if (cs0.Length < 2 || cs0.Any(c => double.IsNaN(c.X) || double.IsNaN(c.Y))) continue;
+        var line = Geo.Factory.CreateLineString(cs0); at[line] = e;
+        edges.Add(new GraphEdge(g.Source(e), g.Target(e), cost[e], line, float.IsNaN(clear[e]) ? null : clear[e], UnknownBridge: unknown[e]));
+    }
+    var kept = new HashSet<int>(); int limited = 0, flagged = 0, dropped = 0;
+    foreach (var a in Obstacles.Apply(edges, obstacles, 0, 0, Obstacles.MatchM))
+    {
+        var e = at[a.Geom]; kept.Add(e);
+        var cl = a.ClearanceM is { } c ? (float)c : float.NaN;
+        if (!float.IsNaN(cl) && (float.IsNaN(clear[e]) || cl < clear[e])) { clear[e] = cl; limited++; }
+        if (a.UnknownBridge && !unknown[e]) { unknown[e] = true; flagged++; }
+    }
+    foreach (var (line, e) in at) if (!kept.Contains(e)) { cost[e] = float.PositiveInfinity; dropped++; }
+    var sim = new Sms.Domain.SeaGraph(F<double[]>("_x"), F<double[]>("_y"), F<int[]>("_src"), F<int[]>("_tgt"), cost, F<float[]>("_depth"), clear, F<int[]>("_geomStart"), F<double[]>("_geom"), F<int>("_firstPassage"), F<bool[]?>("_isolated"),
+        assumed: F<bool[]?>("_assumed"), adjacent: F<float[]?>("_adjacent"), floor: F<float[]?>("_floor"), unknownBridge: unknown, ferry: F<bool[]?>("_ferry"), traffic: F<bool[]?>("_traffic"), dtmMin: F<float[]?>("_dtmMin"));
+    graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
+    Console.WriteLine($"clearance simulation: {edges.Count} passage-side edges, {obstacles.Count} bridge/lock pieces: {limited} got a (lower) clearance, {flagged} the unknown-bridge flag, {dropped} closed (impassable bridge rest)");
 }
 
 (string name, double lat1, double lng1, double lat2, double lng2, double draft, double? minDepth, double? warnDepth, double? airDraft, bool avoidUnknownBridges)[] routes =
