@@ -11,15 +11,17 @@ namespace Sms.Infrastructure.Routing;
 /// charted fairway areas) is the "channel zone"; the part of an edge that runs inside the zone costs ×factor. Passage
 /// edges (the fairway lines themselves) are never touched, so following the buoys stays the cheapest way through.
 /// Priced by length, not by the midpoint: a 20 km visibility leg that cuts across a buoyed shallow pays for the cut.
+/// The fairway's gaps (Fairways.GapChords, within gapM) are no zone either: there is no line to follow there, the water along the chord
+/// is the fairway (Ulvsund, Bøgestrøm: ×3 on the gaps' grid edges sent routes round Møn).
 /// </summary>
 public static class ChannelPreference
 {
     public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> gridEdges, IReadOnlyList<LineString> fairways, double distanceM, double factor) => Apply(gridEdges, fairways, [], distanceM, factor);
 
-    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> gridEdges, IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> areas, double distanceM, double factor)
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> gridEdges, IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> areas, double distanceM, double factor, IReadOnlyList<LineString>? gaps = null, double gapM = 0)
     {
         if ((fairways.Count == 0 && areas.Count == 0) || factor <= 1 || distanceM <= 0) return gridEdges.ToList();
-        var zone = Zone(fairways, areas, distanceM);
+        var zone = Zone(fairways, areas, distanceM, gaps, gapM);
         if (zone.Count == 0) return gridEdges.ToList();
         var index = new STRtree<IPreparedGeometry>();
         foreach (var z in zone) index.Insert(z.EnvelopeInternal, PreparedGeometryFactory.Prepare(z));
@@ -52,22 +54,14 @@ public static class ChannelPreference
         return total == 0 ? 0 : (double)inside / total;
     }
 
-    /// <summary>Buffer band around the fairway lines, with the charted fairway areas (marked channels) cut out: inside those the water is the channel.</summary>
-    public static List<Geometry> Zone(IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> areas, double distanceM)
+    /// <summary>Buffer band around the fairway lines, with the charted fairway areas (marked channels) cut out: inside those the water is the
+    /// channel; and the gapM corridor along the fairway's gaps (chords between line ends), when given.</summary>
+    public static List<Geometry> Zone(IReadOnlyList<LineString> fairways, IReadOnlyList<Polygon> areas, double distanceM, IReadOnlyList<LineString>? gaps = null, double gapM = 0)
     {
         var bands = new List<Geometry>();
         // a charted fairway area counts like a buoy chain along its edge: water next to it is penalised, water inside it is cut out below
         var lines = fairways.Concat(areas.Where(a => !a.IsEmpty).Select(a => (LineString)a.ExteriorRing)).ToList();
-        foreach (var f in lines)
-        {
-            var lat = f.Centroid.Y;
-            var degLat = distanceM / WaterGraphTiler.MPerDegLat;
-            // buffer in a locally scaled frame so the band is distanceM wide in both axes
-            var cos = Math.Cos(lat * Math.PI / 180);
-            var scaled = (LineString)f.Copy(); scaled.Apply(new Scale(cos));
-            var band = scaled.Buffer(degLat, 4); band.Apply(new Scale(1 / cos));
-            bands.Add(band);
-        }
+        foreach (var f in lines) bands.Add(Band(f, distanceM));
         if (bands.Count == 0) return [];
         Geometry union;
         try { union = UnaryUnionOp.Union(bands); } catch (TopologyException) { union = new GeometryCollection(bands.ToArray()).Buffer(0); }
@@ -77,7 +71,23 @@ public static class ChannelPreference
             try { areaUnion = UnaryUnionOp.Union(areas.Cast<Geometry>().ToList()); } catch (TopologyException) { areaUnion = new GeometryCollection(areas.Cast<Geometry>().ToArray()).Buffer(0); }
             union = union.Difference(areaUnion);
         }
+        if (gaps is { Count: > 0 } && gapM > 0)
+        {
+            var corridors = gaps.Select(g => Band(g, gapM)).ToList();
+            Geometry cut;
+            try { cut = UnaryUnionOp.Union(corridors); } catch (TopologyException) { cut = new GeometryCollection(corridors.ToArray()).Buffer(0); }
+            try { union = union.Difference(cut); } catch (TopologyException) { union = union.Buffer(0).Difference(cut.Buffer(0)); }
+        }
         return union is GeometryCollection gc ? gc.Geometries.Where(g => !g.IsEmpty && g.Dimension == Dimension.Surface).ToList() : union.IsEmpty ? [] : [union];
+    }
+
+    /// <summary>The line buffered by distanceM, in a locally scaled frame so the band is distanceM wide in both axes.</summary>
+    public static Geometry Band(LineString f, double distanceM)
+    {
+        var cos = Math.Cos(f.Centroid.Y * Math.PI / 180);
+        var scaled = (LineString)f.Copy(); scaled.Apply(new Scale(cos));
+        var band = scaled.Buffer(distanceM / WaterGraphTiler.MPerDegLat, 4); band.Apply(new Scale(1 / cos));
+        return band;
     }
 
     private sealed class Scale(double sx) : ICoordinateSequenceFilter

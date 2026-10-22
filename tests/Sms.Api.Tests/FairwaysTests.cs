@@ -388,4 +388,48 @@ public class FairwaysTests
         Assert.Single(Fairways.Derive(marks.Where(m => m.Side == MarkSide.North).ToList(), F));
         Assert.Empty(Fairways.Derive(marks.Select((m, k) => k == 2 ? m with { Side = MarkSide.East } : m).Where(m => m.Side != MarkSide.South).ToList(), F));
     }
+
+    [Fact]
+    public void Shoal_share_counts_charted_shoal_water_beside_the_line()
+    {
+        // a 3 km line running north at 10.15 E; the 1.83 m band east of it, 5.49 m west, land from 1 100 m east on
+        var line = F.CreateLineString([new Coordinate(10.15, 54.40), new Coordinate(10.15, 54.427)]);
+        var mPerDegLng = WaterGraphTiler.MPerDegLat * Math.Cos(54.41 * Math.PI / 180);
+        double East(Coordinate c) => (c.X - 10.15) * mPerDegLng;
+        var water = new FairwayWater((_, _) => true, (_, _) => true, Water: c => East(c) < 1100, Floor: c => East(c) > 0 ? 1.8288 : 5.4864);
+        // per sample 6 offsets west (deep), 4 east in water (shoal), 2 east on land (left out): 4 / 10
+        Assert.Equal(0.4, Fairways.ShoalShare(line, water, 1500, 2.3), 2);
+        Assert.Equal(0, Fairways.ShoalShare(line, water with { Floor = _ => 5.4864 }, 1500, 2.3));
+        Assert.Equal(0, Fairways.ShoalShare(line, water with { Floor = _ => null }, 1500, 2.3)); // no band: water, not shoal
+        Assert.Equal(0, Fairways.ShoalShare(line, water with { Floor = null }, 1500, 2.3));
+    }
+
+    [Fact]
+    public void Gap_chords_join_lines_that_continue_each_other()
+    {
+        LineString L(params double[] xy) => F.CreateLineString(Enumerable.Range(0, xy.Length / 2).Select(i => new Coordinate(xy[2 * i], xy[2 * i + 1])).ToArray());
+        var south = L(10.15, 54.40, 10.15, 54.42);
+        var north = L(10.15, 54.447, 10.15, 54.47);                       // 3 km on, same course
+        var chord = Assert.Single(Fairways.GapChords([south, north]));
+        Assert.Equal(54.42, chord.Coordinates.Min(c => c.Y), 6); Assert.Equal(54.447, chord.Coordinates.Max(c => c.Y), 6);
+        Assert.Empty(Fairways.GapChords([south, L(10.15, 54.47, 10.15, 54.49)]));          // 5.5 km: too far
+        Assert.Empty(Fairways.GapChords([south, L(10.20, 54.43, 10.25, 54.43)]));          // 3.4 km off at 50°, running away east: no continuation
+        Assert.Empty(Fairways.GapChords([south, L(10.155, 54.40, 10.155, 54.42)]));        // side by side
+        Assert.Single(Fairways.GapChords([south, L(10.152, 54.428, 10.17, 54.44)]));        // 0.9 km on, turning 40°: a bend in the fairway
+        Assert.Empty(Fairways.GapChords([south, L(10.15, 54.42, 10.15, 54.44)]));          // joined already
+    }
+
+    [Fact]
+    public void Shoal_single_lines_get_the_note_and_are_zone_lines()
+    {
+        var line = F.CreateLineString([new Coordinate(10.15, 54.40), new Coordinate(10.15, 54.42)]);
+        Assert.Equal("Fahrwasser (5 Einzeltonnen, Untiefen)", Fairways.Note(new Fairway(line, 0, 5, Shoal: true)));
+        Assert.Equal("Fahrwasser (5 Einzeltonnen)", Fairways.Note(new Fairway(line, 0, 5)));
+        Assert.True(Fairways.IsZoneLine("Fahrwasser (3 Tonnenpaare)"));
+        Assert.True(Fairways.IsZoneLine("Fahrwasser (5 Einzeltonnen, Untiefen)"));
+        Assert.False(Fairways.IsZoneLine("Fahrwasser (5 Einzeltonnen)"));
+        Assert.False(Fairways.IsZoneLine("Fahrwasser (3 Tonnenpaare, breit)"));
+        Assert.False(Fairways.IsZoneLine("Enge (Fahrrinne)"));
+        Assert.False(Fairways.IsZoneLine(null));
+    }
 }

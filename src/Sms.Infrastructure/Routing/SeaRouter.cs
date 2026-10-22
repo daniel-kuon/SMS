@@ -664,7 +664,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// (every ≤ 1 km) – otherwise the pulled string could only bend at grid nodes and kept a dog-leg when the direct line to the
     /// next node grazed the coast. Passage geometry outside charted deep water keeps its shape.
     /// </summary>
-    private sealed record SmoothStatics(STRtree<(Geometry geom, double? clearance, CorrectionKind kind)> Bridges, STRtree<Geometry> Zone, STRtree<Polygon> Cardinals, STRtree<Polygon> Isolated, FerryCorridors Ferries);
+    private sealed record SmoothStatics(STRtree<(Geometry geom, double? clearance, CorrectionKind kind)> Bridges, STRtree<Geometry> Zone, STRtree<Polygon> Cardinals, STRtree<Polygon> Isolated, FerryCorridors Ferries, STRtree<IPreparedGeometry> BlockZone);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<Task<SmoothStatics>>> _statics = new();
 
     /// <summary>Per graph version: the bridge pieces after chains and charted spans, the channel zone pieces, the cardinal danger wedges, the isolated-danger discs and the ferry corridors; built on first use.</summary>
@@ -682,11 +682,11 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             .Select(c => (c.Geometry is LineString ? c.Geometry : c.Geometry.Centroid, c.Kind, c.ClearanceM)).ToList();
         foreach (var (g, kind, cl) in Obstacles.WithSpans(raw)) bridges.Insert(g.EnvelopeInternal, (g, cl, kind));
         bridges.Build();
-        var zone = new STRtree<Geometry>();
+        var zone = new STRtree<Geometry>(); var blockZone = new STRtree<IPreparedGeometry>();
         var o = builder.Options;
         if (o.ChannelPreferenceM > 0)
         {
-            var fairways = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Passage && c.Source == CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser") && c.Note.Contains(Fairways.PairedNote) && !c.Note.Contains(Fairways.WideNote)).Select(c => c.Geometry).ToListAsync()).OfType<LineString>().ToList(); // same set as the builder's channel zone
+            var (allLines, fairways) = await RoutingGraphBuilder.FairwayLinesAsync(sdb); // same sets as the builder's channel zone
             var fairwayAreas = (await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Fairway && !(c.Note != null && c.Note.Contains(Fairways.WideNote))).Select(c => c.Geometry).ToListAsync()).SelectMany(g => g is Polygon p ? [p] : g is MultiPolygon mp ? mp.Geometries.OfType<Polygon>() : []).ToList();
             if (fairways.Count > 0)
             {
@@ -698,9 +698,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                     var g = corridorPrepared.Intersects(z) ? z.Difference(corridor) : z;
                     if (!g.IsEmpty) zone.Insert(g.EnvelopeInternal, g);
                 }
+                // buoyed zones: the traffic cells and the DTM do not lift the uncertain verdict there (the graph's DepthLimits hazards)
+                if (o.ZoneBlocksKnownWater)
+                    foreach (var b in RoutingGraphBuilder.BlockZone(allLines, fairways, fairwayAreas, o.ChannelPreferenceM, o.ZoneBlockCorridorM)) blockZone.Insert(b.EnvelopeInternal, PreparedGeometryFactory.Prepare(b));
             }
         }
-        zone.Build();
+        zone.Build(); blockZone.Build();
         var isolated = new STRtree<Polygon>();
         foreach (var p in await CardinalMarks.LoadIsolatedAsync(sdb)) { var d = CardinalMarks.Disc(p); isolated.Insert(d.EnvelopeInternal, d); }
         isolated.Build();
@@ -708,7 +711,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var ferries = o.FerryCorridorM > 0
             ? new FerryCorridors((await sdb.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == CorrectionKind.Ferry).Select(c => c.Geometry).ToListAsync()).OfType<LineString>().ToList(), o.FerryCorridorM)
             : FerryCorridors.Empty;
-        return new SmoothStatics(bridges, zone, CardinalMarks.Index(await CardinalMarks.LoadAsync(sdb)), isolated, ferries);
+        return new SmoothStatics(bridges, zone, CardinalMarks.Index(await CardinalMarks.LoadAsync(sdb)), isolated, ferries, blockZone);
     }
 
     // dense sailing traffic and the DTM (routing_traffic, routing_dtm) per graph version, loaded on first use (DTM chunks on first touch)
@@ -809,12 +812,14 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         Coordinate start = path[0], goal = path[^1]; var approachM = builder.Options.HarbourAccessM;
         bool InUncertain(LineString seg) => UncertainM(seg, uncertain, 1) > 0;
         // a sample point in the tree's water outside the harbour approach and the known-navigable water the graph exempts too: ferry
-        // corridors, dense sailing traffic cells, measured DTM cells deep enough
+        // corridors, dense sailing traffic cells, measured DTM cells deep enough - the last two not in a buoyed zone (as in the graph)
         bool UncertainAt(Coordinate c, List<IPreparedGeometry> hits)
         {
             if (RoutingGraphBuilder.Haversine(c.Y, c.X, start.Y, start.X) <= approachM || RoutingGraphBuilder.Haversine(c.Y, c.X, goal.Y, goal.X) <= approachM) return false;
             var pt = Geo.Factory.CreatePoint(c);
-            return hits.Any(u => u.Contains(pt)) && !statics.Ferries.Contains(c) && !known.Traffic.Contains(c) && !(known.Dtm.Depth(c.Y, c.X) >= minDepthM);
+            if (!hits.Any(u => u.Contains(pt)) || statics.Ferries.Contains(c)) return false;
+            if (statics.BlockZone.Count > 0 && statics.BlockZone.Query(pt.EnvelopeInternal).Any(z => z.Contains(pt))) return true;
+            return !known.Traffic.Contains(c) && !(known.Dtm.Depth(c.Y, c.X) >= minDepthM);
         }
         // metres of the leg (samples every ~25 m) in such water; stops at the first hit when stopM is 1
         double UncertainM(LineString seg, STRtree<IPreparedGeometry> tree, int stopM = int.MaxValue)

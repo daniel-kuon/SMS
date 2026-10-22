@@ -14,7 +14,8 @@ public sealed record FairwayMark(double Lat, double Lng, MarkSide Side, bool Lig
 /// ≥ <see cref="Fairways.AreaMinWidthM"/>): the fairway as an area,
 /// red border on one side, green on the other; the routing passage is its centreline <paramref name="Line"/>.</param>
 /// <param name="Wide">A corridor between two one-sided rows (a wide river): no ×3 channel zone round it in the graph build.</param>
-public sealed record Fairway(LineString Line, int Pairs, int Singles = 0, Polygon? Area = null, bool Wide = false);
+/// <param name="Shoal">A single-mark line through charted shoal water (<see cref="Fairways.ShoalShare"/>): a channel zone line like a paired one.</param>
+public sealed record Fairway(LineString Line, int Pairs, int Singles = 0, Polygon? Area = null, bool Wide = false, bool Shoal = false);
 /// <summary>Water checks for a hop a → b (X = lng, Y = lat). Clear: no land between water on it. Deep: charted depth all along
 /// (wide hops between single marks, straightened corners).
 /// Path: a way a → b through charted deep water when the straight hop crosses land (the points between, or null).
@@ -74,10 +75,92 @@ public static class Fairways
     /// <summary>Start of the note of a derived Fairway area (the water between the marks of a paired line).</summary>
     public const string AreaNote = "Fahrwasserfläche (abgeleitet";
     /// <summary>The Passage note of a derived line.</summary>
-    public static string Note(Fairway f) => f.Pairs == 0 ? $"Fahrwasser ({f.Singles} Einzeltonnen)"
+    public static string Note(Fairway f) => f.Pairs == 0 ? $"Fahrwasser ({f.Singles} Einzeltonnen{(f.Shoal ? ", " + ShoalNote : "")})"
         : f.Singles > 0 ? $"Fahrwasser ({f.Pairs} {PairedNote}, {f.Singles} Einzeltonnen{(f.Wide ? ", " + WideNote : "")})" : $"Fahrwasser ({f.Pairs} {PairedNote}{(f.Wide ? ", " + WideNote : "")})";
     /// <summary>In the note of a wide corridor (Fairway.Wide) and its area: the graph build puts no ×3 channel zone round those.</summary>
     public const string WideNote = "breit";
+    /// <summary>In the note of a single-mark line through charted shoal water (Fairway.Shoal): a channel zone line like a paired one.</summary>
+    public const string ShoalNote = "Untiefen";
+    /// <summary>The derived lines the graph build and the smoother put a channel zone round: paired or shoal single-mark lines, not the
+    /// wide corridors (the stored note of a "Fahrwasser" passage).</summary>
+    public static bool IsZoneLine(string? note) => note is not null && note.StartsWith("Fahrwasser") && !note.Contains(WideNote) && (note.Contains(PairedNote) || note.Contains(ShoalNote));
+
+    /// <summary>
+    /// Share of the water within bandM of the line that is charted shallower than shoalFloorM (<see cref="FairwayWater.Floor"/>): samples
+    /// every stepM along the line at k × 250 m perpendicular on both sides (k = 1 … bandM / 250, local metric frame). Land
+    /// (<see cref="FairwayWater.Water"/> false) is left out; a sample without a band counts as water but not as shoal (the coastal strip
+    /// the raster leaves out - counting it would make every coast-hugging line a zone line). No floors → 0.
+    /// </summary>
+    /// <summary>
+    /// The gaps of a fairway: straight chords between two line ends at most maxM apart where the second line continues the first: the chord
+    /// turns from the first line's course out of its end, and into the second line's course on from its end (each over
+    /// <see cref="HeadingBaseM"/>), by at most 90° within 1 km, 60° within 2 km, else 45° (the derivation's turn rule for single marks), and
+    /// the fairway's course by at most 90° from one line to the other (two lines side by side are no gap).
+    /// The derivation leaves such gaps where marks are missing or too far apart for a hop (Ulvsund, Stege Bugt, Bøgestrøm); a route
+    /// through them still follows the fairway.
+    /// </summary>
+    public static List<LineString> GapChords(IReadOnlyList<LineString> lines, double maxM = 5000)
+    {
+        // each end with the course out of it: from the point HeadingBaseM back along the line (or its other end)
+        var ends = new List<(Coordinate p, (double x, double y) dir, int line)>();
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var cs = lines[i].Coordinates;
+            if (cs.Length < 2) continue;
+            foreach (var pts in new[] { cs, cs.Reverse().ToArray() })
+            {
+                var k = pts.Length - 2;
+                while (k > 0 && RoutingGraphBuilder.Haversine(pts[k].Y, pts[k].X, pts[^1].Y, pts[^1].X) < HeadingBaseM) k--;
+                ends.Add((pts[^1], V(pts[k], pts[^1]), i));
+            }
+        }
+        var tree = new STRtree<int>();
+        for (var k = 0; k < ends.Count; k++) tree.Insert(new Envelope(ends[k].p), k);
+        tree.Build();
+        var deg = maxM / WaterGraphTiler.MPerDegLat;
+        var chords = new List<LineString>();
+        for (var a = 0; a < ends.Count; a++)
+        {
+            var env = new Envelope(ends[a].p); env.ExpandBy(deg / Math.Cos(ends[a].p.Y * Math.PI / 180), deg);
+            foreach (var b in tree.Query(env))
+            {
+                if (b <= a || ends[b].line == ends[a].line) continue;
+                var d = RoutingGraphBuilder.Haversine(ends[a].p.Y, ends[a].p.X, ends[b].p.Y, ends[b].p.X);
+                if (d < 1 || d > maxM) continue; // joined already, or too far
+                var c = V(ends[a].p, ends[b].p); var maxTurn = d <= 1000 ? 90 : d <= 2000 ? 60 : 45;
+                (double x, double y) on = (-ends[b].dir.x, -ends[b].dir.y);
+                if (Turn(ends[a].dir, c) <= maxTurn && Turn(c, on) <= maxTurn && Turn(ends[a].dir, on) <= 90)
+                    chords.Add(lines[ends[a].line].Factory.CreateLineString([ends[a].p.Copy(), ends[b].p.Copy()]));
+            }
+        }
+        return chords;
+    }
+
+    public static double ShoalShare(LineString line, FairwayWater water, double bandM, double shoalFloorM, double stepM = 100)
+    {
+        if (water.Floor is not { } floor) return 0;
+        int n = 0, shoal = 0, sides = (int)(bandM / 250);
+        for (var i = 1; i < line.NumPoints; i++)
+        {
+            Coordinate a = line.GetCoordinateN(i - 1), b = line.GetCoordinateN(i);
+            var (vx, vy) = V(a, b); var len = Math.Sqrt(vx * vx + vy * vy);
+            if (len == 0) continue;
+            var steps = Math.Max(1, (int)Math.Ceiling(len * WaterGraphTiler.MPerDegLat / stepM));
+            for (var k = 0; k < steps; k++)
+            {
+                var c = new Coordinate(a.X + (b.X - a.X) * (k + 0.5) / steps, a.Y + (b.Y - a.Y) * (k + 0.5) / steps);
+                for (var j = -sides; j <= sides; j++)
+                {
+                    if (j == 0) continue;
+                    var p = Shift(c, -vy / len, vx / len, j * 250);
+                    if (water.Water?.Invoke(p) == false) continue;
+                    n++;
+                    if (floor(p) is { } f && f < shoalFloorM) shoal++;
+                }
+            }
+        }
+        return n == 0 ? 0 : (double)shoal / n;
+    }
     /// <summary>The seamark types <see cref="SideOf"/> maps.</summary>
     public static readonly string[] MarkTypes = ["buoy_lateral", "beacon_lateral", "buoy_cardinal", "beacon_cardinal", "buoy_safe_water", "beacon_safe_water", "light_minor"];
 

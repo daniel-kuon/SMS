@@ -128,5 +128,19 @@ public class DepthTests
         Assert.False(marked[0].Traffic); Assert.Null(marked[0].DtmMinM); Assert.Equal(1.8288, marked[0].MinDepthM);
         Assert.True(marked[1].Traffic);
         Assert.Null(marked[2].DtmMinM); Assert.Equal(DepthLimits.UnknownCoastalFloorM, marked[2].FloorM);
+        // a buoyed zone (RoutingGraphBuilder.BlockZone): the in-band edge whose band water lies in it keeps its band, no flag, no DTM depth;
+        // the edge outside keeps the DTM depth - data, not logic (SeaGraph.Uncertain is unchanged)
+        var buoyed = F.CreatePolygon([new(10.00, 54.505), new(10.08, 54.505), new(10.08, 54.515), new(10.00, 54.515), new(10.00, 54.505)]);
+        var zoned = DepthLimits.Apply([inBand, farStrip], areas, NearLand, traffic: new TrafficAreas([cell]), dtm: dtm, zones: [buoyed]);
+        Assert.Equal(1.8288, zoned[0].MinDepthM); Assert.False(zoned[0].Traffic); Assert.Null(zoned[0].DtmMinM);
+        Assert.Equal(2.6, zoned[1].DtmMinM);
+        // band water outside the zone, deep water inside: the edge keeps its DTM depth (a zone is no hazard by mere contact)
+        var deep = F.CreatePolygon([new(9.90, 54.40), new(10.00, 54.40), new(10.00, 54.5195), new(9.90, 54.5195), new(9.90, 54.40)]);
+        var across = Edge(9, 10, 9.96, 54.51, 10.04, 54.51); // 9.96–10.00 deep (5.49 m), 10.00–10.04 the 1.83 m band
+        var deepZone = F.CreatePolygon([new(9.95, 54.505), new(9.99, 54.505), new(9.99, 54.515), new(9.95, 54.515), new(9.95, 54.505)]);
+        (Geometry, double)[] withDeep = [.. areas, (deep, 5.4864)];
+        var dtmWide = new DtmGrid(k => k == (10, 54) || k == (9, 54) ? chunk : null);
+        Assert.Equal(2.6, DepthLimits.Apply([across], withDeep, NearLand, dtm: dtmWide, zones: [deepZone])[0].DtmMinM); // 2.6 m west of 9.2 E
+        Assert.Null(DepthLimits.Apply([across], withDeep, NearLand, dtm: dtmWide, zones: [buoyed])[0].DtmMinM);
     }
 }

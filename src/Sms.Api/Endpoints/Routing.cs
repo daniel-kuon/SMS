@@ -495,7 +495,10 @@ public static class RoutingEndpoints
             await db.Database.OpenConnectionAsync(ct);
             var (marks, water) = await Fairways.InputsAsync((Npgsql.NpgsqlConnection)db.Database.GetDbConnection(), new Envelope(w - marginLng, e + marginLng, s - marginLat, n + marginLat), ct);
             var extent = Geo.Factory.ToGeometry(new Envelope(w, e, s, n)); extent.SRID = 4326;
-            var fairways = Fairways.Derive(marks, Geo.Factory, water).Where(f => extent.Intersects(f.Line.Centroid)).ToList();
+            var o = builder.Options;
+            // a single-mark line through charted shoal water is a channel zone line (Fairways.ShoalNote): buoys there mean shallows beside it
+            var fairways = Fairways.Derive(marks, Geo.Factory, water).Where(f => extent.Intersects(f.Line.Centroid))
+                .Select(f => f.Pairs == 0 && !f.Wide && o.ZoneShoalShare > 0 && Fairways.ShoalShare(f.Line, water, o.ChannelPreferenceM, o.ZoneShoalFloorM) >= o.ZoneShoalShare ? f with { Shoal = true } : f).ToList();
             // the lines, and the water between the marks of the paired lines as Fairway areas (the graph build cuts them out of the
             // channel zone and leaves them open under the strict depth rule: buoyed water, Fairways.AreaNote)
             var old = await db.RoutingCorrections.Where(c => c.Source == CorrectionSource.Derived && c.Note != null && ((c.Kind == CorrectionKind.Passage && c.Note.StartsWith("Fahrwasser")) || (c.Kind == CorrectionKind.Fairway && c.Note.StartsWith(Fairways.AreaNote))) && c.Geometry.Centroid.Intersects(extent)).ToListAsync(ct);
@@ -506,7 +509,7 @@ public static class RoutingEndpoints
                 if (f.Area is { } area) db.RoutingCorrections.Add(new RoutingCorrection { Kind = CorrectionKind.Fairway, Source = CorrectionSource.Derived, Geometry = area, Note = $"{Fairways.AreaNote}, {f.Pairs} {Fairways.PairedNote}{(f.Wide ? ", " + Fairways.WideNote : "")})", Active = true, CreatedById = current.Id });
             }
             await db.SaveChangesAsync(ct);
-            return Results.Ok(new { marks = marks.Count, created = fairways.Count, areas = fairways.Count(f => f.Area is not null), removed = old.Count, lines = fairways.Select(f => new { f.Pairs, points = f.Line.NumPoints, lengthNm = Math.Round(LengthNm(f.Line), 1) }) });
+            return Results.Ok(new { marks = marks.Count, created = fairways.Count, areas = fairways.Count(f => f.Area is not null), shoal = fairways.Count(f => f.Shoal), removed = old.Count, lines = fairways.Select(f => new { f.Pairs, points = f.Line.NumPoints, lengthNm = Math.Round(LengthNm(f.Line), 1) }) });
         });
 
         // Spec 10 §10.1: Europe-wide import from a Geofabrik PBF extract (background job with progress).

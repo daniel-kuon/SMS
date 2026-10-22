@@ -10,6 +10,7 @@
 //        or "backfill-ferry": ferry (edges along a stored ferry track, kind Ferry, within Routing:FerryCorridorM; their adjacent_depth_m/floor_m dropped) for the active graph version, without a rebuild
 //        env SMS_BENCH_CARDINALS=factor|hard: routes on the active graph with grid edges through a cardinal's danger wedge priced x factor in memory (CardinalPenaltyFactor simulated, passage edges not)
 //        env SMS_BENCH_FERRY=file: routes on the active graph with the edges along the ferry lines in the file ("lat,lng lat,lng …" per line) flagged in memory, a backfill-ferry simulated
+//        env SMS_BENCH_ZONE="shoal=<ids file>[;dump=s,w,n,e]": routes on the active graph with the buoyed-zone rule simulated in memory (shoal single-mark lines join the channel zone, the gaps' x3 cut, known-water evidence blocked in the zone); the ids file is computed when missing; dump writes the gap chords and zone outlines in the box to <out>/zone-dump.geojson
 //        env SMS_BENCH_KNOWN="dtm=<dir of ERDDAP dtm_<lat>_<lng>.nc>;traffic=<vesseldensity_04_<year>.tif>,…[;sailing=10][;isolated=1][;noflag=1][;nohazard=1][;nopull=1]": the TrafficAndDtm build in memory (traffic flag, DtmMinM, isolated-danger pricing) on the active graph
 using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
@@ -200,6 +201,7 @@ if (args.Length > 3 && args[2] == "derive-fairways")
     var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
     // a bbox larger than 2° is cut into 2° chunks, each read with the endpoint's margin and keeping the lines whose centroid it owns
     var b = args[3].Split(',').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+    var opts = sp.GetRequiredService<RoutingGraphBuilder>().Options;
     if (args.Length <= 4 || args[4] != "derived-only")
     {
         var stored = await db.RoutingCorrections.Where(c => c.Active && c.Kind == Sms.Domain.CorrectionKind.Passage && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => new { c.Geometry, c.Note }).ToListAsync();
@@ -216,7 +218,8 @@ if (args.Length > 3 && args[2] == "derive-fairways")
             var extent = Geo.Factory.ToGeometry(new NetTopologySuite.Geometries.Envelope(w, e, s, n));
             foreach (var f in Fairways.Derive(marks, Geo.Factory, water).Where(f => extent.Intersects(f.Line.Centroid)))
             {
-                Console.WriteLine($"derived {f.Pairs} pairs {f.Singles} singles: " + string.Join(" ", f.Line.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
+                var shoal = f.Pairs == 0 && !f.Wide ? FormattableString.Invariant($" shoal {Fairways.ShoalShare(f.Line, water, opts.ChannelPreferenceM, opts.ZoneShoalFloorM):0.000}") : "";
+                Console.WriteLine($"derived {f.Pairs} pairs {f.Singles} singles{shoal}: " + string.Join(" ", f.Line.Coordinates.Select(c => FormattableString.Invariant($"{c.Y:F6},{c.X:F6}"))));
                 if (f.Area is { } area) Console.WriteLine("area: " + area.AsText());
             }
         }
@@ -395,6 +398,103 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_KNOWN") is { Length: > 0 } kno
     var knownCache = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_known", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
     knownCache[version] = new Lazy<Task<KnownWater>>(() => Task.FromResult(known));
     Console.WriteLine($"known-water simulation ({knownArg}): {flagged} edges flagged traffic, {sampled} sampled in the DTM ({dtm.Chunks} chunks), {deep} DTM-deep ≥ 2.3 m, {priced} edges through isolated-danger discs ({clock.Elapsed.TotalSeconds:0} s)");
+}
+
+if (Environment.GetEnvironmentVariable("SMS_BENCH_ZONE") is { Length: > 0 } zoneArg)
+{
+    // buoyed zones (spec buoyed zones) on the active graph in memory, before derive-fairways has written the "Untiefen" notes and before a
+    // rebuild: "shoal=<file of line ids>" - the stored single-mark lines through charted shoal water (Fairways.ShoalShare >= ZoneShoalShare;
+    // computed and written to the file when it does not exist). They join the channel zone (RoutingGraphBuilder.BenchShoalIds, read by the
+    // builder's and the smoother's FairwayLinesAsync): grid edges priced by their share inside the wider zone, and with
+    // Routing:ZoneBlocksKnownWater the edges whose band water reaches into the buoyed zone (RoutingGraphBuilder.BlockZone) lose their traffic
+    // flag and DTM depth (DepthLimits.InZone)
+    var zopt = zoneArg.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(p => p.Split('=', 2)).ToDictionary(p => p[0], p => p.Length > 1 ? p[1] : "1");
+    using var scope = sp.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+    var router = scope.ServiceProvider.GetRequiredService<SeaRouter>();
+    var o = sp.GetRequiredService<RoutingGraphBuilder>().Options;
+    var clock = Stopwatch.StartNew();
+    var stored = await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == Sms.Domain.CorrectionKind.Passage && c.Source == Sms.Domain.CorrectionSource.Derived && c.Note != null && c.Note.StartsWith("Fahrwasser")).Select(c => new { c.Id, c.Geometry, c.Note }).ToListAsync();
+    var shoalFile = zopt.GetValueOrDefault("shoal");
+    if (shoalFile is not null && !File.Exists(shoalFile))
+    {
+        // the derive endpoint's rule on the stored lines, per 2° chunk of their centroids (the endpoint's margin)
+        var singles = stored.Where(c => c.Geometry is NetTopologySuite.Geometries.LineString && !c.Note!.Contains(Fairways.PairedNote) && !c.Note.Contains(Fairways.WideNote)).ToList();
+        var ids = new List<string>();
+        foreach (var chunk in singles.GroupBy(c => (lat: Math.Floor(c.Geometry.Centroid.Y / 2) * 2, lng: Math.Floor(c.Geometry.Centroid.X / 2) * 2)))
+        {
+            var mLat = 0.15; var mLng = mLat / Math.Cos((chunk.Key.lat + 1) * Math.PI / 180);
+            await db.Database.OpenConnectionAsync();
+            var (_, water) = await Fairways.InputsAsync((Npgsql.NpgsqlConnection)db.Database.GetDbConnection(), new NetTopologySuite.Geometries.Envelope(chunk.Key.lng - mLng, chunk.Key.lng + 2 + mLng, chunk.Key.lat - mLat, chunk.Key.lat + 2 + mLat), default);
+            foreach (var c in chunk)
+            {
+                var share = Fairways.ShoalShare((NetTopologySuite.Geometries.LineString)c.Geometry, water, o.ChannelPreferenceM, o.ZoneShoalFloorM);
+                Console.WriteLine(FormattableString.Invariant($"shoal share {share:0.000} {c.Id} {c.Note} {c.Geometry.Centroid.Y:F5},{c.Geometry.Centroid.X:F5}"));
+                if (share >= o.ZoneShoalShare) ids.Add(c.Id.ToString());
+            }
+            Console.WriteLine($"shoal shares: chunk {chunk.Key.lat},{chunk.Key.lng}: {chunk.Count()} single-mark lines ({clock.Elapsed.TotalSeconds:0} s)");
+        }
+        File.WriteAllLines(shoalFile, ids);
+    }
+    if (shoalFile is not null) RoutingGraphBuilder.BenchShoalIds = File.ReadAllLines(shoalFile).Where(l => l.Trim().Length > 0).Select(Guid.Parse).ToHashSet();
+    var version = await router.ActiveVersionAsync(default);
+    var g = await SeaRouter.LoadGraphAsync(new Npgsql.NpgsqlConnection(cs), version, sp.GetRequiredService<ILoggerFactory>().CreateLogger("bench"));
+    T F<T>(string name) => (T)typeof(Sms.Domain.SeaGraph).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(g)!;
+    var (allLines, zoneLines) = await RoutingGraphBuilder.FairwayLinesAsync(db);
+    var oldLines = stored.Where(c => c.Geometry is NetTopologySuite.Geometries.LineString && c.Note!.Contains(Fairways.PairedNote) && !c.Note.Contains(Fairways.WideNote)).Select(c => (NetTopologySuite.Geometries.LineString)c.Geometry).ToList(); // the graph's zone lines
+    var areas = (await db.RoutingCorrections.AsNoTracking().Where(c => c.Active && c.Kind == Sms.Domain.CorrectionKind.Fairway && !(c.Note != null && c.Note.Contains(Fairways.WideNote))).Select(c => c.Geometry).ToListAsync())
+        .SelectMany(x => x is NetTopologySuite.Geometries.Polygon pp ? [pp] : x is NetTopologySuite.Geometries.MultiPolygon mp ? mp.Geometries.OfType<NetTopologySuite.Geometries.Polygon>() : []).ToList();
+    NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Prepared.IPreparedGeometry> Tree(IEnumerable<NetTopologySuite.Geometries.Geometry> gs)
+    {
+        var t = new NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Prepared.IPreparedGeometry>();
+        foreach (var z in gs) t.Insert(z.EnvelopeInternal, NetTopologySuite.Geometries.Prepared.PreparedGeometryFactory.Prepare(z));
+        t.Build(); return t;
+    }
+    // the x3 zones: the graph's (paired lines), the builder's now (zone lines, the gaps' corridors cut out)
+    var oldZone = Tree(ChannelPreference.Zone(oldLines, areas, o.ChannelPreferenceM));
+    var newZone = Tree(ChannelPreference.Zone(zoneLines, areas, o.ChannelPreferenceM, Fairways.GapChords(allLines), o.ZoneBlockCorridorM));
+    var block = o.ZoneBlocksKnownWater ? Tree(RoutingGraphBuilder.BlockZone(allLines, zoneLines, areas, o.ChannelPreferenceM, o.ZoneBlockCorridorM)) : null;
+    if (zopt.TryGetValue("dump", out var dumpBox))
+    {
+        // "dump=s,w,n,e": the fairway gaps' chords and the buoyed-zone polygons in the box as GeoJSON lines (rendering)
+        var bb = dumpBox.Split(',').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        var box = Geo.Factory.ToGeometry(new NetTopologySuite.Geometries.Envelope(bb[1], bb[3], bb[0], bb[2]));
+        string Line(NetTopologySuite.Geometries.Coordinate[] c, string col, int dash) => $"{{\"type\":\"Feature\",\"properties\":{{\"col\":\"{col}\",\"id\":\"\",\"dash\":{dash}}},\"geometry\":{{\"type\":\"LineString\",\"coordinates\":[{string.Join(",", c.Select(x => FormattableString.Invariant($"[{x.X:F6},{x.Y:F6}]")))}]}}}}";
+        var feats = Fairways.GapChords(allLines).Where(c => c.Intersects(box)).Select(c => Line(c.Coordinates, "#7b3294", 0)).ToList();
+        if (block is not null) foreach (var z in block.Query(box.EnvelopeInternal)) for (var k = 0; k < z.Geometry.NumGeometries; k++) if (z.Geometry.GetGeometryN(k) is NetTopologySuite.Geometries.Polygon pz) foreach (var ring in new[] { pz.ExteriorRing }.Concat(pz.InteriorRings)) feats.Add(Line(ring.Coordinates, "#c51b7d", 1));
+        File.WriteAllText(Path.Combine(outDir ?? ".", "zone-dump.geojson"), $"{{\"type\":\"FeatureCollection\",\"features\":[{string.Join(",", feats)}]}}");
+    }
+    // the band water DepthLimits.InZone samples: depth areas with a floor below DtmGrid.MaxFloorM
+    var depths = new NetTopologySuite.Index.Strtree.STRtree<(NetTopologySuite.Geometries.Prepared.IPreparedGeometry prepared, double depth)>();
+    if (block is not null)
+    {
+        await db.Database.OpenConnectionAsync(); var cn = (Npgsql.NpgsqlConnection)db.Database.GetDbConnection();
+        await using var rd = await new Npgsql.NpgsqlCommand($"SELECT geom, min_depth_m FROM routing_depth WHERE min_depth_m < {DtmGrid.MaxFloorM.ToString(System.Globalization.CultureInfo.InvariantCulture)}", cn) { CommandTimeout = 3600 }.ExecuteReaderAsync();
+        while (await rd.ReadAsync()) { var dg = rd.GetFieldValue<NetTopologySuite.Geometries.Geometry>(0); depths.Insert(dg.EnvelopeInternal, (NetTopologySuite.Geometries.Prepared.PreparedGeometryFactory.Prepare(dg), rd.GetDouble(1))); }
+    }
+    depths.Build();
+    var chartedDepth = F<float[]>("_depth");
+    var cost = (float[])F<float[]>("_cost").Clone(); var trafficFlag = (bool[])(F<bool[]?>("_traffic") ?? new bool[g.EdgeCount]).Clone(); var dtmMin = (float[])(F<float[]?>("_dtmMin") ?? Enumerable.Repeat(float.NaN, g.EdgeCount).ToArray()).Clone();
+    int blocked = 0, priced = 0;
+    Parallel.For(0, g.EdgeCount, e =>
+    {
+        var cs0 = g.Coords(e); if (cs0.Length < 2 || cs0.Any(c => double.IsNaN(c.X) || double.IsNaN(c.Y))) return;
+        var line = Geo.Factory.CreateLineString(cs0);
+        if (!g.IsPassageNode(g.Source(e)) && !g.IsPassageNode(g.Target(e)) && newZone.Query(line.EnvelopeInternal) is var nh && oldZone.Query(line.EnvelopeInternal) is var oh && nh.Count + oh.Count > 0)
+        {
+            // ChannelPreference.Apply with the wider line set and the gaps cut out: the graph's cost carries the old share's factor
+            var s1 = nh.Count > 0 ? ChannelPreference.ShareInside(line, nh) : 0; var s0 = oh.Count > 0 ? ChannelPreference.ShareInside(line, oh) : 0;
+            if (s1 != s0) { cost[e] = (float)(cost[e] * (1 + s1 * (o.ChannelPenaltyFactor - 1)) / (1 + s0 * (o.ChannelPenaltyFactor - 1))); Interlocked.Increment(ref priced); }
+        }
+        if (block is null || (!trafficFlag[e] && float.IsNaN(dtmMin[e]))) return;
+        if (block.Query(line.EnvelopeInternal) is not { Count: > 0 } bh || !DepthLimits.InZone(line, bh, depths, charted: !float.IsNaN(chartedDepth[e]))) return;
+        trafficFlag[e] = false; dtmMin[e] = float.NaN; Interlocked.Increment(ref blocked);
+    });
+    var sim = new Sms.Domain.SeaGraph(F<double[]>("_x"), F<double[]>("_y"), F<int[]>("_src"), F<int[]>("_tgt"), cost, F<float[]>("_depth"), F<float[]>("_clear"), F<int[]>("_geomStart"), F<double[]>("_geom"), F<int>("_firstPassage"), F<bool[]?>("_isolated"),
+        assumed: F<bool[]?>("_assumed"), adjacent: F<float[]?>("_adjacent"), floor: F<float[]?>("_floor"), unknownBridge: F<bool[]?>("_unknownBridge"), ferry: F<bool[]?>("_ferry"), traffic: trafficFlag, dtmMin: dtmMin);
+    var graphs = (System.Collections.IDictionary)typeof(SeaRouter).GetField("_graphs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!;
+    graphs[version] = new Lazy<Task<Sms.Domain.SeaGraph>>(() => Task.FromResult(sim));
+    Console.WriteLine($"zone simulation ({zoneArg}): {allLines.Count} derived lines, {zoneLines.Count} zone lines ({oldLines.Count} in the graph's zone, {RoutingGraphBuilder.BenchShoalIds.Count} shoal ids), {areas.Count} areas; {blocked} edges lost their known-water evidence, {priced} grid edges repriced ({clock.Elapsed.TotalSeconds:0} s)");
 }
 
 (string name, double lat1, double lng1, double lat2, double lng2, double draft, double? minDepth, double? warnDepth, double? airDraft, bool avoidUnknownBridges)[] routes =

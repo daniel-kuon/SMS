@@ -32,4 +32,29 @@ public class ChannelPreferenceTests
         var area = F.CreatePolygon([new(10.14, 54.41), new(10.16, 54.41), new(10.16, 54.44), new(10.14, 54.44), new(10.14, 54.41)]);
         Assert.Equal(beside.Cost, ChannelPreference.Apply([beside], [fairway], [area], 1500, 1.5)[0].Cost, 3);
     }
+
+    [Fact]
+    public void Block_zone_keeps_the_wide_corridor_free()
+    {
+        var line = F.CreateLineString([new Coordinate(10.15, 54.40), new Coordinate(10.15, 54.45)]); // a zone line running north
+        var mPerDegLng = WaterGraphTiler.MPerDegLat * Math.Cos(54.425 * Math.PI / 180);
+        Point East(double m) => F.CreatePoint(new Coordinate(10.15 + m / mPerDegLng, 54.425));
+        bool Inside(List<Polygon> zone, double m) => zone.Any(z => z.Contains(East(m)));
+        var zone = RoutingGraphBuilder.BlockZone([line], [line], [], 1500, 500);
+        Assert.False(Inside(zone, 300)); Assert.True(Inside(zone, 700)); Assert.False(Inside(zone, 1700));
+        Assert.True(Inside(RoutingGraphBuilder.BlockZone([line], [line], [], 1500, 150), 300));
+        // a line that is no zone line (in allLines only) still cuts its corridor out of the first line's zone
+        var other = F.CreateLineString([new Coordinate(10.15 + 1000 / mPerDegLng, 54.41), new Coordinate(10.15 + 1000 / mPerDegLng, 54.44)]);
+        var both = RoutingGraphBuilder.BlockZone([line, other], [line], [], 1500, 500);
+        Assert.False(Inside(both, 700)); Assert.False(Inside(both, 1200)); Assert.True(Inside(zone, 1200));
+        // a fairway with a 3 km gap (two lines that continue each other): the water along the gap is fairway, neither blocked nor x3
+        var south = F.CreateLineString([new Coordinate(10.15, 54.40), new Coordinate(10.15, 54.42)]);
+        var north = F.CreateLineString([new Coordinate(10.15, 54.447), new Coordinate(10.15, 54.47)]);
+        Point Gap(double m) => F.CreatePoint(new Coordinate(10.15 + m / mPerDegLng, 54.425)); // 550 m past the southern line's end
+        var gapZone = RoutingGraphBuilder.BlockZone([south, north], [south, north], [], 1500, 300);
+        Assert.DoesNotContain(gapZone, z => z.Contains(Gap(200))); Assert.Contains(gapZone, z => z.Contains(Gap(700)));
+        var priced = ChannelPreference.Zone([south, north], [], 1500, Fairways.GapChords([south, north]), 300);
+        Assert.DoesNotContain(priced, z => z.Contains(Gap(200))); Assert.Contains(priced, z => z.Contains(Gap(700)));
+        Assert.Contains(ChannelPreference.Zone([south, north], [], 1500), z => z.Contains(Gap(200))); // without the gaps: x3 there
+    }
 }
