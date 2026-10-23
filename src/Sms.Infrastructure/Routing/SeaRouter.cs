@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using NetTopologySuite.Algorithm;
 using NetTopologySuite.Geometries;
 using NetTopologySuite.Geometries.Prepared;
 using NetTopologySuite.Index.Strtree;
@@ -40,6 +41,30 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     }
 
     public async Task<int> ActiveVersionAsync(CancellationToken ct) => (await StatusAsync(ct)).ActiveVersion;
+
+    /// <summary>
+    /// Loads what the first route of the active graph version would build lazily (the graph, the smoothing statics, the traffic cells, the
+    /// piers; no DTM chunk) - 60-70 s that would otherwise fall on the first request. Runs in its own scope (the statics build uses this
+    /// router's DbContext for its whole length); requests meanwhile await the same lazy tasks. Never throws.
+    /// </summary>
+    public static async Task WarmAsync(IServiceScopeFactory scopes, ILogger logger, CancellationToken ct = default)
+    {
+        var clock = Stopwatch.StartNew();
+        try
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            var router = scope.ServiceProvider.GetRequiredService<SeaRouter>();
+            var v = await router.ActiveVersionAsync(ct);
+            if (v == 0) return;
+            await router.GraphAsync(v);
+            await router.StaticsAsync(v, ct);
+            await router.KnownAsync(v);
+            await router.PiersAsync();
+            logger.LogInformation("Routing warm-up of graph v{Version} done in {Seconds:0.0} s", v, clock.Elapsed.TotalSeconds);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { } // shutting down
+        catch (Exception ex) { logger.LogWarning(ex, "Routing warm-up failed after {Seconds:0.0} s (the first route builds it)", clock.Elapsed.TotalSeconds); }
+    }
     /// <summary>Routing:DefaultDraftM (null when 0 = off).</summary>
     public double? DefaultDraftM => builder.Options.DefaultDraftM > 0 ? builder.Options.DefaultDraftM : null;
     /// <summary>The minimum depth for a route: the ship's own value as given, else draft + Routing:DepthSafetyMarginM (DepthBands.MinDepth).</summary>
@@ -868,20 +893,22 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         bool InUncertain(LineString seg) => UncertainM(seg, uncertain, 1) > 0;
         // a sample point in the tree's water outside the harbour approach and the known-navigable water the graph exempts too: ferry
         // corridors, dense sailing traffic cells, measured DTM cells deep enough - the last two not in a buoyed zone (as in the graph)
+        var blockZone = statics.BlockZone.Count > 0; // STRtree.Count walks the whole tree: once per route, not per sample
         bool UncertainAt(Coordinate c, List<IPreparedGeometry> hits)
         {
             if (RoutingGraphBuilder.Haversine(c.Y, c.X, start.Y, start.X) <= approachM || RoutingGraphBuilder.Haversine(c.Y, c.X, goal.Y, goal.X) <= approachM) return false;
             var pt = Geo.Factory.CreatePoint(c);
             if (!hits.Any(u => u.Contains(pt)) || statics.Ferries.Contains(c)) return false;
-            if (statics.BlockZone.Count > 0 && statics.BlockZone.Query(pt.EnvelopeInternal).Any(z => z.Contains(pt))) return true;
+            if (blockZone && statics.BlockZone.Query(pt.EnvelopeInternal).Any(z => z.Contains(pt))) return true;
             return !known.Traffic.Contains(c) && !(known.Dtm.Depth(c.Y, c.X) >= minDepthM);
         }
-        // metres of the leg (samples every ~25 m) in such water; stops at the first hit when stopM is 1
-        double UncertainM(LineString seg, STRtree<IPreparedGeometry> tree, int stopM = int.MaxValue)
+        // metres of the leg (samples every ~25 m) in such water; stops once the count reaches stopM (at the first hit when stopM is 1), the
+        // value is then ≥ stopM, not the leg's metres
+        double UncertainM(LineString seg, STRtree<IPreparedGeometry> tree, double stopM = double.PositiveInfinity)
         {
-            var hits = tree.Query(seg.EnvelopeInternal).Where(u => u.Intersects(seg)).ToList();
-            if (hits.Count == 0) return 0;
             var a = seg.GetCoordinateN(0); var b = seg.GetCoordinateN(1);
+            var hits = tree.Query(seg.EnvelopeInternal).Where(u => MayHit(u, a, b) && u.Intersects(seg)).ToList();
+            if (hits.Count == 0) return 0;
             // ponytail: sampled every ~25 m, a sliver of uncertain water narrower than that slips through
             var len = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X); var n = Math.Max(1, (int)Math.Ceiling(len / 25));
             var inside = 0;
@@ -889,7 +916,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 if (UncertainAt(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n), hits) && ++inside * len / n >= stopM) break;
             return inside * len / n;
         }
-        double UncertainLegM(Coordinate p, Coordinate q) => UncertainM(Geo.Factory.CreateLineString([p, q]), uncertainAll);
+        // capped no-worse measure (StringPull.NoWorse): stops past capM + 1, which compares > capM like the full value
+        double UncertainLegM(Coordinate p, Coordinate q, double capM) => UncertainM(Geo.Factory.CreateLineString([p, q]), uncertainAll, capM + 1);
         // the stretches of the points in the band: one piece per run of at least two uncertain samples (a lone sample is a sliver), its
         // middle sample, the band floor and the run's metres - the "uncertainDepth" warnings of the final line
         List<DepthBands.Piece> UncertainPieces(IReadOnlyList<Coordinate> pts)
@@ -961,8 +989,8 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         // (the graph path's own links and grid legs ride through it: a link up to a fairway junction and back, the cut across the spike
         // crosses the water the spike already crosses). The pull keys the budget by the path's points (StringPull.NoWorse), Tighten and
         // Slide carry the same rule per corner; the local detours (land cuts, piers) keep the hard zone rule, their new points have no budget
-        double ZoneM(Coordinate p, Coordinate q) => UnchartedZoneM(Geo.Factory.CreateLineString([p, q]), zone, deep);
-        var measures = new List<(Func<Coordinate, Coordinate, double> m, double slack)>();
+        double ZoneM(Coordinate p, Coordinate q, double capM) => UnchartedZoneM(Geo.Factory.CreateLineString([p, q]), zone, deep, stopM: capM + 1);
+        var measures = new List<(Func<Coordinate, Coordinate, double, double> m, double slack)>();
         if (!strictDepth && uncertainAll.Count > 0) measures.Add((UncertainLegM, 25));
         if (zone.Count > 0) measures.Add((ZoneM, 50));
         var noWorse = measures.Select(x => x.m).ToList();
@@ -1002,11 +1030,12 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         var clearM = builder.Options.CoastClearanceM;
         // the coast in a local metric frame (longitude scaled by cos of the route's middle latitude: planar distance x MPerDegLat is
         // metres within ~1 %), so a leg's distance to the coast is one indexed query, no sampling where nothing is exempt
-        var coast = new STRtree<Lazy<IndexedFacetDistance>>();
+        // (with each piece's box in that frame: a piece whose box is farther than the clearance is never measured, and its facet index never built)
+        var coast = new STRtree<(Envelope env, Envelope box, Lazy<IndexedFacetDistance> facets)>();
         var cosE = Math.Cos(env.Centre.Y * Math.PI / 180);
         var toMetric = new NetTopologySuite.Geometries.Utilities.AffineTransformation().Scale(cosE, 1);
         Coordinate Scaled(Coordinate c) => new(c.X * cosE, c.Y);
-        foreach (var g in land) coast.Insert(g.Geom.EnvelopeInternal, new Lazy<IndexedFacetDistance>(() => new IndexedFacetDistance(toMetric.Transform(g.Geom))));
+        foreach (var g in land) { var e = g.Geom.EnvelopeInternal; coast.Insert(e, (e, new Envelope(e.MinX * cosE, e.MaxX * cosE, e.MinY, e.MaxY), new Lazy<IndexedFacetDistance>(() => new IndexedFacetDistance(toMetric.Transform(g.Geom))))); }
         coast.Build();
         // where the graph path itself crosses land (a link across a mole, a channel skeleton over a spit), the pull must stay free to
         // get rid of it: no clearance within ClearEndM of such a segment (Langedrag→Marstrand kept a 45 m land crossing otherwise)
@@ -1021,10 +1050,13 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         corridor.Build(); rough.Build();
         Coordinate first = path[0], last = path[^1];
         static Envelope Around(Coordinate x, double m) { var d = m / WaterGraphTiler.MPerDegLat; var dx = d / Math.Cos(x.Y * Math.PI / 180); return new Envelope(x.X - dx, x.X + dx, x.Y - d, x.Y + d); }
-        bool NearCoast(Coordinate x, double m)
+        // the coast pieces in reach of a sample x on a leg: of the pieces within m of the whole leg (the candidates), those its box
+        // query finds (exactly the pieces a query of the whole coast round x would measure: no other piece can lie within m of a point
+        // on the leg)
+        static bool NearCoast(List<(Envelope env, Envelope box, IndexedFacetDistance facets)> candidates, Coordinate xs, Envelope around, double m)
         {
-            var pt = Geo.Factory.CreatePoint(Scaled(x));
-            foreach (var f in coast.Query(Around(x, m))) if (f.Value.Distance(pt) * WaterGraphTiler.MPerDegLat <= m) return true;
+            var pt = Geo.Factory.CreatePoint(xs);
+            foreach (var f in candidates) if (f.env.Intersects(around) && !Beyond(BoxDistance(f.box, xs, xs), m) && f.facets.Distance(pt) * WaterGraphTiler.MPerDegLat <= m) return true;
             return false;
         }
         static bool Within(STRtree<LineSegment> tree, Coordinate x, double m)
@@ -1038,24 +1070,31 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
             var env = new Envelope(p, q); env.ExpandToInclude(Around(p, clearM)); env.ExpandToInclude(Around(q, clearM));
             var near = coast.Query(env);
             if (near.Count == 0) return false;
-            var seg = Geo.Factory.CreateLineString([Scaled(p), Scaled(q)]);
-            if (near.All(f => f.Value.Distance(seg) * WaterGraphTiler.MPerDegLat > clearM)) return false;
+            Coordinate ps = Scaled(p), qs = Scaled(q); var seg = Geo.Factory.CreateLineString([ps, qs]);
+            if (near.All(f => Beyond(BoxDistance(f.box, ps, qs), clearM) || f.facets.Value.Distance(seg) * WaterGraphTiler.MPerDegLat > clearM)) return false;
             if (!exempt) return true; // nothing is exempt: the leg's distance decides
             // ponytail: sampled every ~20 m (a headland between two samples is passed at >= clearance - 10 m); exact buffers per route are slower
+            // the candidates: pieces within the clearance of the leg (a micrometre of margin for the rounding of a sample's position), from a
+            // box that holds every sample's own query box (Around at the sample's latitude); a sample far from all of them is passed at once
+            var wide = new Envelope(p, q); wide.ExpandToInclude(Around(p, 2 * clearM)); wide.ExpandToInclude(Around(q, 2 * clearM));
+            var candidates = new List<(Envelope, Envelope, IndexedFacetDistance)>();
+            foreach (var (e, box, facets) in coast.Query(wide))
+                if (!Beyond(BoxDistance(box, ps, qs), clearM) && facets.Value.Distance(seg) * WaterGraphTiler.MPerDegLat <= clearM + 1e-6) candidates.Add((e, box, facets.Value));
             var n = Math.Max(1, (int)Math.Ceiling(RoutingGraphBuilder.Haversine(p.Y, p.X, q.Y, q.X) / 20));
             for (var k = 0; k <= n; k++)
             {
                 var x = new Coordinate(p.X + (q.X - p.X) * k / n, p.Y + (q.Y - p.Y) * k / n);
+                if (!NearCoast(candidates, Scaled(x), Around(x, clearM), clearM)) continue;
                 if (exempt && (RoutingGraphBuilder.Haversine(x.Y, x.X, first.Y, first.X) < ClearEndM || RoutingGraphBuilder.Haversine(x.Y, x.X, last.Y, last.X) < ClearEndM || Within(corridor, x, ClearCorridorM) || Within(rough, x, ClearEndM))) continue;
-                if (NearCoast(x, clearM)) return true;
+                return true;
             }
             return false;
         }
         bool Obstructed(Coordinate p, Coordinate q, bool marks = true)
         {
             var seg = Geo.Factory.CreateLineString([p, q]);
-            foreach (var g in index.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
-            if (marks) foreach (var g in cardinals.Query(seg.EnvelopeInternal)) if (g.Intersects(seg)) return true;
+            foreach (var g in index.Query(seg.EnvelopeInternal)) if (MayHit(g, p, q) && g.Intersects(seg)) return true;
+            if (marks) foreach (var g in cardinals.Query(seg.EnvelopeInternal)) if (MayHit(g, p, q) && g.Intersects(seg)) return true;
             return InUncertain(seg);
         }
         bool ObstructedOrZone(Coordinate p, Coordinate q, bool marks = true) => Obstructed(p, q, marks) || InUnchartedZone(Geo.Factory.CreateLineString([p, q]), zone, deep);
@@ -1109,7 +1148,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         {
             // vertex slide: the pull's own blockers; per corner no more metres of uncharted water (and, after a relaxed search, of the
             // uncertain band) than the corner's own legs had
-            var worse = new List<Func<Coordinate, Coordinate, double>> { (p, q) => UnchartedM(p, q, tightDeep, 25) };
+            var worse = new List<Func<Coordinate, Coordinate, double, double>> { (p, q, capM) => UnchartedM(p, q, tightDeep, 25, stopM: capM + 1) };
             worse.AddRange(noWorse);
             var slideTests = 0L;
             (result, resultFixed) = StringPull.Slide(result, resultFixed, (p, q) => { slideTests++; return chamferBlocked(p, q); }, worse, builder.Options.PassageTrimM, builder.Options.SlidePasses);
@@ -1138,7 +1177,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
                 if (!Charted(u, w, tightDeep, 25)) reasons.Add("notcharted");
                 logger.LogInformation("corner {I} {Lat},{Lng} turn {Turn} saves {Save} m: {Reasons}", i, v.Y.ToString("F5", System.Globalization.CultureInfo.InvariantCulture), v.X.ToString("F5", System.Globalization.CultureInfo.InvariantCulture), Math.Round(t), Math.Round(RoutingGraphBuilder.Haversine(u.Y, u.X, v.Y, v.X) + RoutingGraphBuilder.Haversine(v.Y, v.X, w.Y, w.X) - RoutingGraphBuilder.Haversine(u.Y, u.X, w.Y, w.X)), reasons.Count == 0 ? "FREE" : string.Join(" ", reasons));
             }
-        Lap("smooth-tighten");
+        Lap("smooth-corners"); // the corner log (SMS_ROUTE_STAGES), not Tighten's time again
         var pieces = uncertainAll.Count > 0 ? UncertainPieces(result) : [];
         Lap("smooth-warn");
         return (result, pieces);
@@ -1177,6 +1216,23 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         return cuts;
     }
 
+    /// <summary>Exact pre-tests before a prepared geometry's own (far dearer) test: a straight leg that misses a geometry's box misses the
+    /// geometry - a long leg's box holds hundreds of skerries, most of them nowhere near the leg itself.</summary>
+    private static bool MayHit(IPreparedGeometry g, Coordinate a, Coordinate b) => new RectangleLineIntersector(g.Geometry.EnvelopeInternal).Intersects(a, b);
+
+    /// <summary>Planar distance (degrees) from the segment a–b to a box: a lower bound of its distance to anything inside the box.</summary>
+    private static double BoxDistance(Envelope box, Coordinate a, Coordinate b)
+    {
+        if (new RectangleLineIntersector(box).Intersects(a, b)) return 0;
+        var d = Math.Min(box.Distance(new Envelope(a)), box.Distance(new Envelope(b)));
+        foreach (var c in new[] { new Coordinate(box.MinX, box.MinY), new Coordinate(box.MinX, box.MaxY), new Coordinate(box.MaxX, box.MinY), new Coordinate(box.MaxX, box.MaxY) })
+            d = Math.Min(d, DistanceComputer.PointToSegment(c, a, b));
+        return d;
+    }
+
+    /// <summary>A box distance (degrees, metric frame) clearly beyond m metres (a micrometre of margin for the rounding of the two computations).</summary>
+    private static bool Beyond(double boxDeg, double m) => boxDeg * WaterGraphTiler.MPerDegLat > m + 1e-6;
+
     private const double StraightPassageLandM = 20;
     /// <summary>A link from a passage end that crosses more land than this before reaching water (a passage ending in inland water the
     /// coastline counts as land, linked across an isthmus) is penalized like a link across a mole; the NOK lock approaches at Holtenau are 572 m.</summary>
@@ -1189,8 +1245,9 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
     /// <summary>True when every sample of the leg (every ~stepM) lies in a deep-enough depth area.</summary>
     private static bool Charted(Coordinate a, Coordinate b, STRtree<IPreparedGeometry> deep, double stepM = 100) => UnchartedM(a, b, deep, stepM, stop: true) == 0;
 
-    /// <summary>Metres of the leg (samples every ~stepM) outside every deep-enough depth area.</summary>
-    private static double UnchartedM(Coordinate a, Coordinate b, STRtree<IPreparedGeometry> deep, double stepM = 100, bool stop = false)
+    /// <summary>Metres of the leg (samples every ~stepM) outside every deep-enough depth area; stops at the first such sample (stop) or once the
+    /// count reaches stopM (the value is then ≥ stopM, not the leg's metres).</summary>
+    private static double UnchartedM(Coordinate a, Coordinate b, STRtree<IPreparedGeometry> deep, double stepM = 100, bool stop = false, double stopM = double.PositiveInfinity)
     {
         var len = RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X); var n = Math.Max(1, (int)Math.Ceiling(len / stepM));
         var outside = 0;
@@ -1198,13 +1255,14 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         {
             var c = new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n);
             var pt = Geo.Factory.CreatePoint(c);
-            if (!deep.Query(new Envelope(c)).Any(d => d.Contains(pt)) && ++outside > 0 && stop) break;
+            if (!deep.Query(new Envelope(c)).Any(d => d.Contains(pt)) && (++outside > 0 && stop || outside * len / n >= stopM)) break;
         }
         return outside * len / n;
     }
 
-    /// <summary>Metres of the leg (samples every ~stepM) inside the channel zone and outside every deep-enough depth area.</summary>
-    public static double UnchartedZoneM(LineString seg, STRtree<IPreparedGeometry> zone, STRtree<IPreparedGeometry> deep, double stepM = 50)
+    /// <summary>Metres of the leg (samples every ~stepM) inside the channel zone and outside every deep-enough depth area; stops once the count
+    /// reaches stopM (the value is then ≥ stopM, not the leg's metres).</summary>
+    public static double UnchartedZoneM(LineString seg, STRtree<IPreparedGeometry> zone, STRtree<IPreparedGeometry> deep, double stepM = 50, double stopM = double.PositiveInfinity)
     {
         var hits = zone.Query(seg.EnvelopeInternal);
         if (hits.Count == 0 || !hits.Any(z => z.Intersects(seg))) return 0;
@@ -1215,7 +1273,7 @@ public sealed class SeaRouter(SmsDbContext db, RoutingGraphBuilder builder, ILog
         {
             var c = new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n);
             var pt = Geo.Factory.CreatePoint(c);
-            if (hits.Any(z => z.Contains(pt)) && !deep.Query(new Envelope(c)).Any(d => d.Contains(pt))) inside++;
+            if (hits.Any(z => z.Contains(pt)) && !deep.Query(new Envelope(c)).Any(d => d.Contains(pt)) && ++inside * len / n >= stopM) break;
         }
         return inside * len / n;
     }

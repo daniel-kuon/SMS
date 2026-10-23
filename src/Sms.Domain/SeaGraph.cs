@@ -490,20 +490,22 @@ public static class StringPull
     /// "No worse than before" budgets for the pull: per measure (metres per leg of what the route must not get more of, with a slack of
     /// about one sample), a leg p → q is blocked when it measures more than the path's own legs between p and q. Keyed by the path's point
     /// objects (the pull hands them back); a leg whose end is not a path point (a chamfer's, a detour's new point) is not judged here.
+    /// A measure (p, q, capM) may stop counting once it exceeds capM (then it returns some value above capM, not the leg's metres): the
+    /// path's own legs are measured with capM = ∞, a tested leg with its budget + slack (only compared with <c>&gt;</c>, so the verdict is the same).
     /// </summary>
-    public static Func<Coordinate, Coordinate, bool> NoWorse(IReadOnlyList<Coordinate> pts, IReadOnlyList<(Func<Coordinate, Coordinate, double> m, double slack)> measures)
+    public static Func<Coordinate, Coordinate, bool> NoWorse(IReadOnlyList<Coordinate> pts, IReadOnlyList<(Func<Coordinate, Coordinate, double, double> m, double slack)> measures)
     {
         if (measures.Count == 0 || pts.Count == 0) return (_, _) => false;
         var ats = measures.Select(x =>
         {
             var at = new Dictionary<Coordinate, double>(ReferenceEqualityComparer.Instance); var sum = 0.0; at[pts[0]] = 0;
-            for (var k = 1; k < pts.Count; k++) { sum += x.m(pts[k - 1], pts[k]); at[pts[k]] = sum; }
+            for (var k = 1; k < pts.Count; k++) { sum += x.m(pts[k - 1], pts[k], double.PositiveInfinity); at[pts[k]] = sum; }
             return at;
         }).ToArray();
         return (p, q) =>
         {
             for (var i = 0; i < ats.Length; i++)
-                if (ats[i].TryGetValue(p, out var a) && ats[i].TryGetValue(q, out var b) && measures[i].m(p, q) > Math.Abs(b - a) + measures[i].slack) return true;
+                if (ats[i].TryGetValue(p, out var a) && ats[i].TryGetValue(q, out var b) && measures[i].m(p, q, Math.Abs(b - a) + measures[i].slack) > Math.Abs(b - a) + measures[i].slack) return true;
             return false;
         };
     }
@@ -533,8 +535,8 @@ public static class StringPull
     /// <param name="clearM">A chamfer keeps this far off what blocks it: the same leg shifted by clearM away from v must be free too (a leg
     /// found by bisection would touch the coast).</param>
     /// <param name="worse">Optional, as in <see cref="Slide"/>: per leg, metres of what the route must not get more of; the chamfer (or the leg that drops v)
-    /// may not exceed the corner's two old legs in any of them.</param>
-    public static (List<Coordinate> points, List<bool> fixedSeg) Tighten(IReadOnlyList<Coordinate> points, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, int passes = 4, double minGainM = 10, double clearM = 20, IReadOnlyList<Func<Coordinate, Coordinate, double>>? worse = null)
+    /// may not exceed the corner's two old legs in any of them. Capped like <see cref="NoWorse"/>'s measures.</param>
+    public static (List<Coordinate> points, List<bool> fixedSeg) Tighten(IReadOnlyList<Coordinate> points, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, int passes = 4, double minGainM = 10, double clearM = 20, IReadOnlyList<Func<Coordinate, Coordinate, double, double>>? worse = null)
     {
         var p = points.ToList(); var fx = fixedSeg.ToList();
         static double D(Coordinate a, Coordinate b) => SeaGraph.Haversine(a.Y, a.X, b.Y, b.X);
@@ -547,8 +549,8 @@ public static class StringPull
                 if (fx[i - 1] || fx[i]) continue;
                 Coordinate u = p[i - 1], v = p[i], w = p[i + 1];
                 if (D(u, v) + D(v, w) - D(u, w) < minGainM) continue;
-                var budget = worse?.Select(m => m(u, v) + m(v, w) + 1).ToArray();
-                bool Worse(Coordinate a, Coordinate b) => budget is not null && worse!.Where((m, k) => m(a, b) > budget[k]).Any();
+                var budget = worse?.Select(m => m(u, v, double.PositiveInfinity) + m(v, w, double.PositiveInfinity) + 1).ToArray();
+                bool Worse(Coordinate a, Coordinate b) => budget is not null && worse!.Where((m, k) => m(a, b, budget[k]) > budget[k]).Any();
                 if (!blocked(u, w) && !Worse(u, w)) { p.RemoveAt(i); fx.RemoveAt(i); i--; changed = true; continue; }
                 // the unit normal of u→w pointing away from v (local metric frame), as a shift in degrees
                 var cos = Math.Cos(v.Y * Math.PI / 180);
@@ -581,8 +583,9 @@ public static class StringPull
     /// </summary>
     /// <param name="blocked">The leg test of the final route (land, depth, zone, cardinals, piers, coast clearance).</param>
     /// <param name="worse">Optional: per leg, metres of what the route must not get more of (uncharted water, an uncertain band): the two moved
-    /// legs together may not exceed the corner's two old legs in any of them (no worse than before, where the pull's blockers allow it).</param>
-    public static (List<Coordinate> points, List<bool> fixedSeg) Slide(IReadOnlyList<Coordinate> points, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, IReadOnlyList<Func<Coordinate, Coordinate, double>>? worse = null, double trimM = 3000, int passes = 8, double minGainM = 1, double clearM = 20)
+    /// legs together may not exceed the corner's two old legs in any of them (no worse than before, where the pull's blockers allow it).
+    /// Capped like <see cref="NoWorse"/>'s measures: the second leg is asked with what the first left of the budget.</param>
+    public static (List<Coordinate> points, List<bool> fixedSeg) Slide(IReadOnlyList<Coordinate> points, IReadOnlyList<bool> fixedSeg, Func<Coordinate, Coordinate, bool> blocked, IReadOnlyList<Func<Coordinate, Coordinate, double, double>>? worse = null, double trimM = 3000, int passes = 8, double minGainM = 1, double clearM = 20)
     {
         var p = points.ToList(); var fx = fixedSeg.ToList();
         static double D(Coordinate a, Coordinate b) => SeaGraph.Haversine(a.Y, a.X, b.Y, b.X);
@@ -611,8 +614,8 @@ public static class StringPull
                 var before = D(a, b) + D(b, c);
                 if (before - D(a, c) < minGainM) continue;
                 // a move is tested leg by leg; the no-worse budgets are checked on the whole corner (both new legs) once a move is found
-                var budget = worse?.Select(w => w(a, b) + w(b, c) + 1).ToArray();
-                bool Worse(Coordinate q) => budget is not null && worse!.Where((w, k) => w(a, q) + w(q, c) > budget[k]).Any();
+                var budget = worse?.Select(w => w(a, b, double.PositiveInfinity) + w(b, c, double.PositiveInfinity) + 1).ToArray();
+                bool Worse(Coordinate q) => budget is not null && worse!.Where((w, k) => { var m = w(a, q, budget[k]); return m > budget[k] || m + w(q, c, budget[k] - m) > budget[k]; }).Any();
                 // candidates: target, the farthest parameter allowed, which legs the move changes
                 var cands = new List<(Coordinate target, double maxT, bool testA, bool testC)>();
                 if (!fa && !fc)

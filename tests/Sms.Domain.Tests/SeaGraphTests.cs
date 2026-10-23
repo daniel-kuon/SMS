@@ -617,7 +617,7 @@ public class StringPullTests
     [Fact]
     public void Slide_moved_legs_must_be_charted_unless_the_corner_was_not()
     {
-        static double Uncharted(Coordinate u, Coordinate v) => u.Y < 54.02 && v.Y < 54.02 ? 1000 : 0; // a leg wholly south of y = 2 counts as 1 km uncharted
+        static double Uncharted(Coordinate u, Coordinate v, double _) => u.Y < 54.02 && v.Y < 54.02 ? 1000 : 0; // a leg wholly south of y = 2 counts as 1 km uncharted
         var p = Line((0, 0), (2, 3), (4, 0)); // both legs reach charted water, the chord does not
         var (t, _) = StringPull.Slide(p, [false, false], Open, [Uncharted]);
         Assert.Equal(3, t.Count); Assert.InRange(t[1].Y, 54.02, 54.0205);
@@ -628,7 +628,7 @@ public class StringPullTests
     [Fact]
     public void Tighten_chamfers_only_as_far_as_the_corner_gets_no_worse()
     {
-        static double Band(Coordinate u, Coordinate v) => u.Y < 54.02 && v.Y < 54.02 ? 1000 : 0; // a leg wholly south of y = 2 counts as 1 km of the uncertain band
+        static double Band(Coordinate u, Coordinate v, double _) => u.Y < 54.02 && v.Y < 54.02 ? 1000 : 0; // a leg wholly south of y = 2 counts as 1 km of the uncertain band
         var p = Line((0, 0), (2, 3), (4, 0)); // the way across is free, but the chord would add 1 km of band the corner's legs never had
         var (t, fx) = StringPull.Tighten(p, [false, false], Open, worse: [Band]);
         Assert.Equal(3, t.Count); Assert.Equal(2, fx.Count); // chamfered down to the band's edge (the second chamfer point is dropped: its leg on is free), not dropped
@@ -644,14 +644,49 @@ public class StringPullTests
         // A, B, C, D 1 km apart in a row; a leg that touches B counts 1 km of "zone" (2.1 km for A → C in the second measure)
         Coordinate a = new(10.000, 54), b = new(10.0153, 54), c = new(10.0306, 54), d = new(10.0459, 54);
         bool Touches(Coordinate p, Coordinate q) => Math.Min(p.X, q.X) <= b.X && b.X <= Math.Max(p.X, q.X);
-        double Zone(Coordinate p, Coordinate q) => Touches(p, q) ? 1000 : 0;
+        double Zone(Coordinate p, Coordinate q, double _) => Touches(p, q) ? 1000 : 0;
         var blocked = StringPull.NoWorse([a, b, c, d], [(Zone, 50)]);
         Assert.False(blocked(a, c)); // 1 000 m against the 2 000 m of A → B → C
         Assert.False(blocked(c, d));
         Assert.False(blocked(a, new Coordinate(10.03, 54.001))); // not a path point: not judged here
-        double Worse(Coordinate p, Coordinate q) => ReferenceEquals(p, a) && ReferenceEquals(q, c) ? 2100 : Zone(p, q);
+        double Worse(Coordinate p, Coordinate q, double cap) => ReferenceEquals(p, a) && ReferenceEquals(q, c) ? 2100 : Zone(p, q, cap);
         Assert.True(StringPull.NoWorse([a, b, c, d], [(Worse, 50)])(a, c));
         Assert.False(StringPull.NoWorse([a, b, c, d], [])(a, c));
+    }
+
+    [Fact]
+    public void NoWorse_asks_the_measure_with_the_budget_as_cap()
+    {
+        // the path's own legs are measured in full (no cap); a tested leg only up to its budget + slack: the measure may stop there
+        Coordinate a = new(10.000, 54), b = new(10.0153, 54), c = new(10.0306, 54);
+        var caps = new List<double>(); var calls = 0;
+        double Measure(Coordinate p, Coordinate q, double cap)
+        {
+            caps.Add(cap);
+            if (!ReferenceEquals(p, a) || !ReferenceEquals(q, c)) return 100;
+            // 5 km of samples, counted until past the cap
+            var m = 0.0; for (var k = 0; k < 200 && m <= cap; k++) { calls++; m += 25; }
+            return m;
+        }
+        var blocked = StringPull.NoWorse([a, b, c], [(Measure, 50)]);
+        Assert.All(caps, x => Assert.Equal(double.PositiveInfinity, x)); caps.Clear();
+        Assert.True(blocked(a, c)); // 5 km against 100 + 100 + 50
+        Assert.Equal([250.0], caps);
+        Assert.Equal(11, calls); // stopped at 275 m, not after 200 samples
+    }
+
+    [Fact]
+    public void Tighten_and_Slide_give_the_same_route_with_a_capped_measure()
+    {
+        // a measure that stops once past the cap (returns cap + 1 then) must decide every budget like the full one
+        static double Band(Coordinate u, Coordinate v, double _) => u.Y < 54.02 && v.Y < 54.02 ? 1000 : 0;
+        static double Capped(Coordinate u, Coordinate v, double cap) => Math.Min(Band(u, v, cap), cap + 1);
+        var p = Line((0, 0), (2, 3), (4, 0));
+        Assert.Equal(StringPull.Tighten(p, [false, false], Open, worse: [Band]).points, StringPull.Tighten(p, [false, false], Open, worse: [Capped]).points);
+        Assert.Equal(StringPull.Slide(p, [false, false], Open, [Band]).points, StringPull.Slide(p, [false, false], Open, [Capped]).points);
+        var asked = new List<double>();
+        StringPull.Slide(p, [false, false], Open, [(u, v, cap) => { asked.Add(cap); return Band(u, v, cap); }]);
+        Assert.Contains(asked, x => !double.IsPositiveInfinity(x)); // the moved legs are asked with a cap
     }
 
     [Fact]

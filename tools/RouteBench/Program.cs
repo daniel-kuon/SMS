@@ -600,6 +600,12 @@ var custom = args.Skip(2).Select(a => a.Split(',').Select(v => double.Parse(v, S
 if (custom.Count > 0) routes = custom.Select((v, i) => ($"{i + 1} custom", v[0], v[1], v[2], v[3], v[4], v.Length > 5 && v[5] > 0 ? v[5] : (double?)null, v.Length > 6 && v[6] > 0 ? v[6] : (double?)null, v.Length > 7 && v[7] > 0 ? v[7] : (double?)null, v.Length > 8 && v[8] > 0)).ToArray();
 var runs = custom.Count > 0 ? 1 : 3;
 var before = GC.GetTotalMemory(true);
+if (Environment.GetEnvironmentVariable("SMS_BENCH_WARM") == "1") // the API's startup warm-up before the first route
+{
+    var warm = Stopwatch.StartNew();
+    await SeaRouter.WarmAsync(sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<ILogger<SeaRouter>>());
+    Console.WriteLine($"warm-up: {warm.ElapsedMilliseconds} ms");
+}
 for (var run = 0; run < runs; run++)
     foreach (var r in routes)
     {

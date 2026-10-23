@@ -175,6 +175,8 @@ await using (var scope = app.Services.CreateAsyncScope())
     await db.Database.MigrateAsync();
     if (app.Environment.IsDevelopment()) await Seed.RunAsync(scope.ServiceProvider); // dev-only demo admin + sample harbours
 }
+// the routing graph and the smoothing statics in the background, so the first route after a restart does not build them (~70 s)
+app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(() => SeaRouter.WarmAsync(app.Services.GetRequiredService<IServiceScopeFactory>(), app.Logger, app.Lifetime.ApplicationStopping)));
 
 app.Run();
 

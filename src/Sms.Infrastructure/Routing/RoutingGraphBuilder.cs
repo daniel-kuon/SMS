@@ -158,8 +158,9 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         _ = Task.Run(async () =>
         {
             try { await BuildAsync(CancellationToken.None); }
-            catch (Exception ex) { Report("failed", ex.Message); logger.LogError(ex, "Routing graph build failed"); }
+            catch (Exception ex) { Report("failed", ex.Message); logger.LogError(ex, "Routing graph build failed"); return; }
             finally { Interlocked.Exchange(ref _running, 0); }
+            await SeaRouter.WarmAsync(scopes, logger); // the new version's graph and statics before its first route
         });
         return true;
     }
