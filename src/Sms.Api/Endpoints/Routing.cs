@@ -328,6 +328,34 @@ public static class RoutingEndpoints
             var (candidates, created, removed) = await Waterways.ImportUnknownBridgesAsync(doc, db, current.Id, new Envelope(b[1], b[3], b[0], b[2]), ct);
             return Results.Ok(new { candidates, created, removed });
         });
+        // Danske Havnelods (Geodatastyrelsen) bridge regulations → Manual Bridge/OpeningBridge corrections, the derived clearance-less rows of
+        // each crossing deactivated (Havnelods.ImportBridgesAsync); dryRun (default) changes nothing. Harbours: not yet (licence, docs/13)
+        admin.MapPost("/import-havnelods", async (bool? bridges, bool? harbours, bool? dryRun, CurrentUser current, SmsDbContext db, IHttpClientFactory http, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            if (harbours == true) return Invalid("harbours", "Havnelods-Häfen sind noch nicht freigegeben (Lizenz der Hafentexte bei Geodatastyrelsen anfragen).");
+            if (bridges != true) return Invalid("bridges", "bridges=true angeben.");
+            var client = http.CreateClient("routing");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(Havnelods.UserAgent);
+            return Results.Ok(await Havnelods.ImportBridgesAsync(client, db, current.Id, dryRun ?? true, ct));
+        });
+        // Wikidata P2793 clearances (CC0) of waterway-crossing bridges → Manual corrections where the filters pass (WikidataBridges);
+        // dryRun (default) returns the review list only
+        admin.MapPost("/import-wikidata-clearances", async (bool? dryRun, CurrentUser current, SmsDbContext db, IHttpClientFactory http, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var client = http.CreateClient("routing");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(Havnelods.UserAgent);
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"{WikidataBridges.SparqlUrl}?query={Uri.EscapeDataString(WikidataBridges.Query)}");
+            req.Headers.Accept.ParseAdd("text/csv");
+            using var res = await client.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode) return Results.Problem(statusCode: 502, title: $"Wikidata antwortet mit {(int)res.StatusCode} – später erneut versuchen.");
+            var items = WikidataBridges.Parse(await res.Content.ReadAsStringAsync(ct));
+            return Results.Ok(await WikidataBridges.ImportAsync(items, db, current.Id, dryRun ?? true, ct));
+        });
+        // derived bridges without a clearance within 100 m of a known bridge or an opening bridge: deactivated (run again after import-bridges)
+        admin.MapPost("/dedupe-unknown-bridges", async (bool? dryRun, CurrentUser current, SmsDbContext db, CancellationToken ct) =>
+            await current.IsAdminAsync(ct) ? Results.Ok(new { dryRun = dryRun ?? true, deactivated = await Waterways.DedupeUnknownBridgesAsync(db, dryRun ?? true, ct) }) : Results.Forbid());
         // assumed passages: where a ferry line or recommended track crosses the routing land (the coastline closes a strait boats pass,
         // Baggensstäket) or runs through coast-zone water the graph cannot connect, and buoy gaps (lateral marks on both sides of a
         // short land strip the graph cannot connect). Replaces the "Annahme" passages of the bbox; the next rebuild uses them

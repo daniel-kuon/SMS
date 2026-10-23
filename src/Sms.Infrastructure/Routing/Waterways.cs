@@ -382,7 +382,23 @@ public static class Waterways
         return (bridges.Count, onWater.Count, removed);
     }
 
-    private static readonly HashSet<string> OpeningCategories = ["opening", "bascule", "swing", "lift", "drawbridge", "folding", "retractable", "submersible", "transporter"];
+    public const string DuplicateSuffix = " (Duplikat)";
+    private const string DuplicateFilter = """
+        u."Active" AND u."Source" = 'Derived' AND u."Kind" = 'Bridge' AND u."ClearanceM" IS NULL
+          AND EXISTS (SELECT 1 FROM "RoutingCorrections" k WHERE k."Active" AND k."Id" <> u."Id"
+              AND ((k."Kind" = 'Bridge' AND k."ClearanceM" IS NOT NULL) OR k."Kind" = 'OpeningBridge')
+              AND k."Geometry" && ST_Expand(u."Geometry", 0.003)
+              AND ST_DWithin(k."Geometry"::geography, u."Geometry"::geography, 100))
+        """;
+
+    /// <summary>Plan C step 1: derived fixed bridges without a clearance (the unknown rows and the waterway import's clearance-less lines)
+    /// within 100 m of an active bridge with a clearance or an opening bridge are that crossing drawn again (rail + road + footway ways):
+    /// deactivated, note suffix <see cref="DuplicateSuffix"/>. import-bridges recreates them for its bbox, so run this again after it.</summary>
+    public static async Task<int> DedupeUnknownBridgesAsync(SmsDbContext db, bool dryRun, CancellationToken ct) => dryRun
+        ? (await db.Database.SqlQueryRaw<int>($"""SELECT count(*)::int AS "Value" FROM "RoutingCorrections" u WHERE {DuplicateFilter}""").ToListAsync(ct)).Single()
+        : await db.Database.ExecuteSqlRawAsync($"""UPDATE "RoutingCorrections" u SET "Active" = false, "Note" = left(coalesce(u."Note", '') || '{DuplicateSuffix}', 4000), "UpdatedAt" = now() WHERE {DuplicateFilter}""", ct);
+
+    private static readonly HashSet<string> OpeningCategories =["opening", "bascule", "swing", "lift", "drawbridge", "folding", "retractable", "submersible", "transporter"];
     /// <summary>Movable bridge: bridge=movable, bridge:movable=* (anything but "no") or an opening seamark category.</summary>
     public static bool IsOpening(IReadOnlyDictionary<string, string> tags) =>
         tags.GetValueOrDefault("bridge") == "movable" || (tags.TryGetValue("bridge:movable", out var m) && m != "no") || (tags.TryGetValue("seamark:bridge:category", out var c) && OpeningCategories.Contains(c)) || tags.ContainsKey("seamark:bridge:clearance_height_open");

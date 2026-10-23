@@ -1,0 +1,96 @@
+<html lang="da">
+
+<head>
+    <meta http-equiv="Content-Language" content="da">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Kronprinsesse Marys Bro</title>
+    <link rel="icon" type="image/png" href="/favicon16x16.png" />
+    <link rel="stylesheet" type="text/css" href="../../styles/havnelods.css">
+    <script type="text/javascript" src="../../script/havnelods4.js?20230101"></script>
+    <script type="text/javascript">
+        /*<![CDATA[*/
+        (function () {
+            var cc = getCookie('cconsent');
+            if (cc != null && cc != "") {
+                var parsedCC = JSON.parse(cc);
+                if (parsedCC.categories.analytic.wanted == true) {
+                    var sz = document.createElement('script'); sz.type = 'text/javascript'; sz.async = true;
+                    sz.src = '//siteimproveanalytics.com/js/siteanalyze_6082736.js';
+                    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(sz, s);
+                }
+            }
+        })();
+        /*]]>*/
+    </script>
+    <script type="text/javascript">
+        function visBilleder4(id, count) {
+            var win = window.open("popup/" + id + ".html", "_blank");
+            //var win = window.open("popup/" + id + ".html", "Title", "toolbar=no,location=no,directories=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=780,height=780,top=" + (screen.height - 400) + ",left=" + (screen.width - 840));
+        }
+        function visPlaner4(id, count) {
+            var win = window.open("popupplan/" + id + ".html", "_blank");
+            //var win = window.open("popupplan/" + id + ".html", "Title", "toolbar=no,location=no,directories=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=780,height=780,top=" + (screen.height - 400) + ",left=" + (screen.width - 840));
+        }
+        function visBrolys4(id, count) {
+            var win = window.open("popuplight/" + id + ".html", "_blank");
+            //var win = window.open("popuplight/" + id + ".html", "Title", "toolbar=no,location=no,directories=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=780,height=780,top=" + (screen.height - 400) + ",left=" + (screen.width - 840));
+        }
+        function visPDF(id) {
+            var win = window.open("/Ordensreglementer/" + id, "_blank");
+        }
+    </script>
+</head>
+
+<body onload="moveContent();">
+    <!-- Harbour middel and right part -->
+    <div width="100%" height="100%">
+        <!-- middel part -->
+        <div style="position: absolute; left: 16px; top: 2px; width: 376px;">
+            <a name="tiltop">
+                <div class='overskrift'>Kronprinsesse Marys Bro</div>
+            </a>
+            
+
+            <div class="divider"></div>
+            <div class='pubdate da'>Sidste opdateringer • Tekst: 23-04-2024 - Plan: 30-08-2019</div>
+
+
+            <div class="divider"></div>
+            <div class='overskrift1'><a name='BMRK00'>Beliggenhed</a></div><div class='brod' style='margin-bottom:9px;'><p>Roskilde Fjord, Frederikssund S<br/>55°48,778'N  012°03,711'E - Kort 118</p></div>
+            <div class="divider"></div>
+            
+
+            <div class='overskrift1'><a name='BMRK02'>Brolængde</a></div><div class='brod' style='margin-bottom:9px;'><p>1360 m</p></div><div class='overskrift1'><a name='BMRK03'>Gennemsejlingshøjde</a></div><div class='brod' style='margin-bottom:9px;'><p>I gennemsejlingsfaget (mellem bropille 9 og 10, regnet fra Tørslev Hage) er den frie gennemsejlingshøjde 22 m.</p></div><div class='overskrift1'><a name='BMRK04'>Gennemsejlingsbredde</a></div><div class='brod' style='margin-bottom:9px;'><p>50 m.</p></div><div class='overskrift1'><a name='BMRK05'>Afmærkning</a></div><div class='brod' style='margin-bottom:9px;'><p>Nat:<br>Gennemsejlingsfaget (mellem bropille 9 og 10, regnet fra Tørslev Hage) er over den E-lige side af faget afmærket med fyr visende 1 rødt blink hvert 3. sekund (Fl.R.3s) på hver side af broen og over den W-lige side af faget med fyr 1 grønt blink hvert 3. sekund (Fl.G.3s) på hver side af broen.</p><p>Dagmærker:<br>I den E-lige side af gennemsejlingsfaget på hver side af broen findes røde firkanter.<br>I den W-lige side af gennemsejlingsfaget på hver side broen findes grønne trekanter.</p></div>
+
+            <p><a href="#tiltop"><span class="up largedarkred">></span> Top</a></p>
+        </div>
+        <!-- RIGHT PART -->
+        <div style="position: absolute; left: 423px; top: 2px; width: 170px;">
+            <div>
+                <select style="width: 160px;top:0px;" class="brod" size="1" id="selectprint" onchange='javascript:visUdskrift(this.value,"4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a");'>
+                    <option value="0">Vælg udskrift</option>
+                    <option value="1">Tekst</option>
+                    <option value="2">Alt</option>
+                </select>
+            </div>
+            <br><div style='cursor: pointer;' onclick='visBilleder4("4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a",0);'><img src='../../Foto/thumb/6697d425-2f3b-4e2b-be0b-6438000642c4' width='130'></div><div style='cursor: pointer;' onclick='visBilleder4("4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a");'><span class='dot blue'></span> <a class='menu1'><span class='da'>Vis stort foto</span><span class='en'>Show large photo</span></a></div><div style='cursor: pointer; width:130px;margin-top:5px;height:45px;' id='BillederIndex'></div>
+            <br><div style='cursor: pointer;' onclick='visPlaner4("4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a");'><img src='../../Planer/thumb/KOBKROMA.jpg' width='130'></div><div style='cursor: pointer;' onclick='visPlaner4("4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a");'><span class='dot blue'></span> <a class='menu1'>Vis stor broplan</a></div><div style='cursor: pointer; width:130px;margin-top:5px;height:45px;' id='PlanerIndex'></div>
+            <br />
+             
+            <br />
+            
+            <br>
+        </div>
+
+    </div>
+
+    <!-- LEFT PART (Anchors) -->
+    <div style="display: none; visibility: hidden;" id="indhold">
+        <div class='brod' style='height: 18px;'><img src = '/images/menu_tripunkt.png' width='10' height='8'><a style = 'cursor: pointer;' onclick='gotoBookmark2("4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a","BMRK02");' class='menu1'>Brolængde</a></div><div class='brod' style='height: 18px;'><img src = '/images/menu_tripunkt.png' width='10' height='8'><a style = 'cursor: pointer;' onclick='gotoBookmark2("4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a","BMRK03");' class='menu1'>Gennemsejlingshøjde</a></div><div class='brod' style='height: 18px;'><img src = '/images/menu_tripunkt.png' width='10' height='8'><a style = 'cursor: pointer;' onclick='gotoBookmark2("4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a","BMRK04");' class='menu1'>Gennemsejlingsbredde</a></div><div class='brod' style='height: 18px;'><img src = '/images/menu_tripunkt.png' width='10' height='8'><a style = 'cursor: pointer;' onclick='gotoBookmark2("4254c7b7-8c76-427e-8aa1-8db1fcd3fd6a","BMRK05");' class='menu1'>Afmærkning</a></div>
+    </div>
+    <script>
+        checkLang();
+    </script>
+</body>
+
+</html>
