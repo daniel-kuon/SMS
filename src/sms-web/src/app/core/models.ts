@@ -44,6 +44,11 @@ export interface Leg { id: string; order: number; alternative: number; fromHarbo
  *  below the minimum depth at lat/lng (distanceM: length of that stretch), along the final line; one entry per stretch, `routeWarningText` counts them.
  *  Kind "cardinal": the route runs through the danger quadrant of a cardinal mark at lat/lng (one per mark). */
 export interface RouteWarning { kind: string; lat: number; lng: number; note: string; snappedLat?: number | null; snappedLng?: number | null; distanceM?: number | null; }
+/** A route asked for without an air draft names fixed bridges below 25 m ("bridge"): entering the mast height removes those warnings
+ *  (bridgeUnknown stays either way). */
+export const needsAirDraftHint = (warnings: RouteWarning[] | null | undefined, airDraftM: number | null): boolean =>
+  airDraftM == null && !!warnings?.some(w => w.kind === 'bridge');
+
 /** " · ⚠ <notes>" for a route's warnings (the same note once, with a count), "" without any. */
 export function routeWarningText(warnings?: RouteWarning[] | null): string {
   if (!warnings?.length) return '';

@@ -1,5 +1,5 @@
 import { fromShip, parseContext, routeParams } from './ship-context';
-import { routeWarningText } from './models';
+import { needsAirDraftHint, routeWarningText } from './models';
 import { depthFillColour, depthHatchFilter, DTM_ATTRIBUTION, DTM_TITLE, TRAFFIC_ATTRIBUTION, TRAFFIC_FILL } from './map';
 
 describe('ship depth settings', () => {
@@ -22,6 +22,13 @@ describe('ship depth settings', () => {
     const w = (note: string) => ({ kind: 'checkDepth', lat: 54, lng: 10, note });
     expect(routeWarningText([w('Tiefe prüfen'), w('Tiefe prüfen'), w('Durchfahrt angenommen')])).toBe(' · ⚠ Tiefe prüfen (2×); Durchfahrt angenommen');
     expect(routeWarningText([])).toBe('');
+  });
+  it('asks for the mast height only for known-bridge warnings without an air draft', () => {
+    const w = (kind: string) => ({ kind, lat: 54, lng: 10, note: '' });
+    expect(needsAirDraftHint([w('bridge')], null)).toBe(true);
+    expect(needsAirDraftHint([w('bridge')], 14)).toBe(false);
+    expect(needsAirDraftHint([w('bridgeUnknown'), w('cardinal')], null)).toBe(false);
+    expect(needsAirDraftHint(undefined, null)).toBe(false);
   });
   it('shades too shallow by the band middle and "check depth" by the band floor', () => {
     const fill = JSON.stringify(depthFillColour(2, 2.8));

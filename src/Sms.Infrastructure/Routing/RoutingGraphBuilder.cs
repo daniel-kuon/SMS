@@ -67,6 +67,9 @@ public sealed class RoutingOptions
     /// ×10 made spurs and +2 nm detours (Thyborøn, Skanør); ×3 is almost length-neutral. ≤ 1 = off; the smoothing never pulls a leg into
     /// a wedge regardless (SeaRouter.SmoothAsync).</summary>
     public double CardinalPenaltyFactor { get; set; } = 3;
+    /// <summary>Search: path edges through a hazard core (CardinalMarks.HazardCoreM of a cardinal's danger side, an isolated-danger disc)
+    /// outside the harbour ends cost this many metres extra and the search runs again, so a way round wins when it is shorter than this. 0 = off.</summary>
+    public double HazardPenaltyM { get; set; } = 1000;
     /// <summary>A derived channel through water charted shallower than the default yacht (not drying) costs ×this: the depth areas are coarse in narrow sounds.</summary>
     public double ShallowChannelFactor { get; set; } = 1.5;
     /// <summary>Edges running along a scheduled ferry track (Kind Ferry) within this distance count as known-navigable: no depth floor

@@ -31,6 +31,20 @@ public class SeaGraphTests
     }
 
     [Fact]
+    public void Hazard_edges_cost_the_penalty_extra()
+    {
+        var g = new G();
+        int a = g.Node(0, 0), b = g.Node(1, 0), c = g.Node(0.5, 0.5);
+        var direct = g.Edge(a, b); g.Edge(a, c); g.Edge(c, b); // direct ~654 m, detour ~1290 m
+        var graph = g.Build();
+        SeaGraph.Path Route(SeaGraph.Limits l) => graph.Route(new SeaGraph.End(g.C(a), a), new SeaGraph.End(g.C(b), b), l)!;
+        Assert.DoesNotContain(g.C(c), Route(new()).Points);
+        var hazard = new HashSet<int> { direct };
+        Assert.Contains(g.C(c), Route(new(Hazard: hazard, HazardPenaltyM: 1000)).Points); // 1654 > 1290
+        Assert.DoesNotContain(g.C(c), Route(new(Hazard: hazard, HazardPenaltyM: 400)).Points); // 1054 < 1290
+    }
+
+    [Fact]
     public void Route_takes_the_cheaper_of_two_ways_and_draws_it()
     {
         var g = new G();

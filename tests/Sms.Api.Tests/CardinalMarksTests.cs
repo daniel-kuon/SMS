@@ -1,4 +1,5 @@
 using NetTopologySuite.Geometries;
+using NetTopologySuite.Index.Strtree;
 using Sms.Infrastructure.Routing;
 
 namespace Sms.Api.Tests;
@@ -18,6 +19,22 @@ public class CardinalMarksTests
         var east = CardinalMarks.Wedge(new Coordinate(10, 54), MarkSide.East);
         Assert.True(east.Contains(P(10 - 200 / (WaterGraphTiler.MPerDegLat * Math.Cos(54 * Math.PI / 180)), 54))); // 200 m west
         Assert.False(east.Contains(P(10 + 200 / (WaterGraphTiler.MPerDegLat * Math.Cos(54 * Math.PI / 180)), 54)));
+    }
+
+    [Fact]
+    public void Hazard_core_is_the_danger_side_within_60_m_and_the_safe_side_needs_no_clearance()
+    {
+        double N(double m) => m / WaterGraphTiler.MPerDegLat; double E(double m) => N(m) / Math.Cos(54 * Math.PI / 180);
+        LineString EastWest(double northM) => F.CreateLineString([new Coordinate(10 - E(100), 54 + N(northM)), new Coordinate(10 + E(100), 54 + N(northM))]);
+        var south = new Coordinate(10, 54); // a south cardinal: the danger lies north of it
+        var core = CardinalMarks.Index([(south, MarkSide.South)], CardinalMarks.HazardCoreM);
+        bool Hits(STRtree<Polygon> t, LineString l) => t.Query(l.EnvelopeInternal).Any(w => w.Intersects(l));
+        Assert.True(Hits(core, EastWest(20)));    // 20 m north: the danger side
+        Assert.False(Hits(core, EastWest(-20)));  // 20 m south: the safe side
+        Assert.False(Hits(core, EastWest(100)));  // beyond the core
+        var wedge = CardinalMarks.Index([(south, MarkSide.South)]);
+        Assert.True(Hits(wedge, EastWest(100)));  // the full 300 m wedge still prices and blocks the pull there
+        Assert.False(Hits(wedge, EastWest(-1)));  // 1 m off on the named side: no buffer round the mark
     }
 
     [Fact]

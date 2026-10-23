@@ -39,6 +39,11 @@ public static class CardinalMarks
     /// <summary>A route keeps this far off an isolated-danger mark (the rock or wreck lies under it).</summary>
     public const double IsolatedDangerM = 60;
 
+    /// <summary>The core of a hazard: a cardinal's danger wedge cut to this radius, the isolated-danger disc. No route leg crosses it where
+    /// a way round exists (SeaRouter: the search's hazard rounds, the smoothing's detour of the path's own legs); the full 300 m wedge only
+    /// prices and blocks the pull. The safe side has no clearance at all: the wedge starts at the mark, so a route may pass it at 0 m there.</summary>
+    public const double HazardCoreM = 60;
+
     /// <summary>All isolated-danger buoys and beacons of the Seamarks table (EPSG:3857 → 4326).</summary>
     public static async Task<List<Coordinate>> LoadIsolatedAsync(SmsDbContext db, CancellationToken ct = default) =>
         (await db.Database.SqlQueryRaw<Row>("""

@@ -241,7 +241,8 @@ public sealed class SeaGraph
     /// to the ×UncertainFactor rule only when nothing else leads there).</param>
     /// <param name="AvoidUnknownBridges">Edges under a fixed bridge without a charted clearance are closed.</param>
     /// <param name="UnknownBridgePenaltyM">Extra cost of an edge under a fixed bridge without a charted clearance (when passed).</param>
-    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000, double? MinDepthM = null, double UncertainFactor = 1, bool StrictDepth = false, bool AvoidUnknownBridges = false, double UnknownBridgePenaltyM = 0);
+    /// <param name="Hazard">Edges that cost HazardPenaltyM extra: through the core of a cardinal's danger quadrant or an isolated-danger disc (SeaRouter's hazard rounds).</param>
+    public sealed record Limits(double? AirDraftM = null, double? DepthLimitM = null, double ExemptDeg = 0, bool NoAssumed = false, IReadOnlySet<int>? Penalized = null, double PenaltyM = 20_000, double? MinDepthM = null, double UncertainFactor = 1, bool StrictDepth = false, bool AvoidUnknownBridges = false, double UnknownBridgePenaltyM = 0, IReadOnlySet<int>? Hazard = null, double HazardPenaltyM = 0);
     /// <summary>A route end projected onto a passage edge: on segment Segment of its geometry, at Fraction of its length.</summary>
     public sealed record Snap(int Edge, int Segment, double Fraction, Coordinate Point, double DistanceM);
     /// <summary>A route end: the clicked point and either a node or a snap onto an edge.</summary>
@@ -302,6 +303,7 @@ public sealed class SeaGraph
         if (l.AvoidUnknownBridges && UnknownBridge(e)) return double.PositiveInfinity;
         double c = _cost[e]; var d = Depth(e);
         if (l.Penalized is { } pen && pen.Contains(e)) c += l.PenaltyM;
+        if (l.Hazard is { } hz && hz.Contains(e)) c += l.HazardPenaltyM;
         // compared as floats: the depths are stored as floats, and (float)1.8288 < 1.8288 closed the band floor itself (the whole
         // 1.83-3.66 m band was shut in A* for every draft, only the pull and the harbour approach used it)
         if (l.DepthLimitM is { } lim && !float.IsNaN(d) && d < (float)lim)
@@ -322,6 +324,9 @@ public sealed class SeaGraph
     /// <summary>The edges of a path the strict search closes (uncertain water outside the harbour approach): where a fallback route warns.</summary>
     public List<int> UncertainEdges(IEnumerable<int> edges, Limits l, End from, End to) =>
         l.MinDepthM is { } md ? edges.Distinct().Where(e => Uncertain(e, md) && !Exempt(e, l, from, to)).ToList() : [];
+
+    /// <summary>The edge lies in the harbour approach (<see cref="Exempt"/>): at an end node, or within ExemptDeg of an end point.</summary>
+    public bool IsExempt(int e, Limits l, End from, End to) => Exempt(e, l, from, to);
 
     // the harbour approach: edges at the end nodes or within ExemptDeg (planar degrees, like ST_DWithin on 4326) of an end point
     private bool Exempt(int e, Limits l, End from, End to)
@@ -644,8 +649,10 @@ public static class StringPull
                 if (best is null) continue;
                 gained += bestGain;
                 dirty[i - 1] = dirty[i] = dirty[i + 1] = true;
-                // on the chord (or merged into a neighbour): the vertex goes, the one leg left is free
-                if (D(a, best) < 1 || D(best, c) < 1 || D(a, best) + D(best, c) - D(a, c) < 0.01)
+                // on the chord (or merged into a neighbour): the vertex goes when the one leg left is free - tested itself, not as the
+                // two legs it joins: a sampled blocker (the 25 m samples of the uncertain band) at the vertex slips between both legs'
+                // samples and is caught by the merged leg's (Stade -> Finkenwerder: 50 m of the band after a strict search, no warning)
+                if ((D(a, best) < 1 || D(best, c) < 1 || D(a, best) + D(best, c) - D(a, c) < 0.01) && !blocked(a, c))
                 {
                     p.RemoveAt(i); fx.RemoveAt(i); run0.RemoveAt(i); cut.RemoveAt(i); dirty.RemoveAt(i);
                     fx[i - 1] = false; run0[i - 1] = 0; cut[i - 1] = 0; i--; continue;

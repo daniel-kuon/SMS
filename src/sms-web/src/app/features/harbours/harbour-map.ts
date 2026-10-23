@@ -18,7 +18,7 @@ import type { GeoJSONSource, MapLayerMouseEvent, MapMouseEvent } from 'maplibre-
 import { forkJoin } from 'rxjs';
 import type { Point as GeoPoint } from 'geojson';
 import { Api, AuthService, errorMessage } from '../../core/api';
-import { Harbour, HarbourMarker, HarbourService, NearbyPort, RouteWarning, routeWarningText, Wifi } from '../../core/models';
+import { Harbour, HarbourMarker, HarbourService, NearbyPort, needsAirDraftHint, RouteWarning, routeWarningText, Wifi } from '../../core/models';
 import { Location } from '@angular/common';
 import { bounds, createMap, formatView, maplibregl, MlMap, POI_ICON, poiAt, rowValueEl, ServiceSpot, setPoiFocus, setServiceActive, setServiceHighlight, setServicePath, syncViewWithUrl, textEl, urlViewOptions, viewFromUrl } from '../../core/map';
 import { haversineM } from '../../core/track-playback';
@@ -131,7 +131,7 @@ const straightNm =(a: { lat: number; lng: number }, b: { lat: number; lng: numbe
         }
         <label [title]="'ship.minDepthHint' | translate">{{ 'ship.minDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.minDepthM()" (ngModelChange)="shipCtx.manual($event === '' ? null : +$event, shipCtx.warnDepthM(), shipCtx.airDraftM())" /></label>
         <label [title]="'ship.warnDepthHint' | translate">{{ 'ship.warnDepth' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.warnDepthM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), $event === '' ? null : +$event, shipCtx.airDraftM())" /></label>
-        <label [title]="'ship.airDraftHint' | translate">{{ 'ship.airDraft' | translate }} <input type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), shipCtx.warnDepthM(), $event === '' ? null : +$event)" /></label>
+        <label [title]="'ship.airDraftHint' | translate">{{ 'ship.airDraft' | translate }} <input #airDraft type="number" step="0.1" min="0" [ngModel]="shipCtx.airDraftM()" (ngModelChange)="shipCtx.manual(shipCtx.minDepthM(), shipCtx.warnDepthM(), $event === '' ? null : +$event)" /></label>
         @if (shipCtx.hazardDepthM() !== null) { <span class="muted small">{{ 'ship.hazardsHidden' | translate }}</span> }
       </div>
       <aside class="panel" [class.open]="harbour()">
@@ -245,6 +245,7 @@ export class HarbourMapPage {
   private dialog = inject(MatDialog);
   id = input<string>();
   mapEl = viewChild.required<ElementRef<HTMLDivElement>>('map');
+  airDraftEl = viewChild<ElementRef<HTMLInputElement>>('airDraft');
   harbour = signal<Harbour | null>(null);
   nearby = signal<NearbyPort[]>([]);
   visits = signal<{ shipId: string; name: string; visits: number; lastVisit: string; lastTripId: string | null; lastTripName: string | null }[]>([]);
@@ -645,7 +646,7 @@ export class HarbourMapPage {
         this.courseRoute.set({ coordinates: r.coordinates, distanceNm: r.distanceNm });
         this.pinned = false; this.draw(r.coordinates, r.distanceNm, r.straight, !!r.warnings.length, r.warnings); this.pinned = true;
         if (seq === this.fitSeq) { this.fitSeq = -1; map.fitBounds(bounds([...r.coordinates, ...(this.refRoute()?.coordinates ?? [])]), { padding: 60, animate: false }); }
-        popup?.setDOMContent(textEl(r.straight ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${straight} sm${routeWarningText(r.warnings)}`));
+        popup?.setDOMContent(this.withAirDraftHint(textEl(r.straight ? `${r.distanceNm} sm (Luftlinie, keine Seeroute)` : `${r.distanceNm} sm · Luftlinie ${straight} sm${routeWarningText(r.warnings)}`), r.warnings));
       },
       // 422 "no sea route" (a point too far from navigable water or not connected): no line across land, the reason in the popup
       error: err => {
@@ -656,6 +657,18 @@ export class HarbourMapPage {
         popup?.setDOMContent(textEl(`${errorMessage(err)} (Luftlinie ${straight} sm)`));
       },
     });
+  }
+
+  /** Bridge warnings on a route without an air draft: a button under them that focuses the air draft field (entering the mast height
+   *  drops the warnings for bridges it clears). */
+  private withAirDraftHint(el: HTMLElement, warnings: RouteWarning[]): HTMLElement {
+    if (!needsAirDraftHint(warnings, this.shipCtx.airDraftM())) return el;
+    const hint = document.createElement('button');
+    hint.type = 'button'; hint.className = 'air-draft-hint'; hint.textContent = this.translate.instant('ship.airDraftForBridges') as string;
+    hint.style.cssText = 'display:block;margin-top:4px;padding:0;border:0;background:none;color:var(--mat-sys-primary,#1565c0);text-decoration:underline;cursor:pointer;font:inherit;text-align:left';
+    hint.onclick = () => { const input = this.airDraftEl()?.nativeElement; input?.scrollIntoView({ block: 'nearest' }); input?.focus(); };
+    const box = document.createElement('div'); box.append(el, hint);
+    return box;
   }
 
   /** Mouse down on the route line: dragging pulls out a new via point between the two route points of that leg, routed again on release. */
