@@ -32,7 +32,8 @@ public static class DepthLimits
     /// <param name="dtm">The EMODnet DTM: DtmMinM for the other edges with a floor.</param>
     /// <param name="hazards">Cardinal danger wedges and isolated-danger discs (CardinalMarks.Hazards): no traffic flag, no DTM depth through them.</param>
     /// <param name="zones">Buoyed zones (RoutingGraphBuilder.BlockZone): no traffic flag, no DTM depth for an edge whose band water reaches into one.</param>
-    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry area, double minDepthM)> areas, Func<Coordinate, double, bool>? nearLand = null, IReadOnlyList<Polygon>? buoyed = null, FerryCorridors? ferry = null, TrafficAreas? traffic = null, DtmGrid? dtm = null, IReadOnlyList<Polygon>? hazards = null, IReadOnlyList<Polygon>? zones = null)
+    /// <param name="shallowZones"><see cref="ShallowZones"/> of <paramref name="zones"/>, computed once per build; null = from <paramref name="areas"/> here.</param>
+    public static List<GraphEdge> Apply(IReadOnlyList<GraphEdge> edges, IReadOnlyList<(Geometry area, double minDepthM)> areas, Func<Coordinate, double, bool>? nearLand = null, IReadOnlyList<Polygon>? buoyed = null, FerryCorridors? ferry = null, TrafficAreas? traffic = null, DtmGrid? dtm = null, IReadOnlyList<Polygon>? hazards = null, IReadOnlyList<Polygon>? zones = null, STRtree<IPreparedGeometry>? shallowZones = null)
     {
         var hazardIndex = new STRtree<IPreparedGeometry>();
         foreach (var h in hazards ?? []) hazardIndex.Insert(h.EnvelopeInternal, PreparedGeometryFactory.Prepare(h));
@@ -40,6 +41,9 @@ public static class DepthLimits
         var zoneIndex = new STRtree<IPreparedGeometry>();
         foreach (var z in zones ?? []) zoneIndex.Insert(z.EnvelopeInternal, PreparedGeometryFactory.Prepare(z));
         zoneIndex.Build();
+        // STRtree.Count walks the whole tree: once here, not per edge (per edge it was most of the depth limits' build time: 26 k hazards)
+        bool anyHazard = hazardIndex.Count > 0, anyZone = zoneIndex.Count > 0;
+        if (anyZone) shallowZones ??= ShallowZones(zones!, areas);
         if (areas.Count == 0 && ferry is not { Count: > 0 } && traffic is not { Count: > 0 }) return edges.ToList();
         var index = new STRtree<(IPreparedGeometry prepared, double depth)>();
         foreach (var (area, depth) in areas) index.Insert(area.EnvelopeInternal, (PreparedGeometryFactory.Prepare(area), depth));
@@ -57,11 +61,10 @@ public static class DepthLimits
             if (ferry is { Count: > 0 } && ferry.Along(e.Geom)) { result.Add(e with { MinDepthM = min ?? e.MinDepthM, Ferry = true }); continue; }
             var r = min is not null ? e with { MinDepthM = min } : nearLand is null || !Coastal(e.Geom, nearLand) ? e
                 : Adjacent(e.Geom, index) is { } adj ? e with { AdjacentDepthM = adj } : e with { FloorM = UnknownCoastalFloorM };
-            // the hazard and zone tests only for an edge that would get the traffic flag or a DTM depth: InZone samples every 25 m, and
-            // v80's extra build time (+20 min) lay in the three phases that ran it on every edge (depth limits 7 -> 14 min, passages, links)
+            // the hazard and zone tests only for an edge that would get the traffic flag or a DTM depth (v80 ran them on every edge)
             bool? hazard = null;
-            bool Hazard() => hazard ??= hazardIndex.Count > 0 && hazardIndex.Query(e.Geom.EnvelopeInternal).Any(h => h.Intersects(e.Geom))
-                || zoneIndex.Count > 0 && InZone(e.Geom, zoneIndex.Query(e.Geom.EnvelopeInternal), index, charted: min is not null);
+            bool Hazard() => hazard ??= anyHazard && hazardIndex.Query(e.Geom.EnvelopeInternal).Any(h => h.Intersects(e.Geom))
+                || anyZone && InZone(e.Geom, zoneIndex.Query(e.Geom.EnvelopeInternal), shallowZones!, charted: min is not null);
             if (traffic is { Count: > 0 } && traffic.Along(e.Geom) && !Hazard()) r = r with { Traffic = true };
             else if (dtm is not null && (r.MinDepthM ?? r.AdjacentDepthM ?? r.FloorM) is { } f && f < DtmGrid.MaxFloorM && !Hazard()) r = r with { DtmMinM = dtm.MinDepth(e.Geom) };
             result.Add(r);
@@ -70,27 +73,38 @@ public static class DepthLimits
     }
 
     /// <summary>
-    /// The edge's band water reaches into a buoyed zone: one of its ~25 m samples lies in a zone and in a depth area with a floor below
-    /// <see cref="DtmGrid.MaxFloorM"/> (the water the DTM or the traffic could lift); an edge without charted depth of its own (the coastal
-    /// strip, counted as the band next to it) by any contact. An edge that only crosses deep water inside a zone, or follows the fairway's
-    /// corridor between band water outside, keeps its evidence (Ulvsund: the edges across a fairway junction).
+    /// The edge's band water reaches into a buoyed zone: it crosses <see cref="ShallowZones"/> (zone ∩ depth areas with a floor below
+    /// <see cref="DtmGrid.MaxFloorM"/>, the water the DTM or the traffic could lift); an edge without charted depth of its own (the coastal
+    /// strip, counted as the band next to it) by any contact with a zone. An edge that only crosses deep water inside a zone, or follows the
+    /// fairway's corridor between band water outside, keeps its evidence (Ulvsund: the edges across a fairway junction).
+    /// Exact since v82; v81 sampled the edge every 25 m and missed slivers between two samples (spec-improve-build-time).
     /// </summary>
-    public static bool InZone(LineString edge, IList<IPreparedGeometry> zones, STRtree<(IPreparedGeometry prepared, double depth)> depths, bool charted)
+    public static bool InZone(LineString edge, IList<IPreparedGeometry> zones, STRtree<IPreparedGeometry> shallowZones, bool charted) =>
+        charted ? shallowZones.Query(edge.EnvelopeInternal).Any(p => p.Intersects(edge)) : zones.Any(z => z.Intersects(edge));
+
+    /// <summary>The band water inside the buoyed zones: every zone ∩ every depth area with a floor below <see cref="DtmGrid.MaxFloorM"/>,
+    /// prepared, for <see cref="InZone"/>. One overlay per build instead of point tests along every edge.</summary>
+    public static STRtree<IPreparedGeometry> ShallowZones(IReadOnlyList<Polygon> zones, IEnumerable<(Geometry area, double minDepthM)> areas)
     {
-        var hits = zones.Where(z => z.Intersects(edge)).ToList();
-        if (hits.Count == 0) return false;
-        if (!charted) return true;
-        for (var i = 1; i < edge.NumPoints; i++)
+        var index = new STRtree<Geometry>();
+        foreach (var (area, depth) in areas) if (depth < DtmGrid.MaxFloorM && !area.IsEmpty) index.Insert(area.EnvelopeInternal, area);
+        index.Build();
+        var result = new STRtree<IPreparedGeometry>();
+        foreach (var z in zones)
         {
-            var a = edge.GetCoordinateN(i - 1); var b = edge.GetCoordinateN(i);
-            var n = Math.Max(1, (int)Math.Ceiling(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / 25));
-            for (var k = 0; k <= n; k++)
+            var prepared = PreparedGeometryFactory.Prepare(z);
+            foreach (var a in index.Query(z.EnvelopeInternal))
             {
-                var pt = edge.Factory.CreatePoint(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n));
-                if (hits.Any(z => z.Contains(pt)) && depths.Query(pt.EnvelopeInternal).Any(d => d.depth < DtmGrid.MaxFloorM && d.prepared.Contains(pt))) return true;
+                if (!prepared.Intersects(a)) continue;
+                Geometry piece;
+                if (prepared.Contains(a)) piece = a;
+                else try { piece = z.Intersection(a); } catch (TopologyException) { piece = z.Buffer(0).Intersection(a.Buffer(0)); }
+                for (var i = 0; i < piece.NumGeometries; i++)
+                    if (piece.GetGeometryN(i) is Polygon { IsEmpty: false } p) result.Insert(p.EnvelopeInternal, PreparedGeometryFactory.Prepare(p));
             }
         }
-        return false;
+        result.Build();
+        return result;
     }
 
     /// <summary>The edge runs all along within CoastalM of land.</summary>

@@ -1,5 +1,6 @@
 using Sms.Domain;
 using NetTopologySuite.Geometries;
+using NetTopologySuite.Geometries.Prepared;
 using Sms.Api;
 using Sms.Infrastructure.Routing;
 
@@ -142,5 +143,85 @@ public class DepthTests
         var dtmWide = new DtmGrid(k => k == (10, 54) || k == (9, 54) ? chunk : null);
         Assert.Equal(2.6, DepthLimits.Apply([across], withDeep, NearLand, dtm: dtmWide, zones: [deepZone])[0].DtmMinM); // 2.6 m west of 9.2 E
         Assert.Null(DepthLimits.Apply([across], withDeep, NearLand, dtm: dtmWide, zones: [buoyed])[0].DtmMinM);
+    }
+
+    [Fact]
+    public void A_charted_edge_is_in_a_zone_where_it_crosses_the_zones_band_water()
+    {
+        // a zone ~1000 m square at 10.0 E 54.5 N; the 1.83 m band covers its west half (and beyond), the 10 m band its east half
+        var zone = F.CreatePolygon([new(10.0, 54.5), new(10.0155, 54.5), new(10.0155, 54.509), new(10.0, 54.509), new(10.0, 54.5)]);
+        var west = F.CreatePolygon([new(9.99, 54.49), new(10.00775, 54.49), new(10.00775, 54.52), new(9.99, 54.52), new(9.99, 54.49)]);
+        var east = F.CreatePolygon([new(10.00775, 54.49), new(10.03, 54.49), new(10.03, 54.52), new(10.00775, 54.52), new(10.00775, 54.49)]);
+        var shallow = DepthLimits.ShallowZones([zone], [(west, 1.8288), (east, 10)]);
+        IList<IPreparedGeometry> zones = [PreparedGeometryFactory.Prepare(zone)];
+        bool In(double x1, double y1, double x2, double y2, bool charted = true) => DepthLimits.InZone(Edge(1, 2, x1, y1, x2, y2).Geom, zones, shallow, charted);
+        Assert.True(In(10.002, 54.495, 10.006, 54.508));    // across the west half
+        Assert.False(In(10.010, 54.502, 10.014, 54.506));   // only in the east half: deep water inside the zone
+        Assert.False(In(9.992, 54.495, 9.996, 54.495));     // band water outside the zone
+        Assert.True(In(10.010, 54.5045, 10.020, 54.5045, charted: false));  // uncharted: any contact with the zone
+        Assert.False(In(9.992, 54.495, 9.996, 54.495, charted: false));
+        // a 10 m sliver of band water between two 25 m samples: the overlay is exact, the old sampling missed it
+        var sliver = F.CreatePolygon([new(10.0040, 54.49), new(10.00415, 54.49), new(10.00415, 54.52), new(10.0040, 54.52), new(10.0040, 54.49)]);
+        var deep = F.CreatePolygon([new(9.99, 54.49), new(10.0040, 54.49), new(10.0040, 54.52), new(9.99, 54.52), new(9.99, 54.49)]);
+        (Geometry, double)[] sliverAreas = [(deep, 10), (sliver, 1.8288)];
+        var across = Edge(1, 2, 10.002, 54.504, 10.006, 54.504).Geom;
+        Assert.True(DepthLimits.InZone(across, zones, DepthLimits.ShallowZones([zone], sliverAreas), charted: true));
+        Assert.False(SampledInZone(across, [zone], sliverAreas, charted: true));
+    }
+
+    [Fact]
+    public void The_exact_zone_overlay_flags_every_edge_the_25_m_samples_did_and_more_only_on_slivers_between_samples()
+    {
+        // irregular band polygons (a Voronoi tiling, random floors around the 5.49 m limit) and zones shaped like BlockZone's
+        // (a channel zone round two lines minus a corridor round them); 3000 random edges of 20 m - 3 km, charted and not
+        var rnd = new Random(42);
+        var env = new Envelope(10.0, 10.2, 54.5, 54.6);
+        var sites = F.CreateMultiPointFromCoords(Enumerable.Range(0, 400).Select(_ => new Coordinate(10.0 + rnd.NextDouble() * 0.2, 54.5 + rnd.NextDouble() * 0.1)).ToArray());
+        var voronoi = new NetTopologySuite.Triangulate.VoronoiDiagramBuilder { ClipEnvelope = env };
+        voronoi.SetSites(sites);
+        var areas = voronoi.GetDiagram(F).Geometries.Select(g => (g.Intersection(F.ToGeometry(env)), new[] { 0, 1.8288, 3.6576, 5.4864, 10 }[rnd.Next(5)])).ToList();
+        var lines = new[] { F.CreateLineString([new(10.02, 54.52), new(10.08, 54.55), new(10.15, 54.53), new(10.18, 54.58)]), F.CreateLineString([new(10.05, 54.59), new(10.10, 54.51)]) };
+        var zones = lines.Select(l => l.Buffer(0.012).Difference(l.Buffer(0.002))).SelectMany(g => Enumerable.Range(0, g.NumGeometries).Select(g.GetGeometryN)).OfType<Polygon>().ToList();
+        var shallow = DepthLimits.ShallowZones(zones, areas);
+        var zoneIndex = new NetTopologySuite.Index.Strtree.STRtree<IPreparedGeometry>();
+        foreach (var z in zones) zoneIndex.Insert(z.EnvelopeInternal, PreparedGeometryFactory.Prepare(z));
+        int same = 0, onlyNew = 0, inside = 0;
+        for (var i = 0; i < 3000; i++)
+        {
+            var (x, y) = (10.0 + rnd.NextDouble() * 0.2, 54.5 + rnd.NextDouble() * 0.1);
+            var lengthDeg = (20 + rnd.NextDouble() * 2980) / WaterGraphTiler.MPerDegLat; var angle = rnd.NextDouble() * 2 * Math.PI;
+            var edge = Edge(1, 2, x, y, x + lengthDeg * Math.Cos(angle) / Math.Cos(y * Math.PI / 180), y + lengthDeg * Math.Sin(angle)).Geom;
+            var charted = i % 5 != 0;
+            var old = SampledInZone(edge, zones, areas, charted);
+            var now = DepthLimits.InZone(edge, zoneIndex.Query(edge.EnvelopeInternal), shallow, charted);
+            if (now) inside++;
+            Assert.False(old && !now, $"edge {i} flagged by the samples only: {edge}");
+            if (old == now) { same++; continue; }
+            onlyNew++;
+            // the overlay hit no sample: every piece of the edge in zone band water is shorter than the sample spacing (≤ 25 m)
+            var hit = edge.Intersection(new GeometryCollection(shallow.Query(edge.EnvelopeInternal).Select(p => p.Geometry).ToArray()).Union());
+            Assert.All(Enumerable.Range(0, hit.NumGeometries).Select(hit.GetGeometryN), g => Assert.True(g.Coordinates.Length < 2 || RoutingGraphBuilder.Haversine(g.Coordinates[0].Y, g.Coordinates[0].X, g.Coordinates[^1].Y, g.Coordinates[^1].X) <= 25.5, $"edge {i}: a {g} the samples should have hit"));
+        }
+        Assert.InRange(inside, 300, 3000); // the fixture exercises the rule
+        Assert.InRange(onlyNew, 0, 30); // ≤ 1 %: slivers and corners between samples
+    }
+
+    /// <summary>The rule before the overlay (v81): ~25 m samples along the edge, one in a zone and in band water below DtmGrid.MaxFloorM.</summary>
+    private static bool SampledInZone(LineString edge, IReadOnlyList<Polygon> zones, IReadOnlyList<(Geometry area, double depth)> areas, bool charted)
+    {
+        var hits = zones.Where(z => z.Intersects(edge)).ToList();
+        if (hits.Count == 0) return false;
+        if (!charted) return true;
+        for (var i = 1; i < edge.NumPoints; i++)
+        {
+            var a = edge.GetCoordinateN(i - 1); var b = edge.GetCoordinateN(i);
+            var n = Math.Max(1, (int)Math.Ceiling(RoutingGraphBuilder.Haversine(a.Y, a.X, b.Y, b.X) / 25));
+            for (var k = 0; k <= n; k++)
+            {
+                var pt = edge.Factory.CreatePoint(new Coordinate(a.X + (b.X - a.X) * k / n, a.Y + (b.Y - a.Y) * k / n));
+                if (hits.Any(z => z.Contains(pt)) && areas.Any(d => d.depth < DtmGrid.MaxFloorM && d.area.Contains(pt))) return true;
+            }
+        }
+        return false;
     }
 }
