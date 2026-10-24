@@ -389,7 +389,8 @@ public static class Waterways
               AND ((k."Kind" = 'Bridge' AND k."ClearanceM" IS NOT NULL) OR k."Kind" = 'OpeningBridge')
               AND (GeometryType(k."Geometry") = 'LINESTRING') = (GeometryType(u."Geometry") = 'LINESTRING')
               AND k."Geometry" && ST_Expand(u."Geometry", 0.003)
-              AND ST_DWithin(k."Geometry"::geography, u."Geometry"::geography, 100))
+              AND ST_DWithin(k."Geometry"::geography, u."Geometry"::geography, 100)
+              AND NOT EXISTS (SELECT 1 FROM ST_DumpPoints(u."Geometry") dp WHERE NOT ST_DWithin(k."Geometry"::geography, dp.geom::geography, 100)))
         """;
 
     /// <summary>Plan C step 1: derived fixed bridges without a clearance (the unknown rows and the waterway import's clearance-less lines)
@@ -397,7 +398,8 @@ public static class Waterways
     /// point) are that crossing drawn again (rail + road + footway ways): deactivated, note suffix <see cref="DuplicateSuffix"/>.
     /// A line next to a known point stays: the point is a span of that line (Obstacles.WithSpans: the window gets the point's clearance,
     /// the rest of the line is impassable), and alone a point matches every edge within the area build's 1.5 km - without its line the
-    /// 1 m Kvickbron closed Helsingborg's harbour, Fehmarnsund lost its impassable rest (v82, 2026-10-24).
+    /// 1 m Kvickbron closed Helsingborg's harbour, Fehmarnsund lost its impassable rest (v82, 2026-10-24). Only a line lying within 100 m of
+    /// the known one along its whole length is dropped (Havnelods.Covers): a segment in series (approach viaduct) stays.
     /// import-bridges recreates them for its bbox, so run this again after it.</summary>
     public static async Task<int> DedupeUnknownBridgesAsync(SmsDbContext db, bool dryRun, CancellationToken ct) => dryRun
         ? (await db.Database.SqlQueryRaw<int>($"""SELECT count(*)::int AS "Value" FROM "RoutingCorrections" u WHERE {DuplicateFilter}""").ToListAsync(ct)).Single()

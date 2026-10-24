@@ -144,13 +144,22 @@ public static class Havnelods
         return RoutingGraphBuilder.Haversine(n[0].Y, n[0].X, n[1].Y, n[1].X);
     }
 
+    /// <summary>A known (Manual) bridge stands for a derived row only where it covers it: a point covers points within
+    /// <see cref="SameCrossingM"/> (the OSM node it replaces), a line covers rows lying within <see cref="SameCrossingM"/> of it along their
+    /// whole length (rail + road + footway beside it). A line next to a point stays: the point is its span (Obstacles.WithSpans), alone it
+    /// matches every edge within the area build's 1.5 km. A segment in series stays too: Øresundsbroen's 14 km of approach viaducts,
+    /// Limfjordsbroen's fixed spans next to the 46 m flap were deactivated with the main span's way, so edges under them met no bridge.
+    /// ponytail: vertices only (a straight segment between two covered vertices is covered unless the known line bends sharply).</summary>
+    public static bool Covers(Geometry known, Geometry row) =>
+        (known is not Point || row is Point) && row.Coordinates.All(c => DistanceM(known, Geo.Point(c.Y, c.X)) <= SameCrossingM);
+
     private static bool UnknownOf(RoutingCorrection r, bool opening) =>
         r.Source == CorrectionSource.Derived && r.ClearanceM is null && (r.Kind == CorrectionKind.Bridge || (opening && r.Kind == CorrectionKind.OpeningBridge));
 
     /// <summary>Plan A: fetches broer.js and every DK bridge page (200 ms apart), writes one Manual correction per bridge with a clearance
     /// or an opening (updated in place on a re-run, found by its page URL), snapped to the nearest derived clearance-less bridge line of
-    /// the crossing (<see cref="CrossingM"/>); those lines (and an opening bridge's derived opening line without a clearance) within
-    /// <see cref="SameCrossingM"/> of it are deactivated (note suffix <see cref="DeactivatedSuffix"/>). A crossing without such a line is
+    /// the crossing (<see cref="CrossingM"/>); those rows (and an opening bridge's derived opening rows without a clearance) it
+    /// <see cref="Covers"/> are deactivated (note suffix <see cref="DeactivatedSuffix"/>). A crossing without such a line is
     /// left alone ("charted" when OSM has a bridge there already, else "noLine": a point would match edges 1.5 km round). A fixed bridge
     /// without a clearance (Masnedsund) writes nothing and marks the manual bridge rows of the crossing unverified. Changes are saved once
     /// at the end, so a dry run reports exactly what the real run does.</summary>
@@ -207,7 +216,7 @@ public static class Havnelods
         var created = own.Note is null;
         own.Kind = kind; own.ClearanceM = p.Opening ? null : clearance; own.Note = note;
         var deactivated = 0;
-        foreach (var (row, _) in near.Where(x => x.row.Active && UnknownOf(x.row, p.Opening) && DistanceM(x.row.Geometry, own.Geometry) <= SameCrossingM))
+        foreach (var (row, _) in near.Where(x => x.row.Active && UnknownOf(x.row, p.Opening) && Covers(own.Geometry, x.row.Geometry)))
         {
             row.Active = false; row.Note = Cut((row.Note ?? "") + DeactivatedSuffix); row.UpdatedById = userId; deactivated++;
         }

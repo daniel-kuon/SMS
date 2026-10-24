@@ -43,28 +43,60 @@ public class RoutingCorrectionTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(HttpStatusCode.NotFound, (await admin.DeleteAsync($"/api/admin/routing/corrections/{id}")).StatusCode);
     }
 
+    private static readonly NetTopologySuite.Geometries.GeometryFactory Gf = NetTopologySuite.Geometries.GeometryFactory.Default;
+    private static NetTopologySuite.Geometries.Geometry Pt(double x, double y) { var p = Gf.CreatePoint(new NetTopologySuite.Geometries.Coordinate(x, y)); p.SRID = 4326; return p; }
+    private static NetTopologySuite.Geometries.Geometry Ln(double x1, double y1, double x2, double y2) { var l = Gf.CreateLineString([new(x1, y1), new(x2, y2)]); l.SRID = 4326; return l; }
+    private static Sms.Domain.RoutingCorrection Row(NetTopologySuite.Geometries.Geometry g, double? clearance, Sms.Domain.CorrectionKind kind = Sms.Domain.CorrectionKind.Bridge) =>
+        new() { Kind = kind, Source = Sms.Domain.CorrectionSource.Derived, Geometry = g, ClearanceM = clearance, Note = "Brücke" };
+
     [Fact]
     public async Task Dedupe_drops_an_unknown_bridge_only_next_to_a_known_one_of_the_same_shape()
     {
         // far from every other test's rows (the dedupe runs over the whole table)
-        var gf = NetTopologySuite.Geometries.GeometryFactory.Default;
-        NetTopologySuite.Geometries.Geometry Pt(double x, double y) { var p = gf.CreatePoint(new NetTopologySuite.Geometries.Coordinate(x, y)); p.SRID = 4326; return p; }
-        NetTopologySuite.Geometries.Geometry Ln(double x1, double y1, double x2, double y2) { var l = gf.CreateLineString([new(x1, y1), new(x2, y2)]); l.SRID = 4326; return l; }
-        Sms.Domain.RoutingCorrection Row(NetTopologySuite.Geometries.Geometry g, double? clearance) =>
-            new() { Kind = Sms.Domain.CorrectionKind.Bridge, Source = Sms.Domain.CorrectionSource.Derived, Geometry = g, ClearanceM = clearance, Note = "Brücke" };
         var knownPoint = Row(Pt(30.000, 70.000), 22);
         var lineAtPoint = Row(Ln(29.995, 69.996, 30.005, 70.004), null);   // the whole bridge, the point is its span (Fehmarnsund, Kvickbron): stays
         var pointAtPoint = Row(Pt(30.0005, 70.0001), null);               // ~25 m: the same crossing drawn again
         var knownLine = Row(Ln(31.000, 70.000, 31.000, 70.005), 12);
         var lineAtLine = Row(Ln(31.0005, 70.000, 31.0005, 70.005), null);  // ~20 m beside it: rail next to road
+        var lineInSeries = Row(Ln(31.000, 70.005, 31.000, 70.015), null);  // on from its end: the approach viaduct, stays
         using var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<Sms.Infrastructure.SmsDbContext>();
-        db.RoutingCorrections.AddRange(knownPoint, lineAtPoint, pointAtPoint, knownLine, lineAtLine);
+        db.RoutingCorrections.AddRange(knownPoint, lineAtPoint, pointAtPoint, knownLine, lineAtLine, lineInSeries);
         await db.SaveChangesAsync();
         await Sms.Infrastructure.Routing.Waterways.DedupeUnknownBridgesAsync(db, dryRun: false, default);
-        var active = await db.RoutingCorrections.AsNoTracking().Where(c => new[] { lineAtPoint.Id, pointAtPoint.Id, lineAtLine.Id }.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.Active);
+        var active = await db.RoutingCorrections.AsNoTracking().Where(c => new[] { lineAtPoint.Id, pointAtPoint.Id, lineAtLine.Id, lineInSeries.Id }.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.Active);
         Assert.True(active[lineAtPoint.Id]);
         Assert.False(active[pointAtPoint.Id]);
         Assert.False(active[lineAtLine.Id]);
+        Assert.True(active[lineInSeries.Id]);
+    }
+
+    [Fact]
+    public async Task Havnelods_deactivates_only_the_derived_rows_its_bridge_covers()
+    {
+        // fixed bridge: the main span's way (the entry point on it), a rail deck 19 m beside it, an approach viaduct in series (Øresundsbroen)
+        var main = Row(Ln(32.000, 70.000, 32.000, 70.002), null);
+        var beside = Row(Ln(32.0005, 70.000, 32.0005, 70.002), null);
+        var approach = Row(Ln(32.000, 70.002, 32.000, 70.012), null);
+        // opening bridge kept as a point by an earlier run (Guldborgbroen on OSM's node): the node it replaced goes, a bridge line drawn
+        // since stays (the point is its span; alone the point puts the opening penalty on every edge within 1.5 km)
+        var node = Row(Pt(33.000, 70.000), null, Sms.Domain.CorrectionKind.OpeningBridge);
+        var line = Row(Ln(32.999, 69.9995, 33.001, 70.0005), null);
+        var own = new Sms.Domain.RoutingCorrection { Kind = Sms.Domain.CorrectionKind.OpeningBridge, Source = Sms.Domain.CorrectionSource.Manual, Geometry = Pt(33.000, 70.000), Active = true, Note = "Havnelods: Testbro test-opening-0001" };
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Sms.Infrastructure.SmsDbContext>();
+        db.RoutingCorrections.AddRange(main, beside, approach, node, line, own);
+        await db.SaveChangesAsync();
+        var fixedItem = await Sms.Infrastructure.Routing.Havnelods.ApplyAsync(db, new("test-fixed-0001", "Testbro fast", 70.001, 32.000), new("Fast bro", false, 5, null, 5, "5 m", null), null, default);
+        var openItem = await Sms.Infrastructure.Routing.Havnelods.ApplyAsync(db, new("test-opening-0001", "Testbro", 70.000, 33.000), new("Dobbeltfløjet klapbro", true, 4, null, 4, "4 m", null), null, default);
+        await db.SaveChangesAsync();
+        Assert.Equal(("created", 2), (fixedItem.Action, fixedItem.Deactivated));
+        Assert.Equal(("updated", 1), (openItem.Action, openItem.Deactivated));
+        var active = await db.RoutingCorrections.AsNoTracking().Where(c => new[] { main.Id, beside.Id, approach.Id, node.Id, line.Id }.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.Active);
+        Assert.False(active[main.Id]);
+        Assert.False(active[beside.Id]);
+        Assert.True(active[approach.Id]);
+        Assert.False(active[node.Id]);
+        Assert.True(active[line.Id]);
     }
 }

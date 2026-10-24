@@ -145,7 +145,7 @@ public static class WikidataBridges
             var h = it.ClearanceM.ToString("0.0#", CultureInfo.InvariantCulture);
             own.Kind = kind; own.ClearanceM = it.Movable ? null : it.ClearanceM;
             own.Note = Havnelods.Cut($"{NotePrefix}{it.Qid} (P2793): {it.Label} – {(it.Movable ? $"bewegliche Brücke, geschlossen {h} m, geöffnet ohne Höhenbegrenzung" : $"Durchfahrtshöhe {h} m")}{(it.Crosses is null ? "" : ", über " + it.Crosses)}. CC0, {it.Url}");
-            foreach (var (row, _) in matched.Where(x => x.row.Active))
+            foreach (var (row, _) in matched.Where(x => x.row.Active && Havnelods.Covers(own.Geometry, x.row.Geometry)))
             {
                 row.Active = false; row.Note = Havnelods.Cut((row.Note ?? "") + DeactivatedSuffix); row.UpdatedById = userId; deactivated++;
             }
