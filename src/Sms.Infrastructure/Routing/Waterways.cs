@@ -387,13 +387,18 @@ public static class Waterways
         u."Active" AND u."Source" = 'Derived' AND u."Kind" = 'Bridge' AND u."ClearanceM" IS NULL
           AND EXISTS (SELECT 1 FROM "RoutingCorrections" k WHERE k."Active" AND k."Id" <> u."Id"
               AND ((k."Kind" = 'Bridge' AND k."ClearanceM" IS NOT NULL) OR k."Kind" = 'OpeningBridge')
+              AND (GeometryType(k."Geometry") = 'LINESTRING') = (GeometryType(u."Geometry") = 'LINESTRING')
               AND k."Geometry" && ST_Expand(u."Geometry", 0.003)
               AND ST_DWithin(k."Geometry"::geography, u."Geometry"::geography, 100))
         """;
 
     /// <summary>Plan C step 1: derived fixed bridges without a clearance (the unknown rows and the waterway import's clearance-less lines)
-    /// within 100 m of an active bridge with a clearance or an opening bridge are that crossing drawn again (rail + road + footway ways):
-    /// deactivated, note suffix <see cref="DuplicateSuffix"/>. import-bridges recreates them for its bbox, so run this again after it.</summary>
+    /// within 100 m of an active bridge with a clearance or an opening bridge of the same shape (line next to a line, point next to a
+    /// point) are that crossing drawn again (rail + road + footway ways): deactivated, note suffix <see cref="DuplicateSuffix"/>.
+    /// A line next to a known point stays: the point is a span of that line (Obstacles.WithSpans: the window gets the point's clearance,
+    /// the rest of the line is impassable), and alone a point matches every edge within the area build's 1.5 km - without its line the
+    /// 1 m Kvickbron closed Helsingborg's harbour, Fehmarnsund lost its impassable rest (v82, 2026-10-24).
+    /// import-bridges recreates them for its bbox, so run this again after it.</summary>
     public static async Task<int> DedupeUnknownBridgesAsync(SmsDbContext db, bool dryRun, CancellationToken ct) => dryRun
         ? (await db.Database.SqlQueryRaw<int>($"""SELECT count(*)::int AS "Value" FROM "RoutingCorrections" u WHERE {DuplicateFilter}""").ToListAsync(ct)).Single()
         : await db.Database.ExecuteSqlRawAsync($"""UPDATE "RoutingCorrections" u SET "Active" = false, "Note" = left(coalesce(u."Note", '') || '{DuplicateSuffix}', 4000), "UpdatedAt" = now() WHERE {DuplicateFilter}""", ct);
