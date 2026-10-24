@@ -157,6 +157,41 @@ public class ObstaclesTests
     }
 
     [Fact]
+    public void Bridge_ways_in_series_are_passable_at_the_known_span_only()
+    {
+        // three ways end to end (west approach, main span, east approach): only the main span is known
+        Geometry W(double x1, double x2) => F.CreateLineString([new Coordinate(x1, 55.34), new Coordinate(x2, 55.34)]);
+        var west = W(11.00, 11.03); var main = W(11.03, 11.06); var east = W(11.06, 11.09);
+        var crossings = new[] { Edge(1, 2, 11.015, 55.33, 11.015, 55.35), Edge(3, 4, 11.045, 55.33, 11.045, 55.35), Edge(5, 6, 11.075, 55.33, 11.075, 55.35) };
+        const Sms.Domain.CorrectionKind B = Sms.Domain.CorrectionKind.Bridge;
+        // a charted span point in the middle: its window only
+        var spanned = Obstacles.Apply(crossings, Obstacles.WithSpans([(west, B, null), (main, B, 20), (east, B, null), (F.CreatePoint(new Coordinate(11.045, 55.3401)), B, 65)]), 1852, 926, 60);
+        Assert.Equal(65, Assert.Single(spanned).ClearanceM);
+        // a span point on a main span without a clearance of its own marks one channel, not the bridge: the approaches (6 m off, a shared
+        // node merges same-clearance ways, Chains) stay unknown
+        var pointOnly = Obstacles.Apply(crossings, Obstacles.WithSpans([(W(11.00, 11.0299), B, null), (main, B, null), (W(11.0601, 11.09), B, null), (F.CreatePoint(new Coordinate(11.045, 55.3401)), B, 65)]), 1852, 926, 60);
+        Assert.Equal(3, pointOnly.Count); Assert.Equal(65, pointOnly.Single(e => e.Source == 3).ClearanceM); Assert.True(pointOnly.Single(e => e.Source == 1).UnknownBridge);
+        // the main span's clearance (a Manual row) without a point: the main span only, the approaches are closed
+        var known = Obstacles.Apply(crossings, Obstacles.WithSpans([(west, B, null), (main, B, 55), (east, B, null)]), 1852, 926, 60);
+        Assert.Equal(55, Assert.Single(known).ClearanceM);
+        // an opening span (a flap between fixed spans): the flap only
+        var flap = Obstacles.Apply(crossings, Obstacles.WithSpans([(west, B, null), (main, Sms.Domain.CorrectionKind.OpeningBridge, null), (east, B, null)]), 1852, 926, 60);
+        Assert.Equal(3, Assert.Single(flap).Source);
+        // the OSM way of the main span drawn under the Manual row (reversed) is covered by it: not closed, the known clearance counts
+        var dup = Obstacles.Apply(crossings, Obstacles.WithSpans([(west, B, null), (main, B, 55), (main.Reverse(), B, null), (east, B, null)]), 1852, 926, 60);
+        Assert.Equal(55, Assert.Single(dup).ClearanceM);
+        // unknown along its whole length: passed with a warning everywhere
+        var unknown = Obstacles.Apply(crossings, Obstacles.WithSpans([(west, B, null), (main, B, null), (east, B, null)]), 1852, 926, 60);
+        Assert.Equal(3, unknown.Count); Assert.All(unknown, e => Assert.True(e.UnknownBridge));
+        // a road meeting the bridge's end at a right angle (another crossing; 6 m off: a shared node merges same-clearance ways, Chains)
+        // or a way 100 m off its end is no part of it
+        var road = F.CreateLineString([new Coordinate(11.0901, 55.34), new Coordinate(11.0901, 55.36)]);
+        var gap = W(11.0916, 11.12);
+        var others = Obstacles.Apply([Edge(7, 8, 11.08, 55.35, 11.10, 55.35), Edge(9, 10, 11.105, 55.33, 11.105, 55.35)], Obstacles.WithSpans([(main, B, 55), (east, B, null), (road, B, null), (gap, B, null)]), 1852, 926, 60);
+        Assert.Equal(2, others.Count); Assert.All(others, e => Assert.True(e.UnknownBridge));
+    }
+
+    [Fact]
     public void Span_points_are_matched_by_index_as_before()
     {
         // a long bridge line with a charted span point next to it, and one far away: one window with the span's clearance, the rest impassable

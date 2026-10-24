@@ -22,14 +22,16 @@ public static class Obstacles
     /// passes the point keeps its clearance even where the line is drawn short or over the next arm), never as a point - in area mode a
     /// point matches edges within 1.5 km and carried its clearance to the bridge's other spans (the Storstrøm's unknown northern span got
     /// the main span's 26 m and lost its unknown flag). A point without a line of its kind keeps its match.
+    /// A line without a clearance that continues a known one (<see cref="ClosedInChains"/>: an approach viaduct, the fixed spans next to a
+    /// flap) is closed (clearance 0); a bridge unknown along its whole length stays passable with a warning.
     /// </summary>
     public static List<(Geometry geom, CorrectionKind kind, double? clearanceM)> WithSpans(IReadOnlyList<(Geometry geom, CorrectionKind kind, double? clearanceM)> obstacles, double spanMatchM = SpanMatchM, double windowM = SpanWindowM)
     {
         var points = obstacles.Where(o => o.geom is Point && o.kind != CorrectionKind.Lock).ToList();
-        if (points.Count == 0) return obstacles.ToList();
         var pointIndex = PointIndex(points);
         var result = new List<(Geometry geom, CorrectionKind kind, double? clearanceM)>(obstacles.Count);
         var consumed = new HashSet<Geometry>(ReferenceEqualityComparer.Instance);
+        var members = new List<(LineString line, bool known, int unknownAt)>();
         foreach (var o in Chains(obstacles))
         {
             if (o.geom is not LineString line || o.kind == CorrectionKind.Lock) { result.Add(o); continue; }
@@ -51,7 +53,14 @@ public static class Obstacles
                 window = window.Copy(); window.Apply(new Scale(1 / cos));
                 result.Add((window, o.kind, p.clearanceM ?? o.clearanceM));
             }
-            if (windows.Count == 0) { result.Add(o); continue; }
+            if (windows.Count == 0)
+            {
+                var unknown = o.kind == CorrectionKind.Bridge && o.clearanceM is null;
+                members.Add((line, !unknown, unknown ? result.Count : -1)); result.Add(o); continue;
+            }
+            // a line known only by its span points closes its own rest, not the ways it continues: Essingeleden's charted 17.5 m span
+            // (Lilla Essingen side) would close its unknown southern ways over Mälaren's channel to Stockholm (Gröndal)
+            members.Add((line, o.kind == CorrectionKind.OpeningBridge || o.clearanceM is not null, -1));
             var rest = scaled.Difference(new GeometryCollection(windows.ToArray()).Union()).Copy();
             if (!rest.IsEmpty) { rest.Apply(new Scale(1 / cos)); result.Add((rest, o.kind, 0)); }
         }
@@ -63,7 +72,102 @@ public static class Obstacles
                 var disc = sp.Buffer(MatchM / WaterGraphTiler.MPerDegLat); disc.Apply(new Scale(1 / cos));
                 result[i] = (disc, result[i].kind, result[i].clearanceM);
             }
+        foreach (var (i, closed, kept) in ClosedInChains(members))
+        {
+            var kind = result[i].kind;
+            result[i] = (closed, kind, 0);
+            if (!kept.IsEmpty) result.Add((kept, kind, null));
+        }
         return result;
+    }
+
+    /// <summary>Bridge ways in series join within this distance end to end; a known line lying along an unknown one (within it) is part of it.</summary>
+    public const double ChainJoinM = 20;
+    /// <summary>... and continue each other's direction within this angle (a road meeting the bridge at a junction is no part of it).</summary>
+    public const double ChainAngleDeg = 30;
+
+    /// <summary>
+    /// OSM draws a long bridge as ways in series (main span, fixed spans, approach viaducts), and often only one of them has a clearance or
+    /// an opening span (Øresundsbroen's 14 km of approach, Limfjordsbroen's fixed spans next to the flap, Storebælt Østbroen's approaches:
+    /// a Havnelods Manual line, an OSM clearance tag). Lines joining end to end (<see cref="ChainJoinM"/>, in line within
+    /// <see cref="ChainAngleDeg"/>), or a known line lying along an unknown one (a Manual main span on the OSM way that runs on over the
+    /// approaches), form one bridge. The unknown lines (fixed, no clearance, no span window) of a bridge with a known line (a clearance of
+    /// its own, or opening) are closed (clearance 0) except within ChainJoinM of its known lines (they stay unknown there: Apply lets the
+    /// known clearance count): the bridge is passed at its known spans only. A line known only by charted span points is no such seed (it
+    /// closes its own rest, as before): a span point marks one channel, not the bridge's others (Essingeleden).
+    /// Trade-off: a navigable fixed span without data in series with a known line is closed too (a detour or no route, never a pass under
+    /// an unknown viaduct); a bridge unknown along its whole length keeps the warning. ponytail: geometry only - names and OSM relations
+    /// are not in the rows; join by name if a bridge drawn with gaps shows up.
+    /// </summary>
+    /// <returns>per closed member: its result index, the closed part and the part kept unknown (empty when none)</returns>
+    public static IEnumerable<(int at, Geometry closed, Geometry kept)> ClosedInChains(IReadOnlyList<(LineString line, bool known, int unknownAt)> members)
+    {
+        var parent = Enumerable.Range(0, members.Count).ToArray();
+        int Find(int i) { while (parent[i] != i) i = parent[i] = parent[parent[i]]; return i; }
+        var joinDeg = ChainJoinM / WaterGraphTiler.MPerDegLat; var minDot = Math.Cos(ChainAngleDeg * Math.PI / 180);
+        var ends = new STRtree<(int member, Coordinate at, double dx, double dy)>(); var lines = new STRtree<int>();
+        var all = new List<(int member, Coordinate at, double dx, double dy)>();
+        for (var i = 0; i < members.Count; i++)
+        {
+            if (members[i].line.NumPoints < 2) continue;
+            foreach (var start in new[] { true, false }) { var e = End(i, members[i].line, start); all.Add(e); ends.Insert(new Envelope(e.at), e); }
+            lines.Insert(members[i].line.EnvelopeInternal, i);
+        }
+        if (all.Count == 0) yield break;
+        ends.Build(); lines.Build();
+        foreach (var a in all)
+        {
+            var cos = Math.Cos(a.at.Y * Math.PI / 180);
+            var env = new Envelope(a.at); env.ExpandBy(joinDeg / Math.Max(0.1, cos), joinDeg);
+            foreach (var b in ends.Query(env))
+                // in series: the two ways leave the joint in opposite directions (a way drawn twice leaves it in the same one)
+                if (b.member != a.member && Math.Sqrt(Math.Pow((b.at.X - a.at.X) * cos, 2) + Math.Pow(b.at.Y - a.at.Y, 2)) <= joinDeg && a.dx * b.dx + a.dy * b.dy <= -minDot)
+                    parent[Find(a.member)] = Find(b.member);
+        }
+        for (var k = 0; k < members.Count; k++)
+            if (members[k].known)
+                foreach (var u in Near(lines, members[k].line, ChainJoinM))
+                    if (members[u].unknownAt >= 0 && Along(members[k].line, members[u].line, joinDeg)) parent[Find(k)] = Find(u);
+        var known = Enumerable.Range(0, members.Count).Where(i => members[i].known).ToLookup(Find);
+        for (var i = 0; i < members.Count; i++)
+        {
+            if (members[i].unknownAt < 0 || !known.Contains(Find(i))) continue;
+            var line = members[i].line; var cos = Math.Cos(line.Centroid.Y * Math.PI / 180);
+            var scaled = (LineString)line.Copy(); scaled.Apply(new Scale(cos));
+            var near = known[Find(i)].Where(k => members[k].line.EnvelopeInternal.Distance(line.EnvelopeInternal) <= 2 * joinDeg)
+                .Select(k => { var s = members[k].line.Copy(); s.Apply(new Scale(cos)); return s.Buffer(joinDeg); }).ToArray();
+            if (near.Length == 0) { yield return (members[i].unknownAt, line, Geo.Factory.CreateLineString()); continue; }
+            var cover = new GeometryCollection(near).Union();
+            var closed = scaled.Difference(cover).Copy(); // overlay output shares coordinates with its input: copy before scaling back
+            if (closed.IsEmpty) continue; // the known line covers it (a deck beside it, the same way drawn twice)
+            var kept = scaled.Intersection(cover).Copy();
+            closed.Apply(new Scale(1 / cos)); kept.Apply(new Scale(1 / cos));
+            yield return (members[i].unknownAt, closed, kept);
+        }
+    }
+
+    // every vertex of the known line within d (degrees, scaled) of the unknown one
+    private static bool Along(LineString known, LineString unknown, double d)
+    {
+        var cos = Math.Cos(known.Centroid.Y * Math.PI / 180);
+        var su = unknown.Copy(); su.Apply(new Scale(cos));
+        return known.Coordinates.All(c => su.IsWithinDistance(Geo.Factory.CreatePoint(new Coordinate(c.X * cos, c.Y)), d));
+    }
+
+    // an end of the line and the unit direction (metres) into it, taken ~50 m along: the last vertex step of a bent or split way is noise
+    private static (int member, Coordinate at, double dx, double dy) End(int member, LineString line, bool start)
+    {
+        var cs = line.Coordinates; var n = cs.Length;
+        var a = start ? cs[0] : cs[n - 1]; var cos = Math.Cos(a.Y * Math.PI / 180);
+        double dx = 0, dy = 0;
+        for (var k = 1; k < n; k++)
+        {
+            var c = start ? cs[k] : cs[n - 1 - k];
+            dx = (c.X - a.X) * cos; dy = c.Y - a.Y;
+            if (Math.Sqrt(dx * dx + dy * dy) * WaterGraphTiler.MPerDegLat >= 50) break;
+        }
+        var len = Math.Sqrt(dx * dx + dy * dy);
+        return len > 0 ? (member, a, dx / len, dy / len) : (member, a, 0, 0);
     }
 
     /// <summary>OSM maps a long bridge as several ways (main span, approach viaducts) sharing end nodes: lines of the same kind and

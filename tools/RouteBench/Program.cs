@@ -15,7 +15,7 @@
 //        env SMS_BENCH_ZONE="shoal=<ids file>[;dump=s,w,n,e]": routes on the active graph with the buoyed-zone rule simulated in memory (shoal single-mark lines join the channel zone, the gaps' x3 cut, known-water evidence blocked in the zone); the ids file is computed when missing; dump writes the gap chords and zone outlines in the box to <out>/zone-dump.geojson
 //        env SMS_BENCH_KNOWN="dtm=<dir of ERDDAP dtm_<lat>_<lng>.nc>;traffic=<vesseldensity_04_<year>.tif>,…[;sailing=10][;isolated=1][;noflag=1][;nohazard=1][;nopull=1]": the TrafficAndDtm build in memory (traffic flag, DtmMinM, isolated-danger pricing) on the active graph
 //        env SMS_BENCH_OLDZONE=1|dump=<file>: routes on the active graph with v81's 25 m buoyed-zone samples instead of the exact overlay (DepthLimits.ShallowZones) in memory
-//        env SMS_BENCH_BRIDGES="<asof UTC>[+note=<text>][+ids=<file>]": routes on the active graph with the bridge/lock rows as they were at that time (or only those rows reverted) in memory: edge clearances and the smoothing's bridge index
+//        env SMS_BENCH_BRIDGES="<asof UTC>[+note=<text>][+ids=<file>][+all]": routes on the active graph with the bridge/lock rows as they were at that time (or only those rows reverted) in memory: edge clearances and the smoothing's bridge index; +all: edges near every bridge row, not only the changed ones (a change of Obstacles itself: what this build closes that the graph's build kept)
 using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -626,6 +626,7 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_BRIDGES") is { Length: > 0 } a
     // bridge index (SeaRouter statics) is rebuilt from the old set. Not simulated: the area graph's span anchors (topology).
     // "<asof>[;note=<text>]": only the changed rows whose note contains the text go back (e.g. "(Duplikat)": the dedupe alone)
     // "ids=<file>": only the changed rows with these ids (one per line)
+    // "all": edges near every bridge/lock row are re-run, not only those near changed rows
     var bopt = asofArg.Split(';', '+'); var noteFilter = bopt.FirstOrDefault(p => p.StartsWith("note="))?[5..];
     var idFilter = bopt.FirstOrDefault(p => p.StartsWith("ids=")) is { } idf ? File.ReadAllLines(idf[4..]).Where(l => l.Trim().Length > 0).Select(l => Guid.Parse(l.Trim())).ToHashSet() : null;
     var asof = DateTime.Parse(bopt[0], System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal);
@@ -651,7 +652,8 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_BRIDGES") is { Length: > 0 } a
     T F<T>(string name) => (T)typeof(Sms.Domain.SeaGraph).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(g)!;
     var near = new NetTopologySuite.Index.Strtree.STRtree<NetTopologySuite.Geometries.Geometry>();
     var reach = (o.BridgeMatchAreaM + Obstacles.SpanWindowM + 100) / WaterGraphTiler.MPerDegLat * 2;
-    foreach (var c in all.Where(c => changedIds.Contains(c.Id))) { var env = c.Geometry.EnvelopeInternal.Copy(); env.ExpandBy(reach); near.Insert(env, c.Geometry); }
+    var everyRow = bopt.Contains("all");
+    foreach (var c in all.Where(c => everyRow ? c.Active || changedIds.Contains(c.Id) : changedIds.Contains(c.Id))) { var env = c.Geometry.EnvelopeInternal.Copy(); env.ExpandBy(reach); near.Insert(env, c.Geometry); }
     near.Build();
     var clear = (float[])F<float[]>("_clear").Clone(); var unknown = (bool[])(F<bool[]?>("_unknownBridge") ?? new bool[g.EdgeCount]).Clone(); var cost = (float[])F<float[]>("_cost").Clone();
     var passageSide = new List<GraphEdge>(); var area = new List<GraphEdge>(); var at = new Dictionary<NetTopologySuite.Geometries.LineString, int>(ReferenceEqualityComparer.Instance);
@@ -670,8 +672,8 @@ if (Environment.GetEnvironmentVariable("SMS_BENCH_BRIDGES") is { Length: > 0 } a
     foreach (var e in at.Values)
     {
         var hasThen = then.TryGetValue(e, out var a); var hasNow = now.TryGetValue(e, out var b);
-        if (!hasNow) { if (hasThen) missing++; continue; } // dropped by the new set: not in the graph, cannot come back
-        if (!hasThen) { cost[e] = float.PositiveInfinity; closed++; continue; }
+        if (!hasThen) { cost[e] = float.PositiveInfinity; closed++; continue; } // also when the new set drops it: a graph edge this build of Obstacles closes
+        if (!hasNow) { missing++; continue; } // in the graph, but the new set drops it: no cost to restore from
         if (a.ClearanceM == b.ClearanceM && a.UnknownBridge == b.UnknownBridge && a.Cost == b.Cost) continue;
         clear[e] = a.ClearanceM is { } cv ? (float)cv : float.NaN; unknown[e] = a.UnknownBridge; cost[e] += (float)(a.Cost - b.Cost); changed++;
     }
