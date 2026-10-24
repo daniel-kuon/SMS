@@ -161,6 +161,14 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
             catch (Exception ex) { Report("failed", ex.Message); logger.LogError(ex, "Routing graph build failed"); return; }
             finally { Interlocked.Exchange(ref _running, 0); }
             await SeaRouter.WarmAsync(scopes, logger); // the new version's graph and statics before its first route
+            // the admin's problem list on the new graph, and its decisions checked against the data now (a failure leaves the old list)
+            try
+            {
+                await using var scope = scopes.CreateAsyncScope();
+                var r = await RoutingIssues.RunAsync(scope.ServiceProvider.GetRequiredService<SmsDbContext>(), CancellationToken.None);
+                Report("issues", $"{r.Issues} issues on graph version {r.Version} ({string.Join(", ", r.ByType.Select(t => $"{t.Key} {t.Value}"))}); {r.Outdated} of {r.Checked} decisions outdated ({r.Seconds} s)");
+            }
+            catch (Exception ex) { logger.LogWarning(ex, "Routing issue detection failed"); Report("issues", "failed: " + ex.Message); }
         });
         return true;
     }

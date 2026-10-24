@@ -263,7 +263,7 @@ public static class FeedbackEndpoints
     /// <summary>The group moves to the top of the list when its items change.</summary>
     private static Task TouchAsync(SmsDbContext db, Guid groupId, CancellationToken ct) =>
         db.FeedbackGroups.Where(x => x.Id == groupId).ExecuteUpdateAsync(u => u.SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
-    private static (double s, double w, double n, double e)? Bbox(string bbox)
+    internal static (double s, double w, double n, double e)? Bbox(string bbox)
     {
         var v = bbox.Split(',').Select(x => double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : double.NaN).ToArray();
         return v.Length == 4 && v.All(double.IsFinite) && v[0] < v[2] && v[1] < v[3] ? (v[0], v[1], v[2], v[3]) : null;

@@ -154,7 +154,7 @@ api.MapHarbours();
 api.MapSeamarks(); api.MapPois();
 api.MapCms();
 api.MapAis(); api.MapWeather();
-api.MapRouting(); api.MapPointInfo(); api.MapFeedback();
+api.MapRouting(); api.MapPointInfo(); api.MapFeedback(); api.MapIssues();
 api.MapTracking();
 api.MapSocial();
 api.MapTrips();

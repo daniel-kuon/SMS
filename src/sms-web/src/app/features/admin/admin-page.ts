@@ -85,6 +85,9 @@ interface RoutingStatus { method: string; graphVersion: number; builtAt: string 
           <h4>{{ 'admin.corrections' | translate }}</h4>
           <p class="muted">{{ 'admin.correctionsHint' | translate }}</p>
           <a mat-stroked-button routerLink="/admin/corrections">{{ 'admin.editCorrections' | translate }}</a>
+          <h4>{{ 'admin.issues.title' | translate }}</h4>
+          <p class="muted">{{ 'admin.issues.hint' | translate }}</p>
+          <a mat-stroked-button routerLink="/admin/issues">{{ 'admin.issues.open' | translate }}</a>
           <h4>{{ 'admin.fb.title' | translate }}</h4>
           <p class="muted">{{ 'admin.fb.hint' | translate }}</p>
           <a mat-stroked-button routerLink="/admin/fairway-feedback">{{ 'admin.fb.open' | translate }}</a>
