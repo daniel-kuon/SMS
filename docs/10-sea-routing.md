@@ -156,6 +156,7 @@ users have not edited (compare with the last imported snapshot). Store
 | `POST /api/admin/routing/rebuild` (admin) | starts rebuild job (all or selected tiles) |
 | `GET/POST/PUT/DELETE /api/admin/routing/corrections` (admin) | manage blocks/passages |
 | `POST /api/admin/routing/import-dtm?bbox=s,w,n,e` (admin) | EMODnet Bathymetry DTM 2024 (WCS) into `routing_dtm`, 1° chunks, at most 4° × 4° per call |
+| `POST /api/admin/routing/import-no-depths?bbox=s,w,n,e` (admin) | Kartverket Sjøkart-Dybdedata (WFS) into `routing_depth` (source `kartverket`, wins over the fathom bands), 1° chunks, at most 4° × 4° per call |
 | `POST /api/admin/routing/import-traffic-file` (admin, multipart) | EMODnet vessel density GeoTIFFs `vesseldensity_04/05_<year>.tif` into `routing_traffic` (replaces the table) |
 | `GET /tiles/traffic/{z}/{x}/{y}.mvt` (Sms.Tiles) | vessel density cells (`sailing`, `pleasure`, `known`) for the map overlay |
 

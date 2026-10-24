@@ -1,7 +1,10 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using NetTopologySuite.Geometries;
+using NetTopologySuite.Index.Strtree;
 using NetTopologySuite.IO.VectorTiles.Mapbox;
+using NetTopologySuite.Operation.Overlay;
+using NetTopologySuite.Operation.OverlayNG;
 using Sms.Infrastructure;
 
 namespace Sms.Api;
@@ -83,25 +86,61 @@ public sealed class SeascapeDepthProvider(IHttpClientFactory http, IConfiguratio
     }
 }
 
-/// <summary>Replaces the depth areas inside a bounding box with the provider's; the next graph build reads them.</summary>
+/// <summary>Replaces the depth areas inside a bounding box with the provider's; the next graph build reads them. Kartverket rows
+/// (KartverketDepths) stay and win: the new areas lose the parts they cover.</summary>
 public static class DepthImport
 {
+    /// <summary>Pieces smaller than this (deg², ≈ 1 m²) left by a cut are dropped.</summary>
+    public const double MinPieceDeg2 = 1e-10;
+
     public static async Task<(int areas, int removed)> RunAsync(IDepthProvider provider, SmsDbContext db, double minLng, double minLat, double maxLng, double maxLat, CancellationToken ct)
     {
         var areas = await provider.AreasAsync(minLng, minLat, maxLng, maxLat, ct);
-        var removed = await db.Database.ExecuteSqlRawAsync("DELETE FROM routing_depth WHERE geom && ST_MakeEnvelope({0},{1},{2},{3},4326)", [minLng, minLat, maxLng, maxLat], ct);
+        var removed = await db.Database.ExecuteSqlRawAsync("DELETE FROM routing_depth WHERE geom && ST_MakeEnvelope({0},{1},{2},{3},4326) AND source NOT IN ({4}, {5})", [minLng, minLat, maxLng, maxLat, KartverketDepths.Source, KartverketDepths.UnsurveyedSource], ct);
         var conn = (Npgsql.NpgsqlConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
-        await using (var w = await conn.BeginBinaryImportAsync("COPY routing_depth (geom, min_depth_m, max_depth_m, source) FROM STDIN (FORMAT BINARY)", ct))
+        var cover = new List<Geometry>();
+        await using (var cmd = new Npgsql.NpgsqlCommand("SELECT geom FROM routing_depth WHERE source IN (@k, @u) AND geom && ST_Expand(ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326), 0.2)", conn) { CommandTimeout = 3600 })
         {
-            foreach (var a in areas)
-            {
-                await w.StartRowAsync(ct);
-                await w.WriteAsync(a.Area, NpgsqlTypes.NpgsqlDbType.Geometry, ct); await w.WriteAsync(a.MinDepthM, NpgsqlTypes.NpgsqlDbType.Double, ct);
-                await w.WriteAsync(a.MaxDepthM, NpgsqlTypes.NpgsqlDbType.Double, ct); await w.WriteAsync(a.Source, NpgsqlTypes.NpgsqlDbType.Text, ct);
-            }
-            await w.CompleteAsync(ct);
+            cmd.Parameters.AddWithValue("k", KartverketDepths.Source); cmd.Parameters.AddWithValue("u", KartverketDepths.UnsurveyedSource);
+            cmd.Parameters.AddWithValue("x1", minLng); cmd.Parameters.AddWithValue("y1", minLat); cmd.Parameters.AddWithValue("x2", maxLng); cmd.Parameters.AddWithValue("y2", maxLat);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) cover.Add(r.GetFieldValue<Geometry>(0));
         }
+        if (cover.Count > 0) areas = Outside(areas, CoverIndex(cover));
+        await KartverketDepths.CopyAsync(conn, areas, ct);
         return (areas.Count, removed);
+    }
+
+    public static STRtree<Geometry> CoverIndex(IEnumerable<Geometry> cover)
+    {
+        var index = new STRtree<Geometry>();
+        foreach (var c in cover) if (!c.IsEmpty) index.Insert(c.EnvelopeInternal, c);
+        index.Build();
+        return index;
+    }
+
+    /// <summary>Precedence: the areas with the parts the cover (kartverket rows) overlaps cut away.</summary>
+    public static List<DepthArea> Outside(IEnumerable<DepthArea> areas, STRtree<Geometry> cover) =>
+        areas.SelectMany(a => Outside(a.Area, cover) is { } parts ? parts.Select(p => a with { Area = p }) : [a]).ToList();
+
+    /// <summary>The parts of an area outside every cover polygon; null = untouched (no cover polygon overlaps it, touching does not count).</summary>
+    public static List<Polygon>? Outside(Polygon area, STRtree<Geometry> cover)
+    {
+        var hits = cover.Query(area.EnvelopeInternal).Where(c => c.Intersects(area) && !c.Touches(area)).ToList();
+        if (hits.Count == 0) return null;
+        Geometry rest;
+        try { rest = OverlayNGRobust.Overlay(area, OverlayNGRobust.Union(Geo.Factory.BuildGeometry(hits)), SpatialFunction.Difference); }
+        catch (TopologyException) { rest = OverlayNGRobust.Overlay(area.Buffer(0), OverlayNGRobust.Union(Geo.Factory.BuildGeometry(hits.Select(h => h.Buffer(0)).ToList())), SpatialFunction.Difference); }
+        return Polygons(rest);
+    }
+
+    /// <summary>The polygons of an overlay result (SRID 4326), slivers below <see cref="MinPieceDeg2"/> dropped.</summary>
+    public static List<Polygon> Polygons(Geometry g)
+    {
+        var result = new List<Polygon>();
+        for (var i = 0; i < g.NumGeometries; i++)
+            if (g.GetGeometryN(i) is Polygon { IsEmpty: false } p && p.Area >= MinPieceDeg2) { p.SRID = 4326; result.Add(p); }
+        return result;
     }
 }

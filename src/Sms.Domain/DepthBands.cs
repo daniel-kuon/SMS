@@ -21,11 +21,19 @@ public static class DepthBands
         minDepthM is > 0 ? minDepthM : draftM is > 0 ? draftM + marginM : null;
 
     /// <summary>The lowest band floor that still passes for <paramref name="minDepthM"/>, given the bands as (min, max) pairs: a band
-    /// passes when its middle ≥ the minimum depth; areas and edges with min_depth ≥ the result are navigable. Without a passing band: the limit itself.</summary>
+    /// passes when its middle ≥ the minimum depth; areas and edges with min_depth ≥ the result are navigable. Without a passing band: the limit itself.
+    /// An edge keeps its floor only, so with several band schemes (fathom steps, Kartverket's metric 0.5–2, 0.5–10, 2–5, 5–10 … m) the
+    /// result is the lowest floor from which on every band passes: a floor shared by a passing and a failing band (0.5–10 and 0.5–2) or
+    /// one below a failing band of the other scheme stays closed. For one monotone scheme this is the lowest passing floor, as before.</summary>
     public static double EffectiveFloor(double minDepthM, IEnumerable<(double MinM, double MaxM)> bands)
     {
-        var passing = bands.Where(b => b.MaxM > b.MinM && (b.MinM + b.MaxM) / 2 >= minDepthM).Select(b => b.MinM).ToList();
-        return passing.Count == 0 ? minDepthM : Math.Min(minDepthM, passing.Min());
+        var floor = minDepthM;
+        foreach (var g in bands.Where(b => b.MaxM > b.MinM).GroupBy(b => b.MinM).OrderByDescending(g => g.Key))
+        {
+            if (!g.All(b => (b.MinM + b.MaxM) / 2 >= minDepthM)) break;
+            floor = Math.Min(floor, g.Key);
+        }
+        return floor;
     }
 
     /// <summary>A band (by its floor) the route should be checked in: the floor lies below the warning depth.</summary>

@@ -393,7 +393,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
                 await using (var r = await cmd.ExecuteReaderAsync(c))
                     while (await r.ReadAsync(c)) if (!r.IsDBNull(0)) { var g = r.GetFieldValue<Geometry>(0); if (!g.IsEmpty) land.Add(g); }
                 // charted depth areas of the tile (routing_depth, filled by the admin depth import)
-                await using var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1,@y1,@x2,@y2,4326)", conn) { CommandTimeout = 3600 };
+                await using var dcmd = new NpgsqlCommand(DepthLimits.AreasSql + " WHERE geom && ST_MakeEnvelope(@x1,@y1,@x2,@y2,4326)", conn) { CommandTimeout = 3600 };
                 dcmd.Parameters.AddWithValue("x1", e.MinX); dcmd.Parameters.AddWithValue("y1", e.MinY); dcmd.Parameters.AddWithValue("x2", e.MaxX); dcmd.Parameters.AddWithValue("y2", e.MaxY);
                 var depths = new List<(Geometry, double)>();
                 await using (var dr = await dcmd.ExecuteReaderAsync(c))
@@ -486,7 +486,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         if (channelEdgeFrom.Count > 0)
         {
             depthRows = [];
-            await using (var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn) { CommandTimeout = 3600 })
+            await using (var dcmd = new NpgsqlCommand(DepthLimits.AreasSql + " WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn) { CommandTimeout = 3600 })
             {
                 dcmd.Parameters.AddWithValue("x1", regionEnv.MinX); dcmd.Parameters.AddWithValue("y1", regionEnv.MinY); dcmd.Parameters.AddWithValue("x2", regionEnv.MaxX); dcmd.Parameters.AddWithValue("y2", regionEnv.MaxY);
                 await using var dr = await dcmd.ExecuteReaderAsync(ct);
@@ -706,7 +706,7 @@ public sealed class RoutingGraphBuilder(IConfiguration config, IServiceScopeFact
         // 4. pricing: the same decorations as grid edges
         Phase("pricing", 3);
         var depths = new List<(Geometry, double)>();
-        await using (var dcmd = new NpgsqlCommand("SELECT geom, min_depth_m FROM routing_depth WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn) { CommandTimeout = 3600 })
+        await using (var dcmd = new NpgsqlCommand(DepthLimits.AreasSql + " WHERE geom && ST_MakeEnvelope(@x1, @y1, @x2, @y2, 4326)", conn) { CommandTimeout = 3600 })
         {
             dcmd.Parameters.AddWithValue("x1", region.MinX); dcmd.Parameters.AddWithValue("y1", region.MinY); dcmd.Parameters.AddWithValue("x2", region.MaxX); dcmd.Parameters.AddWithValue("y2", region.MaxY);
             await using var dr = await dcmd.ExecuteReaderAsync(ct);

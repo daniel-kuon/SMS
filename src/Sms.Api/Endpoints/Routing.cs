@@ -18,7 +18,7 @@ public record CorrectionUpsert(CorrectionKind Kind, Geometry Geometry, string? N
 public static class RoutingEndpoints
 {
     public const string Disclaimer = "Entfernungen sind Schätzwerte und nicht zur Navigation geeignet.";
-    public const string Attribution = "© OpenStreetMap-Mitwirkende, OpenSeaMap, EMODnet Human Activities Vessel Density (Cogea Srl) CC BY 4.0, EMODnet Bathymetry DTM 2024 CC BY 4.0";
+    public const string Attribution = "© OpenStreetMap-Mitwirkende, OpenSeaMap, EMODnet Human Activities Vessel Density (Cogea Srl) CC BY 4.0, EMODnet Bathymetry DTM 2024 CC BY 4.0, " + KartverketDepths.Attribution;
     /// <summary>derive-fairways reads marks this far (degrees of latitude) beyond its bbox: more than Fairways' 5 km wide hop.</summary>
     public const double DeriveMarginDeg = 0.15;
 
@@ -203,6 +203,23 @@ public static class RoutingEndpoints
             var client = http.CreateClient("dtm");
             var (chunks, cells, measured, failed) = await DtmImport.RunAsync(client, builder.Options.DtmUrl, (NpgsqlConnection)db.Database.GetDbConnection(), s, w, n, e, log, ct);
             return Results.Ok(new { chunks, cells, measured, failed });
+        });
+        // Kartverket Sjøkart-Dybdedata (WFS) per 1° chunk, at most 4° × 4° per call: metric depth areas, shoals, rocks, unsurveyed areas
+        admin.MapPost("/import-no-depths", async (string? bbox, CurrentUser current, SmsDbContext db, IHttpClientFactory http, ILogger<SeaRouter> log, CancellationToken ct) =>
+        {
+            if (!await current.IsAdminAsync(ct)) return Results.Forbid();
+            var p = (bbox ?? "").Split(',').Select(v => double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : double.NaN).ToArray();
+            if (p.Length != 4 || p.Any(double.IsNaN) || p[2] <= p[0] || p[3] <= p[1]) return Invalid("bbox", "bbox=south,west,north,east");
+            if (p[2] - p[0] > 4 || p[3] - p[1] > 4) return Invalid("bbox", "Höchstens 4° × 4° pro Aufruf.");
+            try
+            {
+                var chunks = await KartverketDepths.RunAsync(http.CreateClient("kartverket"), (NpgsqlConnection)db.Database.GetDbConnection(), p[0], p[1], p[2], p[3], log, ct);
+                return Results.Ok(new { chunks, rows = chunks.Sum(c => c.Rows), removed = chunks.Sum(c => c.Removed), clipped = chunks.Sum(c => c.Clipped), attribution = KartverketDepths.Attribution });
+            }
+            catch (Exception ex) when (ex is HttpRequestException or InvalidDataException or System.Xml.XmlException or TaskCanceledException && !ct.IsCancellationRequested)
+            {
+                return Results.Problem(statusCode: 502, title: "Kartverket-WFS nicht erreichbar oder fehlerhaft: " + ex.Message);
+            }
         });
         // EMODnet vessel density GeoTIFFs (vesseldensity_04_<year>.tif sailing, _05_ pleasure craft, as in the EMODnet zips) → routing_traffic,
         // replaced as a whole: upload every year wanted in one request (the files of a kind are averaged)

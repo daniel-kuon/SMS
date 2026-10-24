@@ -252,7 +252,7 @@ function depthHatchImage(): ImageData {
 export function addDepthOverlay(map: MlMap, tilesUrl: string): void {
   if (map.getSource('depth')) return;
   const abs = tilesUrl.startsWith('/') ? `${location.origin}${tilesUrl}` : tilesUrl;
-  map.addSource('depth', { type: 'vector', tiles: [abs], minzoom: 7, maxzoom: 14, attribution: 'Tiefen: Open Waters Seascape (EMODnet, GEBCO)' });
+  map.addSource('depth', { type: 'vector', tiles: [abs], minzoom: 7, maxzoom: 14, attribution: 'Tiefen: Open Waters Seascape (EMODnet, GEBCO) · Dybdedata © Kartverket (CC BY 4.0), ikke for navigasjon' });
   let on = false; try { on = localStorage.getItem(DEPTH_STORAGE) === '1'; } catch { /* ignore */ }
   const before = ['seamark-sectors-fill', 'seamark-lines', 'seamark-icons', 'seamark-points'].find(id => map.getLayer(id));
   map.addLayer({ id: 'depth-fill', type: 'fill', source: 'depth', 'source-layer': 'depth', minzoom: 7, layout: { visibility: on ? 'visible' : 'none' },

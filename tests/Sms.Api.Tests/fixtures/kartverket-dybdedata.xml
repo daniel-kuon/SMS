@@ -1,0 +1,195 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- Kartverket Sjoekart - Dybdedata (c) Kartverket, CC BY 4.0, ikke for navigasjon. Members of GetFeature responses (srsName EPSG::4326) around Droebak, 2026-10-24, trimmed to one feature each. -->
+<wfs:FeatureCollection xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/wfs/2.0 http://schemas.opengis.net/wfs/2.0/wfs.xsd http://www.opengis.net/gml/3.2 http://schemas.opengis.net/gml/3.2.1/gml.xsd http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001 https://wfs.geonorge.no/skwms1/wfs.dybdedata?SERVICE=WFS&amp;VERSION=2.0.0&amp;REQUEST=DescribeFeatureType&amp;OUTPUTFORMAT=text%2Fxml%3B+subtype%3Dgml%2F3.2.1&amp;TYPENAME=app:Dybdeareal&amp;NAMESPACES=xmlns(app,http%3A%2F%2Fskjema.geonorge.no%2FSOSI%2Fproduktspesifikasjon%2FDybdedata%2F20201001)" xmlns:wfs="http://www.opengis.net/wfs/2.0" timeStamp="2026-10-23T23:35:55Z" xmlns:gml="http://www.opengis.net/gml/3.2" numberMatched="unknown" numberReturned="0">
+  <!--NOTE: numberReturned attribute should be 'unknown' as well, but this would not validate against the current version of the WFS 2.0 schema (change upcoming). See change request (CR 144): https://portal.opengeospatial.org/files?artifact_id=43925.-->
+  <wfs:member>
+    <app:Dybdeareal xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001" gml:id="dybdeareal.540167">
+      <app:identifikasjon>
+        <app:Identifikasjon>
+          <app:lokalId>3a482976-3a96-4593-afbe-212e5ada6b1f</app:lokalId>
+          <app:navnerom>https://data.geonorge.no/sosi/dybdedata/sjokart_dybdedata</app:navnerom>
+          <app:versjonId>20201001</app:versjonId>
+        </app:Identifikasjon>
+      </app:identifikasjon>
+      <app:oppdateringsdato>2019-02-13T23:00:00</app:oppdateringsdato>
+      <app:datauttaksdato>2026-10-19T08:11:02</app:datauttaksdato>
+      <app:område>
+        <!--Inlined geometry 'dybdeareal.540167_APP_OMRÅDE'-->
+        <gml:Polygon gml:id="dybdeareal.540167_APP_OMRÅDE" srsName="urn:ogc:def:crs:EPSG::4326">
+          <gml:exterior>
+            <gml:LinearRing>
+              <gml:posList>59.682758 10.623107 59.682754 10.623105 59.682713 10.623198 59.682777 10.623210 59.682758 10.623107</gml:posList>
+            </gml:LinearRing>
+          </gml:exterior>
+        </gml:Polygon>
+      </app:område>
+      <app:minimumsdybde>5.0</app:minimumsdybde>
+      <app:maksimumsdybde>10.0</app:maksimumsdybde>
+    </app:Dybdeareal>
+  </wfs:member>
+  <wfs:member>
+    <app:Dybdeareal xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001" gml:id="dybdeareal.548285">
+      <app:identifikasjon>
+        <app:Identifikasjon>
+          <app:lokalId>4dd62fd0-beb9-41c0-955c-293cd54d9048</app:lokalId>
+          <app:navnerom>https://data.geonorge.no/sosi/dybdedata/sjokart_dybdedata</app:navnerom>
+          <app:versjonId>20201001</app:versjonId>
+        </app:Identifikasjon>
+      </app:identifikasjon>
+      <app:oppdateringsdato>2019-03-10T23:00:00</app:oppdateringsdato>
+      <app:datauttaksdato>2026-10-19T08:11:41</app:datauttaksdato>
+      <app:område>
+        <!--Inlined geometry 'dybdeareal.548285_APP_OMRÅDE'-->
+        <gml:Polygon gml:id="dybdeareal.548285_APP_OMRÅDE" srsName="urn:ogc:def:crs:EPSG::4326">
+          <gml:exterior>
+            <gml:LinearRing>
+              <gml:posList>59.698463 10.602461 59.698467 10.602460 59.698521 10.602348 59.698434 10.602377 59.698436 10.602454 59.698463 10.602461</gml:posList>
+            </gml:LinearRing>
+          </gml:exterior>
+        </gml:Polygon>
+      </app:område>
+      <app:minimumsdybde>0.5</app:minimumsdybde>
+      <app:maksimumsdybde>2.0</app:maksimumsdybde>
+    </app:Dybdeareal>
+  </wfs:member>
+  <wfs:member>
+    <app:Dybdeareal xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001" gml:id="dybdeareal.548698">
+      <app:identifikasjon>
+        <app:Identifikasjon>
+          <app:lokalId>72e1f942-04b1-4c45-b545-ac6355c90cd1</app:lokalId>
+          <app:navnerom>https://data.geonorge.no/sosi/dybdedata/sjokart_dybdedata</app:navnerom>
+          <app:versjonId>20201001</app:versjonId>
+        </app:Identifikasjon>
+      </app:identifikasjon>
+      <app:oppdateringsdato>2019-02-13T23:00:00</app:oppdateringsdato>
+      <app:datauttaksdato>2026-10-19T08:11:43</app:datauttaksdato>
+      <app:område>
+        <!--Inlined geometry 'dybdeareal.548698_APP_OMRÅDE'-->
+        <gml:Polygon gml:id="dybdeareal.548698_APP_OMRÅDE" srsName="urn:ogc:def:crs:EPSG::4326">
+          <gml:exterior>
+            <gml:LinearRing>
+              <gml:posList>59.680599 10.606233 59.680585 10.606231 59.680538 10.606279 59.680550 10.606341 59.680599 10.606233</gml:posList>
+            </gml:LinearRing>
+          </gml:exterior>
+        </gml:Polygon>
+      </app:område>
+      <app:minimumsdybde>2.0</app:minimumsdybde>
+      <app:maksimumsdybde>5.0</app:maksimumsdybde>
+    </app:Dybdeareal>
+  </wfs:member>
+  <wfs:member>
+    <app:Dybdeareal xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001" gml:id="dybdeareal.540397">
+      <app:identifikasjon>
+        <app:Identifikasjon>
+          <app:lokalId>3a0291ea-a75a-4db9-a67a-6ff1d5b859df</app:lokalId>
+          <app:navnerom>https://data.geonorge.no/sosi/dybdedata/sjokart_dybdedata</app:navnerom>
+          <app:versjonId>20201001</app:versjonId>
+        </app:Identifikasjon>
+      </app:identifikasjon>
+      <app:oppdateringsdato>2019-02-13T23:00:00</app:oppdateringsdato>
+      <app:datauttaksdato>2026-10-19T08:11:03</app:datauttaksdato>
+      <app:område>
+        <!--Inlined geometry 'dybdeareal.540397_APP_OMRÅDE'-->
+        <gml:Polygon gml:id="dybdeareal.540397_APP_OMRÅDE" srsName="urn:ogc:def:crs:EPSG::4326">
+          <gml:exterior>
+            <gml:LinearRing>
+              <gml:posList>59.681059 10.605455 59.681050 10.605462 59.680961 10.605521 59.680885 10.605427 59.680866 10.605505 59.680787 10.605540 59.680741 10.605726 59.680770 10.605783 59.680874 10.605726 59.680979 10.605821 59.681143 10.605556 59.681104 10.605445 59.681059 10.605455</gml:posList>
+            </gml:LinearRing>
+          </gml:exterior>
+          <gml:interior>
+            <gml:LinearRing>
+              <gml:posList>59.680840 10.605572 59.680901 10.605567 59.680853 10.605619 59.680822 10.605605 59.680827 10.605576 59.680840 10.605572</gml:posList>
+            </gml:LinearRing>
+          </gml:interior>
+        </gml:Polygon>
+      </app:område>
+      <app:minimumsdybde>2.0</app:minimumsdybde>
+      <app:maksimumsdybde>5.0</app:maksimumsdybde>
+    </app:Dybdeareal>
+  </wfs:member>
+  <wfs:member>
+    <app:Grunne xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001" gml:id="grunne.706935">
+      <app:identifikasjon>
+        <app:Identifikasjon>
+          <app:lokalId>96edb29c-e5c0-464c-842c-9de09c9e5d68</app:lokalId>
+          <app:navnerom>https://data.geonorge.no/sosi/dybdedata/sjokart_dybdedata</app:navnerom>
+          <app:versjonId>20201001</app:versjonId>
+        </app:Identifikasjon>
+      </app:identifikasjon>
+      <app:oppdateringsdato>2016-05-29T22:00:00</app:oppdateringsdato>
+      <app:datauttaksdato>2026-10-19T11:11:39</app:datauttaksdato>
+      <app:posisjon>
+        <!--Inlined geometry 'grunne.706935_APP_POSISJON'-->
+        <gml:Point gml:id="grunne.706935_APP_POSISJON" srsName="urn:ogc:def:crs:EPSG::4326">
+          <gml:pos>59.685164 10.617297</gml:pos>
+        </gml:Point>
+      </app:posisjon>
+      <app:dybde>0.1</app:dybde>
+    </app:Grunne>
+  </wfs:member>
+  <wfs:member>
+    <app:Skjær xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001" gml:id="skjer.48827">
+      <app:identifikasjon>
+        <app:Identifikasjon>
+          <app:lokalId>07dc084a-5741-49cb-93f7-739ee6f23409</app:lokalId>
+          <app:navnerom>https://data.geonorge.no/sosi/dybdedata/sjokart_dybdedata</app:navnerom>
+          <app:versjonId>20201001</app:versjonId>
+        </app:Identifikasjon>
+      </app:identifikasjon>
+      <app:oppdateringsdato>2019-02-13T23:00:00</app:oppdateringsdato>
+      <app:datauttaksdato>2026-10-19T11:57:52</app:datauttaksdato>
+      <app:posisjon>
+        <!--Inlined geometry 'skjer.48827_APP_POSISJON'-->
+        <gml:Point gml:id="skjer.48827_APP_POSISJON" srsName="urn:ogc:def:crs:EPSG::4326">
+          <gml:pos>59.658800 10.609094</gml:pos>
+        </gml:Point>
+      </app:posisjon>
+    </app:Skjær>
+  </wfs:member>
+  <wfs:member>
+    <app:Tørrfall xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001" gml:id="torrfall.161996">
+      <app:identifikasjon>
+        <app:Identifikasjon>
+          <app:lokalId>181ac923-e537-4ea6-bfaa-09f55f787fa4</app:lokalId>
+          <app:navnerom>https://data.geonorge.no/sosi/dybdedata/sjokart_dybdedata</app:navnerom>
+          <app:versjonId>20201001</app:versjonId>
+        </app:Identifikasjon>
+      </app:identifikasjon>
+      <app:oppdateringsdato>2019-07-01T22:00:00</app:oppdateringsdato>
+      <app:datauttaksdato>2026-10-19T11:46:58</app:datauttaksdato>
+      <app:område>
+        <!--Inlined geometry 'torrfall.161996_APP_OMRÅDE'-->
+        <gml:Polygon gml:id="torrfall.161996_APP_OMRÅDE" srsName="urn:ogc:def:crs:EPSG::4326">
+          <gml:exterior>
+            <gml:LinearRing>
+              <gml:posList>59.657882 10.629774 59.657872 10.629751 59.657833 10.629726 59.657807 10.629724 59.657888 10.629801 59.657882 10.629774</gml:posList>
+            </gml:LinearRing>
+          </gml:exterior>
+        </gml:Polygon>
+      </app:område>
+    </app:Tørrfall>
+  </wfs:member>
+  <wfs:member>
+    <app:IkkeKartlagtSjømåltOmr xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001" gml:id="ikkekartlagtsjomaltomr.198">
+      <app:identifikasjon>
+        <app:Identifikasjon>
+          <app:lokalId>be381a4f-e5f7-4297-b475-554fc42d99bf</app:lokalId>
+          <app:navnerom>https://data.geonorge.no/sosi/dybdedata/sjokart_dybdedata</app:navnerom>
+          <app:versjonId>20201001</app:versjonId>
+        </app:Identifikasjon>
+      </app:identifikasjon>
+      <app:oppdateringsdato>2009-04-20T22:00:00</app:oppdateringsdato>
+      <app:datauttaksdato>2026-10-19T11:13:02</app:datauttaksdato>
+      <app:område>
+        <!--Inlined geometry 'ikkekartlagtsjomaltomr.198_APP_OMRÅDE'-->
+        <gml:Polygon gml:id="ikkekartlagtsjomaltomr.198_APP_OMRÅDE" srsName="urn:ogc:def:crs:EPSG::4326">
+          <gml:exterior>
+            <gml:LinearRing>
+              <gml:posList>59.829880 10.765600 59.829851 10.765447 59.829779 10.765486 59.829802 10.765590 59.829880 10.765600</gml:posList>
+            </gml:LinearRing>
+          </gml:exterior>
+        </gml:Polygon>
+      </app:område>
+    </app:IkkeKartlagtSjømåltOmr>
+  </wfs:member>
+</wfs:FeatureCollection>

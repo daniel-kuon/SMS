@@ -21,6 +21,18 @@ public class DepthBandsTests
         => Assert.Equal(30, DepthBands.EffectiveFloor(30, Emodnet));
 
     [Fact]
+    public void Mixed_schemes_open_a_floor_only_when_every_band_from_there_on_passes()
+    {
+        // Kartverket's metric areas next to the fathom bands: 0.5-10 (middle 5.25) passes for 2.8 m, but 0.5-2 shares its floor
+        (double, double)[] mixed = [.. Emodnet, (0.5, 2), (0.5, 10), (2, 5), (5, 10), (10, 15), (10, 20)];
+        Assert.Equal(2, DepthBands.EffectiveFloor(2.8, mixed), 4); // 2-5 passes, the 1.83 band (2.74) and the 0.5 floor stay closed
+        Assert.Equal(9.144, DepthBands.EffectiveFloor(12.5, mixed), 4); // 10-15 (12.5) passes, 5.49-9.14 does not: 5-10 stays closed
+        Assert.Equal(5, DepthBands.EffectiveFloor(7, [.. Emodnet, (5, 10)]), 4); // 5-10 (7.5) and every band above pass
+        Assert.Equal(7.4, DepthBands.EffectiveFloor(7.4, [.. Emodnet, (5, 10)]), 4); // 5-10 passes (7.5), but the 5.49 fathom band above it (7.32) does not
+        Assert.Equal(DepthBands.EffectiveFloor(2.3, Emodnet), DepthBands.EffectiveFloor(2.3, [.. Emodnet, (0, 0), (-16, -16), (4.5, 4.5)])); // flat rows: no band
+    }
+
+    [Fact]
     public void Minimum_depth_is_taken_as_given_and_a_bare_draft_gets_the_margin()
     {
         Assert.Equal(2.0, DepthBands.MinDepth(1.8, 2.0)); // the owner's own value, no margin on top

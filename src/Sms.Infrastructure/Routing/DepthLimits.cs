@@ -23,6 +23,11 @@ public static class DepthLimits
     public const double AdjacentM = 200, CoastalM = 500;
     /// <summary>Floor of coastal water without data and without a band in reach: depth unknown, at most the raster's first band - below every minimum depth.</summary>
     public const double UnknownCoastalFloorM = 0;
+    /// <summary>routing_depth rows of this source (Kartverket IkkeKartlagtSjømåltOmr) are unsurveyed: stored as 0 m (the warnings and the
+    /// smoothing see shallow water), read by the graph build as NaN through <see cref="AreasSql"/>: an edge through one gets
+    /// FloorM = <see cref="UnknownCoastalFloorM"/> (uncertain), no depth of its own.</summary>
+    public const string UnsurveyedSource = "kartverket-unsurveyed";
+    public const string AreasSql = "SELECT geom, CASE WHEN source = '" + UnsurveyedSource + "' THEN 'NaN'::float8 ELSE min_depth_m END FROM routing_depth";
 
     /// <param name="nearLand">(point, metres) → land lies within that distance; null = no coastal rule (passage edges).</param>
     /// <param name="buoyed">Fairway areas (derived from the buoys, or charted): an edge at least half inside one is buoyed water and gets no
@@ -55,12 +60,14 @@ public static class DepthLimits
         foreach (var e in edges)
         {
             if (buoyed is { Count: > 0 } && fairways.Query(e.Geom.EnvelopeInternal) is { Count: > 0 } inside && ChannelPreference.ShareInside(e.Geom, inside) >= 0.5) { result.Add(e); continue; }
-            double? min = null;
+            double? min = null; var unsurveyed = false;
             foreach (var (prepared, depth) in index.Query(e.Geom.EnvelopeInternal))
-                if (prepared.Intersects(e.Geom) && (min is null || depth < min)) min = depth;
+                if (double.IsNaN(depth)) unsurveyed = unsurveyed || prepared.Intersects(e.Geom);
+                else if ((min is null || depth < min) && prepared.Intersects(e.Geom)) min = depth;
             if (ferry is { Count: > 0 } && ferry.Along(e.Geom)) { result.Add(e with { MinDepthM = min ?? e.MinDepthM, Ferry = true }); continue; }
             var r = min is not null ? e with { MinDepthM = min } : nearLand is null || !Coastal(e.Geom, nearLand) ? e
                 : Adjacent(e.Geom, index) is { } adj ? e with { AdjacentDepthM = adj } : e with { FloorM = UnknownCoastalFloorM };
+            if (unsurveyed) r = r with { FloorM = UnknownCoastalFloorM };
             // the hazard and zone tests only for an edge that would get the traffic flag or a DTM depth (v80 ran them on every edge)
             bool? hazard = null;
             bool Hazard() => hazard ??= anyHazard && hazardIndex.Query(e.Geom.EnvelopeInternal).Any(h => h.Intersects(e.Geom))
@@ -128,7 +135,7 @@ public static class DepthLimits
         var env = edge.EnvelopeInternal.Copy(); env.ExpandBy(d);
         double? min = null;
         foreach (var (prepared, depth) in index.Query(env))
-            if ((min is null || depth < min) && prepared.Geometry.IsWithinDistance(edge, d)) min = depth;
+            if (!double.IsNaN(depth) && (min is null || depth < min) && prepared.Geometry.IsWithinDistance(edge, d)) min = depth;
         return min;
     }
 }
