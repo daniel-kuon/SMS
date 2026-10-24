@@ -3,6 +3,7 @@ using System.Xml;
 using System.Xml.Linq;
 using NetTopologySuite.Geometries;
 using NetTopologySuite.Geometries.Prepared;
+using NetTopologySuite.Geometries.Utilities;
 using NetTopologySuite.Index.Strtree;
 using NetTopologySuite.Operation.Overlay;
 using NetTopologySuite.Operation.OverlayNG;
@@ -75,8 +76,12 @@ public static class KartverketDepths
             return cs.Count >= 4 ? Geo.Factory.CreateLinearRing(cs.ToArray()) : null;
         }
         foreach (var p in f.Descendants().Where(e => e.Name == Gml + "Polygon" || e.Name == Gml + "PolygonPatch"))
-            if (Ring(p.Element(Gml + "exterior")) is { } shell)
-                yield return Geo.Factory.CreatePolygon(shell, p.Elements(Gml + "interior").Select(Ring).OfType<LinearRing>().ToArray());
+            if (Ring(p.Element(Gml + "exterior")) is { } shell && Geo.Factory.CreatePolygon(shell, p.Elements(Gml + "interior").Select(Ring).OfType<LinearRing>().ToArray()) is var poly)
+            {
+                // ~1 % of the Dybdeareal rings touch themselves (434 in 58-59 N 8-9 E): fixed here, an invalid polygon fails the overlays later
+                if (poly.IsValid) yield return poly;
+                else foreach (var part in DepthImport.Polygons(GeometryFixer.Fix(poly))) yield return part;
+            }
     }
 
     private static List<Coordinate> Coords(string posList)
@@ -154,7 +159,7 @@ public static class KartverketDepths
                     if (cell.Contains(env)) { result.Add(a); continue; }
                     Geometry piece;
                     try { piece = OverlayNGRobust.Overlay(a.Area, Geo.Factory.ToGeometry(cell), SpatialFunction.Intersection); }
-                    catch (TopologyException) { piece = OverlayNGRobust.Overlay(a.Area.Buffer(0), Geo.Factory.ToGeometry(cell), SpatialFunction.Intersection); }
+                    catch (TopologyException) { piece = OverlayNGRobust.Overlay(GeometryFixer.Fix(a.Area), Geo.Factory.ToGeometry(cell), SpatialFunction.Intersection); }
                     foreach (var p in DepthImport.Polygons(piece)) result.Add(a with { Area = p });
                 }
         }

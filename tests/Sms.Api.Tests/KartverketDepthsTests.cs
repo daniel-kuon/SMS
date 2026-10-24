@@ -95,6 +95,30 @@ public class KartverketDepthsTests
     }
 
     [Fact]
+    public void Invalid_rings_are_fixed_at_parse_and_invalid_bands_are_cut_without_failing()
+    {
+        // a Dybdeareal ring touching itself (434 such rings in 58-59 N 8-9 E made the relate throw "side location conflict")
+        const string gml = """
+            <wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2"><wfs:member>
+            <app:Dybdeareal xmlns:app="http://skjema.geonorge.no/SOSI/produktspesifikasjon/Dybdedata/20201001"><app:område><gml:Polygon><gml:exterior><gml:LinearRing>
+            <gml:posList>59 10 59 10.1 59.05 10.05 59.1 10.1 59.1 10 59.05 10.05 59 10</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></app:område>
+            <app:minimumsdybde>5.0</app:minimumsdybde><app:maksimumsdybde>10.0</app:maksimumsdybde></app:Dybdeareal></wfs:member></wfs:FeatureCollection>
+            """;
+        using var s = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(gml));
+        var areas = KartverketDepths.Parse(s);
+        Assert.False(F.CreatePolygon([new(10, 59), new(10.1, 59), new(10.05, 59.05), new(10.1, 59.1), new(10, 59.1), new(10.05, 59.05), new(10, 59)]).IsValid);
+        Assert.Equal(2, areas.Count); // the two lobes
+        Assert.All(areas, a => { Assert.True(a.Area.IsValid); Assert.Equal(5, a.MinDepthM); Assert.Equal(4326, a.Area.SRID); Assert.True(double.IsNaN(a.Area.Coordinate.Z)); }); // XY: the column refuses Z
+        Assert.Equal(0.005, areas.Sum(a => a.Area.Area), 10);
+        // an invalid band (262 Seascape rows self-intersect) is cut, not thrown on
+        var bowTie = F.CreatePolygon([new(10, 59), new(10.02, 59.02), new(10.02, 59), new(10, 59.02), new(10, 59)]);
+        var cover = Box(10.005, 58.99, 10.006, 59.03);
+        var parts = DepthImport.Outside(bowTie, DepthImport.CoverIndex([cover]));
+        Assert.NotNull(parts); Assert.NotEmpty(parts);
+        Assert.All(parts, p => Assert.True(p.Intersection(cover).Area < 1e-12));
+    }
+
+    [Fact]
     public void Chunk_rows_are_grid_pieces_inside_the_chunk_and_discs_by_their_centre()
     {
         var chunk = new Envelope(10, 11, 59, 60);
@@ -203,6 +227,29 @@ public class KartverketImportTests(ApiFixture f) : IClassFixture<ApiFixture>
         // the graph build reads unsurveyed rows as NaN (DepthLimits), everything else with its depth
         await using var cmd = new Npgsql.NpgsqlCommand(DepthLimits.AreasSql + " WHERE source = 'kartverket-unsurveyed'", conn);
         await using (var r = await cmd.ExecuteReaderAsync(ct)) { Assert.True(await r.ReadAsync(ct)); Assert.True(double.IsNaN(r.GetDouble(1))); }
+    }
+
+    /// <summary>Optional: SMS_KV_REPRO=&lt;rows file&gt;|s,w,n,e loads exported routing_depth rows (hex WKB|min|max|source) and imports
+    /// that chunk from the live WFS into the test database.</summary>
+    [Fact]
+    public async Task Imports_a_live_chunk_over_exported_rows_when_configured()
+    {
+        if (Environment.GetEnvironmentVariable("SMS_KV_REPRO") is not { Length: > 0 } repro) return;
+        var ct = TestContext.Current.CancellationToken;
+        var (file, bbox) = (repro.Split('|')[0], repro.Split('|')[1].Split(',').Select(double.Parse).ToArray());
+        var reader = new NetTopologySuite.IO.WKBReader();
+        var rows = File.ReadLines(file).Select(l => l.Split('|')).Where(p => p.Length == 4)
+            .Select(p => new DepthArea((Polygon)reader.Read(Convert.FromHexString(p[0])), double.Parse(p[1]), double.Parse(p[2]), p[3])).ToList();
+        rows.ForEach(r => r.Area.SRID = 4326);
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Sms.Infrastructure.SmsDbContext>();
+        var conn = (Npgsql.NpgsqlConnection)db.Database.GetDbConnection(); await conn.OpenAsync(ct);
+        await KartverketDepths.CopyAsync(conn, rows, ct);
+        using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("sailing-portal/0.1 (+https://github.com/daniel-kuon/SMS)");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var r = await KartverketDepths.RunAsync(client, conn, bbox[0], bbox[1], bbox[2], bbox[3], Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, ct);
+        await File.WriteAllTextAsync(file + ".result.txt", $"{clock.Elapsed.TotalSeconds:0} s: " + string.Join("; ", r.Select(c => $"{c.Chunk} rows {c.Rows} clipped {c.Clipped}")), ct);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using NetTopologySuite.Geometries;
+using NetTopologySuite.Geometries.Utilities;
 using NetTopologySuite.Index.Strtree;
 using NetTopologySuite.IO.VectorTiles.Mapbox;
 using NetTopologySuite.Operation.Overlay;
@@ -124,23 +125,30 @@ public static class DepthImport
     public static List<DepthArea> Outside(IEnumerable<DepthArea> areas, STRtree<Geometry> cover) =>
         areas.SelectMany(a => Outside(a.Area, cover) is { } parts ? parts.Select(p => a with { Area = p }) : [a]).ToList();
 
-    /// <summary>The parts of an area outside every cover polygon; null = untouched (no cover polygon overlaps it, touching does not count).</summary>
+    /// <summary>The parts of an area outside every cover polygon; null = untouched (no cover polygon overlaps it, touching does not count).
+    /// Invalid input (262 Seascape rows self-intersect at tile corners: "side location conflict" in the relate) is fixed and cut again.</summary>
     public static List<Polygon>? Outside(Polygon area, STRtree<Geometry> cover)
     {
-        var hits = cover.Query(area.EnvelopeInternal).Where(c => c.Intersects(area) && !c.Touches(area)).ToList();
-        if (hits.Count == 0) return null;
-        Geometry rest;
-        try { rest = OverlayNGRobust.Overlay(area, OverlayNGRobust.Union(Geo.Factory.BuildGeometry(hits)), SpatialFunction.Difference); }
-        catch (TopologyException) { rest = OverlayNGRobust.Overlay(area.Buffer(0), OverlayNGRobust.Union(Geo.Factory.BuildGeometry(hits.Select(h => h.Buffer(0)).ToList())), SpatialFunction.Difference); }
-        return Polygons(rest);
+        var near = cover.Query(area.EnvelopeInternal);
+        if (near.Count == 0) return null;
+        try { return Cut(area, near); }
+        catch (TopologyException) { return Cut(GeometryFixer.Fix(area), near.Select(c => GeometryFixer.Fix(c)).ToList()); }
     }
 
-    /// <summary>The polygons of an overlay result (SRID 4326), slivers below <see cref="MinPieceDeg2"/> dropped.</summary>
+    private static List<Polygon>? Cut(Geometry area, IList<Geometry> near)
+    {
+        var hits = near.Where(c => c.Intersects(area) && !c.Touches(area)).ToList();
+        return hits.Count == 0 ? null : Polygons(OverlayNGRobust.Overlay(area, OverlayNGRobust.Union(Geo.Factory.BuildGeometry(hits)), SpatialFunction.Difference));
+    }
+
+    /// <summary>The polygons of an overlay result as XY polygons of SRID 4326 (GeometryFixer output carries Z, which the Polygon
+    /// column refuses), slivers below <see cref="MinPieceDeg2"/> dropped.</summary>
     public static List<Polygon> Polygons(Geometry g)
     {
+        static LinearRing Flat(LineString r) => Geo.Factory.CreateLinearRing(r.Coordinates.Select(c => new Coordinate(c.X, c.Y)).ToArray());
         var result = new List<Polygon>();
         for (var i = 0; i < g.NumGeometries; i++)
-            if (g.GetGeometryN(i) is Polygon { IsEmpty: false } p && p.Area >= MinPieceDeg2) { p.SRID = 4326; result.Add(p); }
+            if (g.GetGeometryN(i) is Polygon { IsEmpty: false } p && p.Area >= MinPieceDeg2) result.Add(Geo.Factory.CreatePolygon(Flat(p.Shell), p.Holes.Select(Flat).ToArray()));
         return result;
     }
 }
