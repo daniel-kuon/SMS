@@ -107,7 +107,7 @@ public class EndpointSmokeTests(ApiFixture f) : IClassFixture<ApiFixture>
             {
                 "id" => i > 0 && ids.TryGetValue(segments[i - 1], out var v) ? v : Guid.NewGuid().ToString(),
                 "targetType" => "posts", "variant" => "thumb", "kind" => "users", "action" => template.Contains("costs") ? "lock" : "accept",
-                "token" => "no-such-token", "slug" => "smoke", "path" => "ueber-uns", "lang" => "de",
+                "token" => "no-such-token", "importId" => Guid.NewGuid().ToString(), "slug" => "smoke", "path" => "ueber-uns", "lang" => "de",
                 "z" => "12", "x" => "2163", "y" => "1307", "targetId" => ids["targetId"],
                 "fontstack" => "Noto Sans Regular", "range" => "0-255", "file" => "ofm.json", "layer" => "radar", "osmType" => "node", "osmId" => "1",
                 _ => ids.GetValueOrDefault(name),

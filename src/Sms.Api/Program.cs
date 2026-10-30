@@ -93,6 +93,8 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AisPoller>());
 builder.Services.AddSingleton<RoutingGraphBuilder>();
 builder.Services.AddScoped<SeaRouter>();
 builder.Services.AddSingleton<TrackProcessor>();
+builder.Services.AddSingleton<TrackImportJob>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TrackImportJob>());
 builder.Services.AddScoped<Notifier>();
 builder.Services.AddHttpClient<EcbRates>();
 builder.Services.AddTransient<IExchangeRates>(sp => sp.GetRequiredService<EcbRates>());

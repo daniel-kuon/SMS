@@ -71,14 +71,15 @@ public static class WeatherEndpoints
             if (!isCrew && !await access.CanViewAsync(trip.TrackVisibility, trip, trip.Ship, null, ct)) return Results.Ok(Array.Empty<object>());
             var cutoff = isCrew ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow.AddMinutes(-trip.PublicPositionDelayMinutes);
             var rows = await db.WeatherObservations.AsNoTracking().Where(o => o.TripId == tripId && o.Time <= cutoff).OrderBy(o => o.Time)
-                .Select(o => new { o.Id, o.Time, o.Location, o.TemperatureC, o.WindKn, o.WindDirDeg, o.GustKn, o.PressureHpa, o.PrecipitationMm, o.WeatherCode, o.CloudCover, o.WaveHeightM, o.WaveDirDeg, o.WavePeriodS }).ToListAsync(ct);
+                .Select(o => new { o.Id, o.Time, o.Location, o.Provider, o.TemperatureC, o.WindKn, o.WindDirDeg, o.GustKn, o.PressureHpa, o.PrecipitationMm, o.WeatherCode, o.CloudCover, o.WaveHeightM, o.WaveDirDeg, o.WavePeriodS, o.WaterTempC, o.DepthM }).ToListAsync(ct);
             // like the track (spec 12 §12.5): positions inside the ship's privacy zones are not shown to non-crew viewers
             if (!isCrew)
             {
                 var zones = await db.PrivacyZones.AsNoTracking().Where(z => z.ShipId == trip.ShipId).Select(z => new { z.Center, z.RadiusM }).ToListAsync(ct);
                 rows = rows.Where(o => !zones.Any(z => Sms.Domain.Tracking.TrackMath.Haversine(o.Location.Y, o.Location.X, z.Center.Y, z.Center.X) <= z.RadiusM)).ToList();
             }
-            return Results.Ok(rows.Select(o => new { o.Id, o.Time, lat = o.Location.Y, lng = o.Location.X, o.TemperatureC, o.WindKn, o.WindDirDeg, o.GustKn, o.PressureHpa, o.PrecipitationMm, o.WeatherCode, o.CloudCover, o.WaveHeightM, o.WaveDirDeg, o.WavePeriodS }));
+            // onboard = measured by the boat's sensors (companion app), otherwise the model weather of the provider
+            return Results.Ok(rows.Select(o => new { o.Id, o.Time, lat = o.Location.Y, lng = o.Location.X, onboard = o.Provider == WeatherRecorder.Onboard, o.TemperatureC, o.WindKn, o.WindDirDeg, o.GustKn, o.PressureHpa, o.PrecipitationMm, o.WeatherCode, o.CloudCover, o.WaveHeightM, o.WaveDirDeg, o.WavePeriodS, o.WaterTempC, o.DepthM }));
         }).WithTags("Weather");
 
         // crew only: condensed observations of a time window, to prefill a logbook entry (wind, weather, sea state)
@@ -88,7 +89,11 @@ public static class WeatherEndpoints
             if (!viewer.CrewTripIds.Contains(tripId) && !viewer.IsAdmin) return Results.Forbid();
             if (to < from) return Invalid("to", "Zeitraum endet vor seinem Anfang.");
             var obs = await db.WeatherObservations.AsNoTracking().Where(o => o.TripId == tripId && o.Time >= from && o.Time <= to).OrderBy(o => o.Time).ToListAsync(ct);
-            return WeatherSummary.From(obs) is { } summary ? Results.Ok(summary) : Results.NoContent();
+            // wind measured on board beats the model wind; weather text and sea state still come from the model
+            var model = WeatherSummary.From(obs.Where(o => o.Provider != WeatherRecorder.Onboard).ToList());
+            var board = WeatherSummary.From(obs.Where(o => o.Provider == WeatherRecorder.Onboard && o.WindKn != null).ToList());
+            var summary = board is null ? model : model is null ? board : model with { WindBft = board.WindBft, WindKn = board.WindKn, WindDirection = board.WindDirection ?? model.WindDirection };
+            return summary is not null ? Results.Ok(summary) : Results.NoContent();
         }).WithTags("Weather");
 
         g.MapGet("/overlay/layers", (IWeatherOverlayProvider overlay) => Results.Ok(new { provider = overlay.Name, configured = overlay.Configured, layers = overlay.Layers, mapsGl = overlay.MapsGl }));

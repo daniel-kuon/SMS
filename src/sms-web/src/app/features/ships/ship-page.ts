@@ -1,4 +1,4 @@
-import { Component, inject, input, signal } from '@angular/core';
+import { Component, inject, input, signal, viewChild } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -21,9 +21,10 @@ import { TaskList } from '../trips/task-list';
 import { FollowButton } from '../social/social';
 import { ShipSiteEditor } from '../cms/ship-site';
 import { AisConfigCard } from './ais-config';
+import { TrackImportCard, VoyageList } from './track-import';
 
 @Component({
-  imports: [DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatListModule, MatFormFieldModule, MatInputModule, MatSelectModule, TranslatePipe, UploadZone, TaskList, FollowButton, ShipSiteEditor, AisConfigCard],
+  imports: [DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatCardModule, MatIconModule, MatListModule, MatFormFieldModule, MatInputModule, MatSelectModule, TranslatePipe, UploadZone, TaskList, FollowButton, ShipSiteEditor, AisConfigCard, TrackImportCard, VoyageList],
   template: `
     @if (ship(); as s) {
     <div class="page">
@@ -79,6 +80,12 @@ import { AisConfigCard } from './ais-config';
         @if (s.myRole === 'Owner') { <mat-card appearance="outlined" class="span2"><mat-card-content><app-ship-site-editor [shipId]="s.id" /></mat-card-content></mat-card>
           <mat-card appearance="outlined" class="span2"><mat-card-content><app-ais-config [shipId]="s.id" /></mat-card-content></mat-card> }
         @if (s.myRole) { <mat-card appearance="outlined" class="span2"><mat-card-content>
+          <h3>{{ 'tracking.importTitle' | translate }}</h3>
+          <p class="muted">{{ 'tracking.importHint' | translate }}</p>
+          <app-track-import [shipId]="s.id" [showRecent]="true" (done)="voyages()?.load()" />
+          <app-voyages [shipId]="s.id" />
+        </mat-card-content></mat-card> }
+        @if (s.myRole) { <mat-card appearance="outlined" class="span2"><mat-card-content>
           <h3>{{ 'tracking.devices' | translate }}</h3>
           <p class="muted">{{ 'tracking.hint' | translate }}</p>
           <mat-list>@for (d of devices(); track d.id) {
@@ -115,6 +122,7 @@ import { AisConfigCard } from './ais-config';
 export class ShipPage {
   private api = inject(Api); private dialog = inject(MatDialog); readonly auth = inject(AuthService);
   id = input.required<string>();
+  voyages = viewChild(VoyageList);
   ship = signal<Ship | null>(null); stats = signal<ShipStats | null>(null); trips = signal<TripSummary[]>([]);
   fmt = fmtDate; fmtTime = fmtDateTime;
   devices = signal<TrackingDevice[]>([]); zones = signal<PrivacyZone[]>([]); created = signal<DeviceCreated | null>(null);

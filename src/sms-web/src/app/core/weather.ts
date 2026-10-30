@@ -14,8 +14,8 @@ export interface WeatherDay { date: string; weatherCode: number | null; tempMinC
 export interface TideExtreme { time: string; levelM: number; high: boolean; }
 export interface TideForecast { provider: string; stationId: string; stationName: string; stationLat: number; stationLng: number; distanceKm: number; datum: string; attribution: string; commercialUse: boolean; extremes: TideExtreme[]; }
 export interface WeatherForecast { provider: string; lat: number; lng: number; timeZone: string; current: WeatherPoint; hourly: WeatherPoint[]; daily: WeatherDay[]; fetchedAt: string; }
-/** Observation stored along a live track (/api/trips/{id}/weather). */
-export interface WeatherObservation extends Omit<WeatherPoint, 'precipitationChance'> { id: number; lat: number; lng: number; }
+/** Observation stored along a live track (/api/trips/{id}/weather); onboard = measured by the boat's sensors (companion app), else model weather. */
+export interface WeatherObservation extends Omit<WeatherPoint, 'precipitationChance'> { id: number; lat: number; lng: number; onboard?: boolean; waterTempC?: number | null; depthM?: number | null; }
 
 /** WMO weather interpretation codes (as used by Open-Meteo) → material icon + i18n key. */
 export function weatherCodeInfo(code: number | null | undefined): { icon: string; key: string } {
@@ -153,3 +153,12 @@ export function loadForecast(api: Api, url: string, params: Record<string, numbe
 }
 
 export const fmtObservation = (o: WeatherObservation) => `${fmtDate(o.time)} ${fmtHour(o.time)}: ${o.temperatureC?.toFixed(0) ?? '–'} °C, ${compass(o.windDirDeg)} ${o.windKn?.toFixed(0) ?? '–'} kn${o.waveHeightM != null ? `, ${o.waveHeightM.toFixed(1)} m` : ''}`;
+
+/** One line for a measured on-board observation: true wind, pressure, air/water temperature, depth (only what was sent). */
+export const fmtOnboard = (o: WeatherObservation) => `${fmtDate(o.time)} ${fmtHour(o.time)}: ` + [
+  o.windKn != null ? `${compass(o.windDirDeg)} ${o.windKn.toFixed(0)} kn` : null,
+  o.pressureHpa != null ? `${o.pressureHpa.toFixed(0)} hPa` : null,
+  o.temperatureC != null ? `Luft ${o.temperatureC.toFixed(0)} °C` : null,
+  o.waterTempC != null ? `Wasser ${o.waterTempC.toFixed(0)} °C` : null,
+  o.depthM != null ? `Tiefe ${o.depthM.toFixed(1)} m` : null,
+].filter(x => x).join(', ');

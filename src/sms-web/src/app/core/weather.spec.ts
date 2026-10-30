@@ -1,4 +1,4 @@
-import { beaufort, compass, fmtObservation, weatherCodeInfo } from './weather';
+import { beaufort, compass, fmtObservation, fmtOnboard, weatherCodeInfo } from './weather';
 
 describe('weather helpers', () => {
   it('maps WMO codes to icons', () => {
@@ -22,5 +22,10 @@ describe('weather helpers', () => {
   it('formats a recorded observation in one line', () => {
     const s = fmtObservation({ id: 1, time: '2026-10-12T08:00:00Z', lat: 54, lng: 10, temperatureC: 14.2, windKn: 12.5, windDirDeg: 250, gustKn: null, precipitationMm: null, weatherCode: 3, pressureHpa: null, cloudCover: null, waveHeightM: 0.6, waveDirDeg: null, wavePeriodS: null });
     expect(s).toContain('14 °C'); expect(s).toContain('WSW 13 kn'); expect(s).toContain('0.6 m');
+  });
+
+  it('formats a measured on-board observation with only the values sent', () => {
+    const s = fmtOnboard({ id: 2, time: '2026-10-12T08:00:00Z', lat: 54, lng: 10, onboard: true, temperatureC: null, windKn: 14, windDirDeg: 250, gustKn: null, precipitationMm: null, weatherCode: null, pressureHpa: 1009.4, cloudCover: null, waveHeightM: null, waveDirDeg: null, wavePeriodS: null, waterTempC: 15.2, depthM: 12.44 });
+    expect(s).toContain('WSW 14 kn'); expect(s).toContain('1009 hPa'); expect(s).toContain('Wasser 15 °C'); expect(s).toContain('Tiefe 12.4 m'); expect(s).not.toContain('Luft');
   });
 });

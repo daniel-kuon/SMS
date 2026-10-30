@@ -28,8 +28,7 @@ public sealed class TrackProcessor(IServiceScopeFactory scopes, ILogger<TrackPro
         using var span = Activity.StartActivity("tracking.ingest");
         var clean = TrackMath.Clean(fixes);
         if (clean.Count == 0) return 0;
-        var trips = await db.Trips.AsNoTracking().Where(t => t.ShipId == shipId && (t.Status == TripStatus.Active || t.Status == TripStatus.Completed || t.Status == TripStatus.Planned))
-            .Select(t => new { t.Id, t.StartDate, t.EndDate, t.TimeZone }).ToListAsync(ct);
+        var trips = await TripWindowsAsync(db, shipId, ct);
         var from = clean[0].Time; var to = clean[^1].Time;
         var existing = (await db.TrackPoints.Where(p => p.ShipId == shipId && p.DeviceId == deviceId && p.Time >= from && p.Time <= to).Select(p => p.Time).ToListAsync(ct)).ToHashSet();
         var touched = new HashSet<Guid>();
@@ -37,13 +36,7 @@ public sealed class TrackProcessor(IServiceScopeFactory scopes, ILogger<TrackPro
         foreach (var f in clean)
         {
             if (deviceId is not null && existing.Contains(f.Time)) continue;
-            Guid? tripId = forcedTripId;
-            if (tripId is null)
-                foreach (var t in trips)
-                {
-                    var day = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(f.Time, TimeZoneInfo.TryFindSystemTimeZoneById(t.TimeZone, out var z) ? z : TimeZoneInfo.Utc).DateTime);
-                    if (day >= t.StartDate && day <= t.EndDate) { tripId = t.Id; break; }
-                }
+            var tripId = forcedTripId ?? TripFor(trips, f.Time);
             db.TrackPoints.Add(new TrackPoint { ShipId = shipId, TripId = tripId, Source = source, DeviceId = deviceId, ImportId = importId, Time = f.Time, Location = Geo.Point(f.Lat, f.Lng), SogKn = f.SogKn, CogDeg = f.CogDeg, AccuracyM = f.AccuracyM });
             if (tripId is { } tid) touched.Add(tid);
             added++;
@@ -52,6 +45,24 @@ public sealed class TrackProcessor(IServiceScopeFactory scopes, ILogger<TrackPro
         span?.SetTag("tracking.points", added);
         foreach (var t in touched) Schedule(t);
         return added;
+    }
+
+    public sealed record TripWindow(Guid Id, DateOnly StartDate, DateOnly EndDate, TimeZoneInfo Zone);
+
+    /// <summary>The ship's Planned/Active/Completed trips with their time zones: a fix belongs to the trip whose local date range covers it.</summary>
+    public static async Task<List<TripWindow>> TripWindowsAsync(SmsDbContext db, Guid shipId, CancellationToken ct) =>
+        (await db.Trips.AsNoTracking().Where(t => t.ShipId == shipId && (t.Status == TripStatus.Active || t.Status == TripStatus.Completed || t.Status == TripStatus.Planned))
+            .Select(t => new { t.Id, t.StartDate, t.EndDate, t.TimeZone }).ToListAsync(ct))
+        .Select(t => new TripWindow(t.Id, t.StartDate, t.EndDate, TimeZoneInfo.TryFindSystemTimeZoneById(t.TimeZone, out var z) ? z : TimeZoneInfo.Utc)).ToList();
+
+    public static Guid? TripFor(IReadOnlyList<TripWindow> trips, DateTimeOffset time)
+    {
+        foreach (var t in trips)
+        {
+            var day = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(time, t.Zone).DateTime);
+            if (day >= t.StartDate && day <= t.EndDate) return t.Id;
+        }
+        return null;
     }
 
     /// <summary>Debounced rebuild of a trip's segments (ingest batches arrive every few seconds).</summary>

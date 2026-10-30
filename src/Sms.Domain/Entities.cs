@@ -430,7 +430,8 @@ public class Poi
     public DateTimeOffset ImportedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
-/// <summary>Weather at a received live position (one per ship per 15 min / 1 nm), from the configured IWeatherProvider.</summary>
+/// <summary>Weather at a received live position (one per ship per 15 min / 1 nm and provider), from the configured IWeatherProvider
+/// or measured by the boat's own sensors (Provider "onboard", sent by the companion app).</summary>
 public class WeatherObservation
 {
     public long Id { get; set; }
@@ -450,6 +451,10 @@ public class WeatherObservation
     public double? WaveHeightM { get; set; }
     public double? WaveDirDeg { get; set; }
     public double? WavePeriodS { get; set; }
+    /// <summary>Measured on board only (Provider "onboard").</summary>
+    public double? WaterTempC { get; set; }
+    /// <summary>Measured on board only (Provider "onboard").</summary>
+    public double? DepthM { get; set; }
 }
 
 /// <summary>Spec 12 §12.1 C: AIS provider settings per ship; the API key is stored data-protection encrypted and never returned.</summary>

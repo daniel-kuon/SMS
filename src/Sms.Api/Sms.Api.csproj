@@ -12,5 +12,6 @@
     <PackageReference Include="NetTopologySuite.IO.GeoJSON4STJ" />
     <PackageReference Include="Ical.Net" />
     <PackageReference Include="OsmSharp" />
+    <PackageReference Include="SharpCompress" />
   </ItemGroup>
 </Project>

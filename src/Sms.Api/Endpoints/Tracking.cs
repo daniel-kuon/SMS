@@ -1,5 +1,8 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using NetTopologySuite.Geometries;
 using Sms.Domain;
 using Sms.Domain.Tracking;
@@ -13,8 +16,26 @@ public record DeviceCreate(string Name, TrackingProtocol Protocol, Guid? TripId)
 public record DeviceDto(Guid Id, string Name, TrackingProtocol Protocol, Guid? TripId, bool Active, DateTimeOffset? LastSeenAt, string Owner);
 public record DeviceCreated(Guid Id, string Token, string OsmAndUrl, string OwnTracksUrl, string JsonUrl, string Hint);
 public record PrivacyZoneUpsert(string Name, double Lat, double Lng, double RadiusM);
-public record PointsBatch(string DeviceToken, List<PointInput> Points);
-public record PointInput(DateTimeOffset T, double Lat, double Lon, double? Sog, double? Cog, double? Acc);
+public record PointsBatch(string? DeviceToken, List<PointInput> Points);
+/// <summary>One fix of a points batch. Sog/Cog in kn/°, Acc in m. The optional on-board sensor values (companion app) are heading,
+/// depth, true wind speed/direction (from), apparent wind speed/angle (relative to the bow, + = starboard), pressure, air and water temperature.</summary>
+public record PointInput(DateTimeOffset T, double Lat, double Lon, double? Sog, double? Cog, double? Acc,
+    double? Hdg = null, double? DepthM = null, double? TwsKn = null, double? TwdDeg = null, double? AwsKn = null, double? AwaDeg = null,
+    double? PressureHpa = null, double? AirTempC = null, double? WaterTempC = null)
+{
+    public TrackFix Fix => new(T, Lat, Lon, Sog, Cog, Acc);
+
+    /// <summary>Measured weather of this fix, null without any sensor value. True wind is derived from apparent wind and the boat's motion when not sent.</summary>
+    public OnboardWeather? Onboard()
+    {
+        double? tws = TwsKn, twd = TwdDeg;
+        if ((tws is null || twd is null) && AwsKn is { } aws && AwaDeg is { } awa && (Hdg ?? Cog) is { } heading)
+            (tws, twd) = TrackMath.TrueWind(aws, awa, Sog ?? 0, heading);
+        var w = new OnboardWeather(tws, twd, PressureHpa, AirTempC, WaterTempC, DepthM);
+        return w == new OnboardWeather(null, null, null, null, null, null) ? null : w;
+    }
+}
+public record VoyageAdopt(DateTimeOffset From, DateTimeOffset To, string? Name);
 
 /// <summary>Spec 12 §12.7: tracking devices, ingest endpoints (token auth, no cookies), file import, track/position delivery, privacy zones.</summary>
 public static class TrackingEndpoints
@@ -81,48 +102,93 @@ public static class TrackingEndpoints
             if (TrackParsers.ParseOwnTracks(doc.RootElement) is { } fix) { await Store(db, processor, device, [fix], ct); await weatherRecorder.RecordAsync(device.ShipId, device.TripId ?? await TripOfAsync(db, device.ShipId, fix.Time, ct), fix, ct); }
             return Results.Json(Array.Empty<object>()); // OwnTracks expects a JSON array response
         });
-        ingest.MapPost("/points", async (PointsBatch req, SmsDbContext db, TrackProcessor processor, WeatherRecorder weatherRecorder, CancellationToken ct) =>
+        ingest.MapPost("/points", Points);
+        // companion app (spec: TimeZero/NMEA bridge): same contract under /api/ingest, plus file upload with the device token in a header
+        var companion = api.MapGroup("/ingest").WithTags("Tracking").RequireRateLimiting("ingest");
+        companion.MapPost("/points", Points);
+        companion.MapPost("/files", async (HttpRequest http, SmsDbContext db, TrackImportJob jobs, CancellationToken ct) =>
         {
-            var device = await DeviceAsync(db, req.DeviceToken, ct);
+            var device = await DeviceAsync(db, http.Headers["X-Device-Token"].FirstOrDefault(), ct);
             if (device is null) return Results.Unauthorized();
-            var added = await Store(db, processor, device, req.Points.Select(p => new TrackFix(p.T, p.Lat, p.Lon, p.Sog, p.Cog, p.Acc)), ct);
-            if (req.Points.Count > 0) { var latest = req.Points.MaxBy(p => p.T)!; await weatherRecorder.RecordAsync(device.ShipId, device.TripId ?? await TripOfAsync(db, device.ShipId, latest.T, ct), new TrackFix(latest.T, latest.Lat, latest.Lon, latest.Sog, latest.Cog, latest.Acc), ct); }
-            return Results.Ok(new { added });
+            if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
+            var file = (await http.ReadFormAsync(new FormOptions { MultipartBodyLengthLimit = TrackImportJob.MaxUploadBytes }, ct)).Files.FirstOrDefault();
+            if (file is null) return Invalid("file", "Datei fehlt.");
+            if (!TrackImportJob.Accepts(file.FileName)) return Invalid("file", $"Unterstützt: {string.Join(", ", TrackImportJob.Extensions)}");
+            device.LastSeenAt = DateTimeOffset.UtcNow;
+            var import = await jobs.EnqueueAsync(db, file, device.ShipId, device.TripId, device.UserId, device.Id, ct);
+            return Results.Ok(new { importId = import.Id });
+        }).WithMetadata(new RequestSizeLimitAttribute(TrackImportJob.MaxUploadBytes));
+        companion.MapGet("/files/{importId:guid}", async (Guid importId, HttpRequest http, SmsDbContext db, CancellationToken ct) =>
+        {
+            var device = await DeviceAsync(db, http.Headers["X-Device-Token"].FirstOrDefault(), ct);
+            if (device is null) return Results.Unauthorized();
+            var i = await db.TrackImports.AsNoTracking().FirstOrDefaultAsync(x => x.Id == importId && x.ShipId == device.ShipId, ct);
+            return i is null ? Results.NotFound() : Results.Ok(TrackImportDto.From(i));
         });
 
-        // --- file import (GPX / KML / NMEA)
-        ships.MapPost("/track-imports", async (Guid shipId, HttpRequest http, SmsDbContext db, Access access, CurrentUser current, TrackProcessor processor, CancellationToken ct) =>
+        // --- file import (GPX / KML / NMEA, also as .zip / .gz / .7z): queued for the background job, progress via GET
+        ships.MapPost("/track-imports", async (Guid shipId, HttpRequest http, SmsDbContext db, Access access, CurrentUser current, TrackImportJob jobs, CancellationToken ct) =>
         {
             if (!http.HasFormContentType) return Invalid("file", "multipart/form-data erwartet.");
-            var form = await http.ReadFormAsync(ct);
+            var form = await http.ReadFormAsync(new FormOptions { MultipartBodyLengthLimit = TrackImportJob.MaxUploadBytes }, ct);
             Guid? tripId = Guid.TryParse(form["tripId"], out var t) ? t : null;
             if (tripId is { } tid0 && !await db.Trips.AnyAsync(x => x.Id == tid0 && x.ShipId == shipId, ct)) return Invalid("tripId", "Törn gehört nicht zum Schiff.");
             var allowed = await access.IsShipMemberAsync(shipId, null, ct) || (tripId is { } tid && await access.IsCrewAsync(tid, ct));
             if (!allowed) return Results.Forbid();
-            var results = new List<object>();
-            foreach (var file in form.Files)
-            {
-                var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-                await using var stream = file.OpenReadStream();
-                List<TrackFix> fixes; TrackFormat format;
-                try
-                {
-                    (fixes, format) = ext switch
-                    {
-                        ".gpx" => (TrackParsers.ParseGpx(stream), TrackFormat.Gpx),
-                        ".kml" => (TrackParsers.ParseKml(stream), TrackFormat.Kml),
-                        ".nmea" or ".txt" or ".log" => (TrackParsers.ParseNmea(stream), TrackFormat.Nmea),
-                        _ => throw new NotSupportedException("Unterstützt: .gpx, .kml, .nmea"),
-                    };
-                }
-                catch (Exception ex) { return Invalid("files", $"{file.FileName}: {ex.Message}"); }
-                var import = new TrackImport { ShipId = shipId, TripId = tripId, UploadedById = current.RequiredId, FileName = Path.GetFileName(file.FileName), Format = format, PointCount = fixes.Count, CreatedById = current.Id };
-                db.TrackImports.Add(import);
-                await db.SaveChangesAsync(ct);
-                var added = await processor.IngestAsync(db, shipId, null, import.Id, tripId, TrackSource.GpsFile, fixes, ct);
-                results.Add(new { import.Id, import.FileName, parsed = fixes.Count, added });
-            }
+            if (form.Files.Count == 0) return Invalid("files", "Datei fehlt.");
+            if (form.Files.FirstOrDefault(f => !TrackImportJob.Accepts(f.FileName)) is { } bad) return Invalid("files", $"{bad.FileName}: unterstützt sind {string.Join(", ", TrackImportJob.Extensions)}");
+            var results = new List<TrackImportDto>();
+            foreach (var file in form.Files) results.Add(TrackImportDto.From(await jobs.EnqueueAsync(db, file, shipId, tripId, current.RequiredId, null, ct)));
             return Results.Ok(results);
+        }).WithMetadata(new RequestSizeLimitAttribute(TrackImportJob.MaxUploadBytes));
+
+        ships.MapGet("/track-imports", async (Guid shipId, SmsDbContext db, Access access, CancellationToken ct) =>
+            await access.IsShipMemberAsync(shipId, null, ct)
+                ? Results.Ok((await db.TrackImports.AsNoTracking().Where(i => i.ShipId == shipId).OrderByDescending(i => i.CreatedAt).Take(20).ToListAsync(ct)).Select(TrackImportDto.From))
+                : Results.Forbid());
+
+        ships.MapGet("/track-imports/{id:guid}", async (Guid shipId, Guid id, SmsDbContext db, Access access, CurrentUser current, CancellationToken ct) =>
+        {
+            var i = await db.TrackImports.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.ShipId == shipId, ct);
+            if (i is null) return Results.NotFound();
+            return i.UploadedById == current.Id || await access.IsShipMemberAsync(shipId, null, ct) ? Results.Ok(TrackImportDto.From(i)) : Results.Forbid();
+        });
+
+        // --- ship-level fixes without a trip, split into voyages ("Fahrten ohne Törn"); adopting one creates a trip with its fixes
+        ships.MapGet("/voyages", async (Guid shipId, int? skip, int? take, SmsDbContext db, Access access, TrackImportJob jobs, CancellationToken ct) =>
+        {
+            if (!await access.IsShipMemberAsync(shipId, null, ct)) return Results.Forbid();
+            var all = await jobs.VoyagesAsync(db, shipId, ct);
+            var page = Enumerable.Reverse(all).Skip(Math.Max(0, skip ?? 0)).Take(Math.Clamp(take ?? 50, 1, 200)).ToList();
+            var items = new List<object>(page.Count);
+            foreach (var v in page)
+            {
+                var a = await NearestHarbourAsync(db, v.Start, ct); var b = await NearestHarbourAsync(db, v.End, ct);
+                items.Add(new
+                {
+                    from = v.From, to = v.To, distanceNm = Math.Round(v.DistanceM / TrackMath.Nm, 1), startLat = v.Start.Lat, startLng = v.Start.Lng, endLat = v.End.Lat, endLng = v.End.Lng,
+                    startHarbourId = a?.Id, startHarbourName = a?.Name, endHarbourId = b?.Id, endHarbourName = b?.Name,
+                });
+            }
+            return Results.Ok(new { total = all.Count, items });
+        });
+
+        ships.MapPost("/voyages", async (Guid shipId, VoyageAdopt req, SmsDbContext db, Access access, CurrentUser current, TrackProcessor processor, IMemoryCache cache, CancellationToken ct) =>
+        {
+            if (!await access.CanCreateTripAsync(shipId, ct)) return Results.Forbid();
+            if (req.To <= req.From) return Invalid("to", "Ende liegt vor dem Anfang.");
+            var trip = new Trip { ShipId = shipId, CreatedById = current.Id, Status = req.To < DateTimeOffset.UtcNow ? TripStatus.Completed : TripStatus.Active };
+            var tz = TimeZoneInfo.TryFindSystemTimeZoneById(trip.TimeZone, out var z) ? z : TimeZoneInfo.Utc;
+            trip.StartDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(req.From, tz).DateTime);
+            trip.EndDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(req.To, tz).DateTime);
+            trip.Name = string.IsNullOrWhiteSpace(req.Name) ? $"Fahrt {trip.StartDate:dd.MM.yyyy}" : req.Name.Trim();
+            trip.Crew.Add(new CrewMember { UserId = current.RequiredId, Role = CrewRole.Skipper, CanWriteLogbook = true, Status = CrewStatus.Accepted });
+            db.Trips.Add(trip);
+            await db.SaveChangesAsync(ct);
+            var assigned = await db.TrackPoints.Where(p => p.ShipId == shipId && p.TripId == null && p.Time >= req.From && p.Time <= req.To).ExecuteUpdateAsync(s => s.SetProperty(p => p.TripId, trip.Id), ct);
+            cache.Remove(TrackImportJob.VoyagesKey(shipId));
+            await processor.ProcessTripAsync(trip.Id, ct);
+            return Results.Created($"/api/trips/{trip.Id}", new { trip.Id, assigned });
         });
 
         // --- delivery
@@ -232,6 +298,29 @@ public static class TrackingEndpoints
     }
 
     public record SourceOverrideRequest(TrackSource? Source);
+
+    /// <summary>POST /api/tracking/points and /api/ingest/points: fixes of a device (token in the body or the X-Device-Token header), optionally with on-board sensor values.</summary>
+    private static async Task<IResult> Points(PointsBatch req, HttpRequest http, SmsDbContext db, TrackProcessor processor, WeatherRecorder weatherRecorder, CancellationToken ct)
+    {
+        var device = await DeviceAsync(db, string.IsNullOrWhiteSpace(req.DeviceToken) ? http.Headers["X-Device-Token"].FirstOrDefault() : req.DeviceToken, ct);
+        if (device is null) return Results.Unauthorized();
+        var added = await Store(db, processor, device, req.Points.Select(p => p.Fix), ct);
+        if (req.Points.Count > 0)
+        {
+            var latest = req.Points.MaxBy(p => p.T)!;
+            await weatherRecorder.RecordAsync(device.ShipId, device.TripId ?? await TripOfAsync(db, device.ShipId, latest.T, ct), latest.Fix, ct);
+            if (req.Points.Where(p => p.Onboard() is not null).MaxBy(p => p.T) is { } m)
+                await weatherRecorder.RecordOnboardAsync(device.ShipId, device.TripId ?? await TripOfAsync(db, device.ShipId, m.T, ct), m.Fix, m.Onboard()!, ct);
+        }
+        return Results.Ok(new { added });
+    }
+
+    private static async Task<(Guid Id, string Name)?> NearestHarbourAsync(SmsDbContext db, TrackFix at, CancellationToken ct)
+    {
+        var p = Geo.Point(at.Lat, at.Lng);
+        var h = await db.Harbours.AsNoTracking().Where(h => h.IsActive && h.Location.IsWithinDistance(p, 3000)).OrderBy(h => h.Location.Distance(p)).Select(h => new { h.Id, h.Name }).FirstOrDefaultAsync(ct);
+        return h is null ? null : (h.Id, h.Name);
+    }
 
     private static async Task<TrackingDevice?> DeviceAsync(SmsDbContext db, string? token, CancellationToken ct)
     {

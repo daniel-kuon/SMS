@@ -40,6 +40,9 @@
     <PackageVersion Include="MetadataExtractor" Version="2.9.3" />
     <PackageVersion Include="Ical.Net" Version="5.2.3" />
     <PackageVersion Include="OsmSharp" Version="6.2.0" />
+    <PackageVersion Include="SharpCompress" Version="0.48.1" />
+    <!-- Companion app -->
+    <PackageVersion Include="System.IO.Ports" Version="10.0.0" />
     <!-- Tests -->
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />

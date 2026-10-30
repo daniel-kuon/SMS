@@ -42,14 +42,34 @@ public class TrackPoint
     public bool IsHidden { get; set; }
 }
 
+public enum TrackImportStatus { Queued, Running, Done, Failed }
+
+/// <summary>An uploaded track file (GPX/KML/NMEA, optionally zipped/gzipped/7z), imported by a background job with progress.</summary>
 public class TrackImport : Entity
 {
     public Guid ShipId { get; set; }
     public Guid? TripId { get; set; }
     public Guid UploadedById { get; set; }
+    /// <summary>Set when a tracking device (companion app) uploaded the file.</summary>
+    public Guid? DeviceId { get; set; }
     public string FileName { get; set; } = "";
     public TrackFormat Format { get; set; }
+    /// <summary>Parsed fixes.</summary>
     public int PointCount { get; set; }
+    public TrackImportStatus Status { get; set; } = TrackImportStatus.Queued;
+    public int Added { get; set; }
+    /// <summary>Fixes the ship already had within ±1 s.</summary>
+    public int Duplicates { get; set; }
+    /// <summary>Implausible jumps (isolated position spikes) and fixes with equal times.</summary>
+    public int Rejected { get; set; }
+    public int Tracks { get; set; }
+    /// <summary>GPX waypoints (TimeZero events): counted, not imported.</summary>
+    public int Waypoints { get; set; }
+    /// <summary>GPX routes (TimeZero planned routes): counted, not imported.</summary>
+    public int Routes { get; set; }
+    public int ProgressPercent { get; set; }
+    public string? Error { get; set; }
+    public DateTimeOffset? FinishedAt { get; set; }
 }
 
 /// <summary>Materialised per-day track (spec 12 §12.2).</summary>
@@ -165,6 +185,75 @@ public static class TrackMath
         return d;
     }
 
+    /// <summary>Drops isolated position spikes (implied speed above <paramref name="maxSpeedKn"/> to the previous kept fix and to the next fix)
+    /// and fixes with the time of the previous one. Unlike <see cref="Clean"/>, one bad fix does not reject everything after it.</summary>
+    public static List<TrackFix> Despike(IReadOnlyList<TrackFix> sorted, double maxSpeedKn = 30)
+    {
+        var result = new List<TrackFix>(sorted.Count);
+        for (var i = 0; i < sorted.Count; i++)
+        {
+            var f = sorted[i];
+            if (result.Count > 0 && f.Time == result[^1].Time) continue;
+            // a bad first fix: too far from the next one while the next two agree
+            if (result.Count == 0 && i + 2 < sorted.Count && TooFast(f, sorted[i + 1], maxSpeedKn) && !TooFast(sorted[i + 1], sorted[i + 2], maxSpeedKn)) continue;
+            if (result.Count > 0 && TooFast(result[^1], f, maxSpeedKn) && (i + 1 == sorted.Count || TooFast(f, sorted[i + 1], maxSpeedKn))) continue;
+            result.Add(f);
+        }
+        return result;
+    }
+
+    private static bool TooFast(TrackFix a, TrackFix b, double maxKn)
+    {
+        var seconds = Math.Abs((b.Time - a.Time).TotalSeconds);
+        return seconds > 0 && Haversine(a.Lat, a.Lng, b.Lat, b.Lng) / seconds * 3600 / Nm > maxKn;
+    }
+
+    public sealed record Voyage(DateTimeOffset From, DateTimeOffset To, double DistanceM, TrackFix Start, TrackFix End);
+
+    /// <summary>Splits an ordered track into voyages: a recording gap over <paramref name="maxGap"/> (default 6 h) or a stay within
+    /// <paramref name="stayRadiusM"/> for at least <paramref name="minStay"/> (default 3 h: harbour or anchorage) ends one. Voyages shorter
+    /// than <paramref name="minDistanceM"/> (manoeuvring in the harbour) are dropped.</summary>
+    public static List<Voyage> Voyages(IReadOnlyList<TrackFix> ordered, TimeSpan? maxGap = null, TimeSpan? minStay = null, double stayRadiusM = 300, double minDistanceM = 926)
+    {
+        var gap = maxGap ?? TimeSpan.FromHours(6);
+        var result = new List<Voyage>();
+        void Add(List<TrackFix> part)
+        {
+            if (part.Count < 2) return;
+            var d = DistanceM(part);
+            if (d >= minDistanceM) result.Add(new Voyage(part[0].Time, part[^1].Time, d, part[0], part[^1]));
+        }
+        var start = 0;
+        for (var i = 1; i <= ordered.Count; i++)
+        {
+            if (i < ordered.Count && ordered[i].Time - ordered[i - 1].Time <= gap) continue;
+            var chunk = ordered.Skip(start).Take(i - start).ToList();
+            start = i;
+            var from = 0;
+            foreach (var stay in DetectStops(chunk, stayRadiusM, minStay ?? TimeSpan.FromHours(3)))
+            {
+                var arrive = chunk.FindIndex(from, f => f.Time >= stay.From);
+                var leave = chunk.FindLastIndex(f => f.Time <= stay.To);
+                Add(chunk.GetRange(from, arrive - from + 1));
+                from = Math.Max(leave, arrive);
+            }
+            Add(chunk.GetRange(from, chunk.Count - from));
+        }
+        return result;
+    }
+
+    /// <summary>True wind over ground from apparent wind (angle relative to the bow, positive to starboard) and the boat's motion.</summary>
+    public static (double SpeedKn, double DirDeg) TrueWind(double awsKn, double awaDeg, double boatKn, double headingDeg)
+    {
+        var awd = (headingDeg + awaDeg) * Math.PI / 180;
+        var hdg = headingDeg * Math.PI / 180;
+        // the air relative to the boat blows away from where it comes from; adding the boat's velocity gives the air over ground
+        var x = -awsKn * Math.Sin(awd) + boatKn * Math.Sin(hdg);
+        var y = -awsKn * Math.Cos(awd) + boatKn * Math.Cos(hdg);
+        var dir = (Math.Atan2(-x, -y) * 180 / Math.PI + 360) % 360;
+        return (Math.Sqrt(x * x + y * y), dir);
+    }
+
     public static LineString ToLine(GeometryFactory f, IReadOnlyList<TrackFix> fixes, double toleranceDeg)
     {
         var coords = fixes.Select(x => new Coordinate(x.Lng, x.Lat)).ToArray();
@@ -175,41 +264,54 @@ public static class TrackMath
     }
 }
 
+public sealed class GpxStats { public int Tracks; public int Waypoints; public int Routes; }
+
 /// <summary>Parsers for GPX, KML/gx:Track, NMEA 0183 RMC, OsmAnd query strings and OwnTracks JSON (spec 12 §12.1).</summary>
 public static class TrackParsers
 {
-    public static List<TrackFix> ParseGpx(Stream s)
+    public static List<TrackFix> ParseGpx(Stream s) => ReadGpx(s).ToList();
+
+    /// <summary>Streams the track points (trkpt) of a GPX file with an XmlReader, so archives of millions of points never sit in memory as a DOM.
+    /// Waypoints (wpt) and routes (rte) are skipped and only counted in <paramref name="stats"/>; extensions are ignored.</summary>
+    public static IEnumerable<TrackFix> ReadGpx(Stream s, GpxStats? stats = null)
     {
-        var result = new List<TrackFix>();
-        using var r = XmlReader.Create(s, new XmlReaderSettings { IgnoreWhitespace = true, DtdProcessing = DtdProcessing.Ignore });
-        double? lat = null, lng = null; DateTimeOffset? time = null; double? speed = null, course = null; var inPoint = false;
-        var moved = r.Read();
-        while (moved)
+        stats ??= new GpxStats();
+        using var r = XmlReader.Create(s, new XmlReaderSettings { IgnoreWhitespace = true, IgnoreComments = true, DtdProcessing = DtdProcessing.Ignore });
+        r.MoveToContent();
+        while (!r.EOF)
         {
-            var consumed = false; // ReadElementContentAsString already advances to the next node
-            if (r.NodeType == XmlNodeType.Element && r.LocalName is "trkpt" or "rtept")
+            if (r.NodeType != XmlNodeType.Element) { r.Read(); continue; }
+            switch (r.LocalName)
             {
-                inPoint = true; time = null; speed = null; course = null;
-                lat = D(r.GetAttribute("lat")); lng = D(r.GetAttribute("lon"));
-                if (r.IsEmptyElement) inPoint = false;
+                case "wpt": stats.Waypoints++; r.Skip(); continue;
+                case "rte": stats.Routes++; r.Skip(); continue;
+                case "extensions": r.Skip(); continue;
+                case "trk": stats.Tracks++; r.Read(); continue;
+                case "trkpt":
+                    var lat = D(r.GetAttribute("lat")); var lng = D(r.GetAttribute("lon"));
+                    DateTimeOffset? time = null; double? speed = null, course = null;
+                    if (!r.IsEmptyElement)
+                    {
+                        using var sub = r.ReadSubtree();
+                        sub.Read(); sub.Read(); // onto the first child
+                        while (!sub.EOF)
+                        {
+                            if (sub.NodeType != XmlNodeType.Element) { sub.Read(); continue; }
+                            switch (sub.LocalName)
+                            {
+                                case "time": time = T(sub.ReadElementContentAsString()); break;
+                                case "speed": speed = D(sub.ReadElementContentAsString()) is { } ms ? ms * 3600 / TrackMath.Nm : null; break;
+                                case "course": course = D(sub.ReadElementContentAsString()); break;
+                                default: sub.Skip(); break;
+                            }
+                        }
+                    }
+                    r.Read(); // past </trkpt> (or the empty element)
+                    if (lat is { } la && lng is { } ln && time is { } t) yield return new TrackFix(t, la, ln, speed, course);
+                    continue;
+                default: r.Read(); continue;
             }
-            else if (inPoint && r.NodeType == XmlNodeType.Element)
-            {
-                switch (r.LocalName)
-                {
-                    case "time": time = T(r.ReadElementContentAsString()); consumed = true; break;
-                    case "speed": speed = D(r.ReadElementContentAsString()) is { } ms ? ms * 3600 / TrackMath.Nm : null; consumed = true; break;
-                    case "course": course = D(r.ReadElementContentAsString()); consumed = true; break;
-                }
-            }
-            else if (r.NodeType == XmlNodeType.EndElement && r.LocalName is "trkpt" or "rtept")
-            {
-                inPoint = false;
-                if (lat is { } la && lng is { } ln && time is { } t) result.Add(new TrackFix(t, la, ln, speed, course));
-            }
-            moved = consumed || r.Read();
         }
-        return result;
     }
 
     public static List<TrackFix> ParseKml(Stream s)

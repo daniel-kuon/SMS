@@ -154,6 +154,9 @@ public sealed class AisPoller(IServiceScopeFactory scopes, IEnumerable<IAisPosit
             if (!force && c.LastPolledAt is { } last && last.AddMinutes(c.PollIntervalMinutes) > now) continue;
             // only while a trip is running: no calls (and no costs) between trips
             if (!await db.Trips.AnyAsync(t => t.ShipId == c.ShipId && t.Status == TripStatus.Active && t.StartDate <= today.AddDays(1) && t.EndDate >= today.AddDays(-1), ct)) continue;
+            // a tracking device (phone, companion app on board) delivered fresher positions within the interval: no paid AIS call needed
+            var recent = now.AddMinutes(-c.PollIntervalMinutes);
+            if (!force && await db.TrackPoints.AnyAsync(p => p.ShipId == c.ShipId && p.Source == TrackSource.GpsLive && p.Time > recent, ct)) continue;
             var mmsi = c.Mmsi ?? await db.Ships.Where(s => s.Id == c.ShipId).Select(s => s.Mmsi).FirstOrDefaultAsync(ct);
             var provider = Provider(c.Provider);
             if (provider is null || string.IsNullOrWhiteSpace(mmsi)) { c.LastError = "Provider oder MMSI fehlt."; continue; }

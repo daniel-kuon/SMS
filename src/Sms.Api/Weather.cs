@@ -163,6 +163,9 @@ public sealed record WeatherSummary(int Samples, int WindBft, double WindKn, Win
     }
 }
 
+/// <summary>True wind (over ground), pressure, temperatures and depth measured on board.</summary>
+public sealed record OnboardWeather(double? WindKn, double? WindDirDeg, double? PressureHpa, double? AirTempC, double? WaterTempC, double? DepthM);
+
 /// <summary>Stores the weather at received live positions, at most once per 15 min / 1 nm per ship (spec: live tracking weather).</summary>
 public sealed class WeatherRecorder(IWeatherProvider weather, IServiceScopeFactory scopes, ILogger<WeatherRecorder> logger)
 {
@@ -172,12 +175,37 @@ public sealed class WeatherRecorder(IWeatherProvider weather, IServiceScopeFacto
     public static bool IsDue(DateTimeOffset lastTime, double lastLat, double lastLng, DateTimeOffset time, double lat, double lng) =>
         time - lastTime >= DebounceTime || TrackMath.Haversine(lastLat, lastLng, lat, lng) >= DebounceM;
 
+    /// <summary>Provider name of observations measured by the boat's own sensors (companion app), stored next to the model weather.</summary>
+    public const string Onboard = "onboard";
+
+    private static async Task<bool> DueAsync(SmsDbContext db, Guid shipId, bool onboard, TrackFix fix, CancellationToken ct)
+    {
+        var q = db.WeatherObservations.AsNoTracking().Where(o => o.ShipId == shipId);
+        q = onboard ? q.Where(o => o.Provider == Onboard) : q.Where(o => o.Provider != Onboard);
+        var last = await q.OrderByDescending(o => o.Time).Select(o => new { o.Time, o.Location }).FirstOrDefaultAsync(ct);
+        return last is null || IsDue(last.Time, last.Location.Y, last.Location.X, fix.Time, fix.Lat, fix.Lng);
+    }
+
+    /// <summary>Stores measured on-board values (Provider "onboard"), rate-limited like the model weather but independently of it.</summary>
+    public async Task<bool> RecordOnboardAsync(Guid shipId, Guid? tripId, TrackFix fix, OnboardWeather w, CancellationToken ct)
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
+        if (!await DueAsync(db, shipId, true, fix, ct)) return false;
+        db.WeatherObservations.Add(new WeatherObservation
+        {
+            ShipId = shipId, TripId = tripId, Time = fix.Time, Location = Geo.Point(fix.Lat, fix.Lng), Provider = Onboard,
+            WindKn = w.WindKn, WindDirDeg = w.WindDirDeg, PressureHpa = w.PressureHpa, TemperatureC = w.AirTempC, WaterTempC = w.WaterTempC, DepthM = w.DepthM,
+        });
+        await db.SaveChangesAsync(ct);
+        return true;
+    }
+
     public async Task<bool> RecordAsync(Guid shipId, Guid? tripId, TrackFix fix, CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
-        var last = await db.WeatherObservations.AsNoTracking().Where(o => o.ShipId == shipId).OrderByDescending(o => o.Time).Select(o => new { o.Time, o.Location }).FirstOrDefaultAsync(ct);
-        if (last is not null && !IsDue(last.Time, last.Location.Y, last.Location.X, fix.Time, fix.Lat, fix.Lng)) return false;
+        if (!await DueAsync(db, shipId, false, fix, ct)) return false;
         var fc = await weather.ForecastAsync(fix.Lat, fix.Lng, ct);
         if (fc is null) return false;
         var c = fc.Current;

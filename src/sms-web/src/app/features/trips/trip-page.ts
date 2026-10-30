@@ -13,7 +13,8 @@ import { TranslatePipe, TranslateService } from '@ngx-translate/core';
 import type { GeoJSONSource } from 'maplibre-gl';
 import { bounds, createMap, maplibregl, MlMap, textEl } from '../../core/map';
 import { TrackPath } from '../../core/track-playback';
-import { fmtObservation, WeatherDialog, WeatherObservation } from '../../core/weather';
+import { fmtObservation, fmtOnboard, WeatherDialog, WeatherObservation } from '../../core/weather';
+import { TrackImportCard } from '../ships/track-import';
 import { Api, AuthService, errorMessage } from '../../core/api';
 import { Day, Harbour, HarbourMarker, Leg, LogbookEntry, Media, RouteWarning, Ship, Trip } from '../../core/models';
 import { fromShip, routeParams } from '../../core/ship-context';
@@ -33,7 +34,7 @@ const TABS = ['overview', 'timeline', 'logbook', 'photos', 'costs', 'tasks', 'cr
 type PickMode = { kind: 'next' } | { kind: 'alt'; step: number } | { kind: 'end'; from: string | null };
 
 @Component({
-  imports: [DecimalPipe, RouterLink, FormsModule, MatButtonModule, MatIconModule, MatTabsModule, MatListModule, MatCardModule, TranslatePipe, Gallery, UploadZone, TaskList, LogbookTable, CostsTab, HarbourSelect, SocialBox, RouteWeather],
+  imports: [DecimalPipe, RouterLink, FormsModule, MatButtonModule, MatIconModule, MatTabsModule, MatListModule, MatCardModule, TranslatePipe, Gallery, UploadZone, TaskList, LogbookTable, CostsTab, HarbourSelect, SocialBox, RouteWeather, TrackImportCard],
   template: `
     @if (trip(); as t) {
     <div class="trip-layout">
@@ -75,11 +76,12 @@ type PickMode = { kind: 'next' } | { kind: 'alt'; step: number } | { kind: 'end'
                 @if (mapData()?.photos?.length) {
                   <div class="photo-strip">@for (p of mapData()!.photos; track p.id) { <img [src]="p.thumbUrl" alt="" [attr.data-sel]="'photo:' + p.id" [class.sel]="selected() === 'photo:' + p.id" (click)="selectItem('photo', p.id)" /> }</div>
                 }
-                @if (position(); as pos) { <p class="muted"><mat-icon inline>my_location</mat-icon> {{ 'tracking.lastPosition' | translate }} {{ fmtTime(pos.time) }} @if (pos.sogKn) { · {{ pos.sogKn | number:'1.0-1' }} kn } @if (pos.delayed) { · {{ 'tracking.delayed' | translate }} }</p> }
+                @if (position(); as pos) { <p class="muted"><mat-icon inline>my_location</mat-icon> {{ 'tracking.lastPosition' | translate }} {{ fmtTime(pos.time) }} @if (pos.sogKn) { · {{ pos.sogKn | number:'1.0-1' }} kn } · {{ 'tracking.source.' + pos.source | translate }} @if (pos.delayed) { · {{ 'tracking.delayed' | translate }} }</p> }
                 @if (lastWeather(); as w) { <p class="muted"><mat-icon inline>air</mat-icon> {{ 'weather.lastObservation' | translate }} {{ fmtObservation(w) }}</p> }
+                @if (lastOnboard(); as w) { <p class="muted"><mat-icon inline>sensors</mat-icon> {{ 'weather.onboard' | translate }} {{ fmtOnboard(w) }}</p> }
                 @if (suggestions().length) { <h4>{{ 'tracking.suggestions' | translate }}</h4>
                   @for (s of suggestions(); track s.departedAt) { <div class="row suggestion"><span>{{ fmt(s.day) }}: {{ s.startHarbourName ?? '?' }} → {{ s.endHarbourName ?? '?' }} · {{ s.sailedDistanceNm }} sm</span><button mat-stroked-button (click)="adopt(t, s)">{{ 'tracking.adopt' | translate }}</button></div> } }
-                @if (t.isCrew) { <div class="import"><label>{{ 'tracking.import' | translate }} <input type="file" accept=".gpx,.kml,.nmea,.txt,.log" multiple (change)="importTrack(t, $event)" /></label> @if (importResult()) { <span class="muted">{{ importResult() }}</span> }</div> }
+                @if (t.isCrew) { <app-track-import [shipId]="t.shipId" [tripId]="t.id" (done)="reload()" /> }
                 <p class="disclaimer">{{ o.attribution }} · {{ 'harbour.disclaimer' | translate }}</p>
               }
             </div>
@@ -193,10 +195,9 @@ export class TripPage {
   private snack = inject(MatSnackBar);
   trip = signal<Trip | null>(null); days = signal<Day[]>([]); legs = signal<Leg[]>([]); allPhotos = signal<Media[]>([]);
   suggestions = signal<{ departedAt: string; arrivedAt: string; startHarbourId: string | null; startHarbourName: string | null; endHarbourId: string | null; endHarbourName: string | null; sailedDistanceNm: number; day: string }[]>([]);
-  position = signal<{ time: string; lat: number; lng: number; sogKn: number | null; cogDeg: number | null; delayed: boolean } | null>(null);
-  lastWeather = signal<WeatherObservation | null>(null);
-  fmtObservation = fmtObservation;
-  importResult = signal('');
+  position = signal<{ time: string; lat: number; lng: number; sogKn: number | null; cogDeg: number | null; source: string; delayed: boolean } | null>(null);
+  lastWeather = signal<WeatherObservation | null>(null); lastOnboard = signal<WeatherObservation | null>(null);
+  fmtObservation = fmtObservation; fmtOnboard = fmtOnboard;
   overview = signal<{ stats: { distanceNm: number; underwayHours: number; engineHours: number; harbours: number; nights: number; photos: number; posts: number; costsTotal: number | null }; legs: { id: string; day: string; from: string; to: string; coordinates: number[][]; distanceNm: number; source: string }[]; stops: { name: string; lat: number; lng: number; nights: number }[]; items: { type: string; id: string; lat: number; lng: number; thumbUrl: string | null; title: string | null }[]; attribution: string } | null>(null);
   tabIndex = signal(0);
   fmt = fmtDate; fmtTime = fmtDateTime;
@@ -259,7 +260,7 @@ export class TripPage {
     this.api.get<Leg[]>(`/api/trips/${id}/legs`).subscribe(l => this.legs.set(l));
     this.api.get<NonNullable<ReturnType<TripPage['overview']>>>(`/api/trips/${id}/overview`).subscribe(o => this.overview.set(o));
     this.api.get<NonNullable<ReturnType<TripPage['position']>>>(`/api/trips/${id}/position`).subscribe(p => this.position.set(p ?? null));
-    this.api.get<WeatherObservation[]>(`/api/trips/${id}/weather`).subscribe(w => this.lastWeather.set(w.at(-1) ?? null));
+    this.api.get<WeatherObservation[]>(`/api/trips/${id}/weather`).subscribe(w => { this.lastWeather.set(w.filter(o => !o.onboard).at(-1) ?? null); this.lastOnboard.set(w.filter(o => o.onboard).at(-1) ?? null); });
     this.loadMap();
   }
   private loadMap(): void { this.api.get<TripMapData>(`/api/trips/${this.id()}/map`).subscribe(d => this.mapData.set(d)); }
@@ -346,14 +347,6 @@ export class TripPage {
 
   adopt(t: Trip, s: NonNullable<ReturnType<TripPage['suggestions']>>[number]): void {
     void this.openEntry(t, undefined, s);
-  }
-  importTrack(t: Trip, e: Event): void {
-    const files = Array.from((e.target as HTMLInputElement).files ?? []);
-    if (!files.length) return;
-    this.importResult.set('…');
-    this.api.upload<{ fileName: string; parsed: number; added: number }[]>(`/api/ships/${t.shipId}/track-imports`, files, { tripId: t.id }).subscribe({
-      next: r => { this.importResult.set(r.map(x => `${x.fileName}: ${x.added}/${x.parsed}`).join(', ')); setTimeout(() => this.reload(), 25000); },
-      error: err => this.importResult.set(errorMessage(err)) });
   }
   edit(t: Trip): void { this.dialog.open(TripEditDialog, { data: { shipId: t.shipId, trip: t }, width: '700px' }).afterClosed().subscribe(ok => ok && this.reload()); }
   respond(t: Trip, action: 'accept' | 'decline'): void { this.api.post(`/api/crew/${t.me!.id}/${action}`, {}).subscribe(() => this.reload()); }

@@ -2126,6 +2126,9 @@ namespace Sms.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<int>("Added")
+                        .HasColumnType("integer");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -2135,10 +2138,23 @@ namespace Sms.Infrastructure.Migrations
                     b.Property<DateTimeOffset?>("DeletedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("DeviceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Duplicates")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
                     b.Property<string>("FileName")
                         .IsRequired()
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
+
+                    b.Property<DateTimeOffset?>("FinishedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Format")
                         .IsRequired()
@@ -2148,8 +2164,25 @@ namespace Sms.Infrastructure.Migrations
                     b.Property<int>("PointCount")
                         .HasColumnType("integer");
 
+                    b.Property<int>("ProgressPercent")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Rejected")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Routes")
+                        .HasColumnType("integer");
+
                     b.Property<Guid>("ShipId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("Tracks")
+                        .HasColumnType("integer");
 
                     b.Property<Guid?>("TripId")
                         .HasColumnType("uuid");
@@ -2162,6 +2195,9 @@ namespace Sms.Infrastructure.Migrations
 
                     b.Property<Guid>("UploadedById")
                         .HasColumnType("uuid");
+
+                    b.Property<int>("Waypoints")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -2566,6 +2602,9 @@ namespace Sms.Infrastructure.Migrations
                     b.Property<int?>("CloudCover")
                         .HasColumnType("integer");
 
+                    b.Property<double?>("DepthM")
+                        .HasColumnType("double precision");
+
                     b.Property<double?>("GustKn")
                         .HasColumnType("double precision");
 
@@ -2595,6 +2634,9 @@ namespace Sms.Infrastructure.Migrations
 
                     b.Property<Guid?>("TripId")
                         .HasColumnType("uuid");
+
+                    b.Property<double?>("WaterTempC")
+                        .HasColumnType("double precision");
 
                     b.Property<double?>("WaveDirDeg")
                         .HasColumnType("double precision");

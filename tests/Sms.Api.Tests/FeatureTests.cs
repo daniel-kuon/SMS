@@ -245,7 +245,10 @@ public class FeatureTests(ApiFixture f) : IClassFixture<ApiFixture>
         form.Add(gpx, "files", "track.gpx"); form.Add(new StringContent(trip.ToString()), "tripId");
         var import = await skipper.PostAsync($"/api/ships/{ship}/track-imports", form);
         import.EnsureSuccessStatusCode();
-        Assert.Equal(3, (await import.Content.ReadFromJsonAsync<JsonElement>())[0].GetProperty("added").GetInt32());
+        var importId = (await import.Content.ReadFromJsonAsync<JsonElement>())[0].GetProperty("id").GetGuid(); // imported in the background
+        JsonElement status;
+        do { await Task.Delay(100); status = await skipper.GetFromJsonAsync<JsonElement>($"/api/ships/{ship}/track-imports/{importId}"); } while (status.GetProperty("status").GetString() is "Queued" or "Running");
+        Assert.Equal(3, status.GetProperty("added").GetInt32());
         (await skipper.PostAsync($"/api/trips/{trip}/track/reprocess", null)).EnsureSuccessStatusCode();
 
         var track = await anon.GetFromJsonAsync<JsonElement>($"/api/trips/{trip}/track");
