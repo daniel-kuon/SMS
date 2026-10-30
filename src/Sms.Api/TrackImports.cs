@@ -117,7 +117,7 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
             foreach (var (name, raw) in Entries(file, import.FileName))
             {
                 if (++entries > MaxEntries) throw new ImportLimitException($"Archiv mit mehr als {MaxEntries} Dateien wird nicht importiert.");
-                var stream = ReferenceEquals(raw, file) ? raw : new LimitedStream(raw, budget);
+                var stream = new LimitedStream(raw, budget, ownsInner: !ReferenceEquals(raw, file)); // the parsers close their stream; the upload file itself must stay open for the progress
                 try
                 {
                     if (FormatOf(name) is not { } format) continue; // other files inside an archive
@@ -133,7 +133,7 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
                         batch.Add(f);
                     }
                 }
-                finally { if (!ReferenceEquals(stream, file)) await stream.DisposeAsync(); /* LimitedStream disposes the entry stream */ }
+                finally { await stream.DisposeAsync(); /* disposes an archive entry, leaves the upload file open */ }
             }
             await Flush();
             (import.Tracks, import.Waypoints, import.Routes) = (stats.Tracks, stats.Waypoints, stats.Routes);
@@ -221,7 +221,7 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
     private sealed class DecompressionBudget { public long Used; }
 
     /// <summary>Read-only pass-through that throws once the import's decompressed bytes exceed <see cref="MaxDecompressedBytes"/>.</summary>
-    private sealed class LimitedStream(Stream inner, DecompressionBudget budget) : Stream
+    private sealed class LimitedStream(Stream inner, DecompressionBudget budget, bool ownsInner) : Stream
     {
         public override int Read(byte[] buffer, int offset, int count) => Count(inner.Read(buffer, offset, count));
         public override int Read(Span<byte> buffer) => Count(inner.Read(buffer));
@@ -239,7 +239,7 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        protected override void Dispose(bool disposing) { if (disposing) inner.Dispose(); base.Dispose(disposing); }
+        protected override void Dispose(bool disposing) { if (disposing && ownsInner) inner.Dispose(); base.Dispose(disposing); }
     }
 
     private static TrackFormat? FormatOf(string name) => Path.GetExtension(name).ToLowerInvariant() switch

@@ -67,7 +67,7 @@ internal static class Program
             Console.WriteLine($"Uploaded {fi.Name}: import {entry.ImportId}");
             await c.FollowImportAsync(entry, ct);
             Console.WriteLine($"Import status: {entry.Status}");
-            return 0;
+            return entry.Status?.Contains("status Failed", StringComparison.OrdinalIgnoreCase) == true ? 1 : 0;
         }
 
         if (args.Get("simulate") is { } sim)

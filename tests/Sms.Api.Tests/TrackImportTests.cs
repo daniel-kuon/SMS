@@ -183,6 +183,22 @@ public class TrackImportTests(ApiFixture f) : IClassFixture<ApiFixture>
         Assert.Equal(181, s.GetProperty("added").GetInt32());
         Assert.Equal(HttpStatusCode.Unauthorized, (await anon.SendAsync(Req(HttpMethod.Get, $"/api/ingest/files/{importId}", null))).StatusCode);
 
+        // a plain NMEA log (the parser closes its reader; the import must still finish and report progress)
+        static string Rmc(DateTimeOffset t, double lat, double lon)
+        {
+            static string Dm(double v, int deg) { v = Math.Abs(v); var d = (int)v; return d.ToString(new string('0', deg)) + ((v - d) * 60).ToString("00.0000", System.Globalization.CultureInfo.InvariantCulture); }
+            var body = $"GPRMC,{t:HHmmss},A,{Dm(lat, 2)},N,{Dm(lon, 3)},E,5.0,90.0,{t:ddMMyy},,";
+            var cs = 0; foreach (var c in body) cs ^= c;
+            return $"${body}*{cs:X2}";
+        }
+        var nmea = Encoding.ASCII.GetBytes(string.Join(Environment.NewLine, Enumerable.Range(0, 50).Select(i => Rmc(new DateTimeOffset(2026, 6, 1, 8, 0, 0, TimeSpan.Zero).AddMinutes(i), 54.4 + i * 0.001, 10.2))));
+        var nr = await anon.SendAsync(Req(HttpMethod.Post, "/api/ingest/files", token, Form("log.nmea", nmea)));
+        nr.EnsureSuccessStatusCode();
+        var nmeaId = (await nr.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("importId").GetGuid();
+        var ns = await WaitAsync(async () => await (await anon.SendAsync(Req(HttpMethod.Get, $"/api/ingest/files/{nmeaId}", token))).Content.ReadFromJsonAsync<JsonElement>());
+        Assert.Equal("Done", ns.GetProperty("status").GetString());
+        Assert.Equal(50, ns.GetProperty("added").GetInt32());
+
         // another ship's device cannot read it
         var other = await IdOf(await owner.PostAsJsonAsync("/api/ships", new { name = "Other Boat", cruisingSpeedKn = 5, visibility = "Public" }));
         var otherToken = (await (await owner.PostAsJsonAsync($"/api/ships/{other}/tracking-devices", new { name = "x", protocol = "Json" })).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("token").GetString()!;
