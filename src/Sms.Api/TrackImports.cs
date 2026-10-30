@@ -71,8 +71,14 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
         var db = scope.ServiceProvider.GetRequiredService<SmsDbContext>();
         foreach (var i in await db.TrackImports.Where(i => i.Status == TrackImportStatus.Queued || i.Status == TrackImportStatus.Running).OrderBy(i => i.CreatedAt).ToListAsync(ct))
         {
-            if (File.Exists(FileOf(i))) await _queue.Writer.WriteAsync(i.Id, ct);
-            else { i.Status = TrackImportStatus.Failed; i.Error = "Datei nach einem Neustart nicht mehr vorhanden – bitte erneut hochladen."; i.FinishedAt = DateTimeOffset.UtcNow; }
+            if (i.Status == TrackImportStatus.Queued && File.Exists(FileOf(i))) await _queue.Writer.WriteAsync(i.Id, ct);
+            else
+            {
+                // an import that was running when the process stopped is not retried automatically (a file that crashes the import would loop forever)
+                i.Error = i.Status == TrackImportStatus.Running ? "Import durch einen Neustart unterbrochen – bitte erneut hochladen." : "Datei nach einem Neustart nicht mehr vorhanden – bitte erneut hochladen.";
+                i.Status = TrackImportStatus.Failed; i.FinishedAt = DateTimeOffset.UtcNow;
+                try { File.Delete(FileOf(i)); } catch (IOException) { /* best effort */ }
+            }
         }
         await db.SaveChangesAsync(ct);
     }
@@ -106,8 +112,12 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
                 import.ProgressPercent = (int)Math.Min(99, file.Position * 100 / Math.Max(1, file.Length));
                 await db.SaveChangesAsync(ct);
             }
-            foreach (var (name, stream) in Entries(file, import.FileName))
+            var budget = new DecompressionBudget();
+            var entries = 0;
+            foreach (var (name, raw) in Entries(file, import.FileName))
             {
+                if (++entries > MaxEntries) throw new ImportLimitException($"Archiv mit mehr als {MaxEntries} Dateien wird nicht importiert.");
+                var stream = ReferenceEquals(raw, file) ? raw : new LimitedStream(raw, budget);
                 try
                 {
                     if (FormatOf(name) is not { } format) continue; // other files inside an archive
@@ -115,6 +125,7 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
                     var fixes = format switch { TrackFormat.Gpx => TrackParsers.ReadGpx(stream, stats), TrackFormat.Kml => TrackParsers.ParseKml(stream), _ => TrackParsers.ParseNmea(stream) };
                     foreach (var f in fixes)
                     {
+                        if (import.PointCount + batch.Count >= MaxFixes) throw new ImportLimitException($"Mehr als {MaxFixes:N0} Positionen in einer Datei – bitte aufteilen.");
                         if (batch.Count >= BatchSize || (batch.Count > 0 && (f.Time > min + BatchSpan || f.Time < max - BatchSpan))) await Flush();
                         if (batch.Count == 0) min = max = f.Time;
                         else if (f.Time < min) min = f.Time;
@@ -122,7 +133,7 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
                         batch.Add(f);
                     }
                 }
-                finally { if (!ReferenceEquals(stream, file)) await stream.DisposeAsync(); }
+                finally { if (!ReferenceEquals(stream, file)) await stream.DisposeAsync(); /* LimitedStream disposes the entry stream */ }
             }
             await Flush();
             (import.Tracks, import.Waypoints, import.Routes) = (stats.Tracks, stats.Waypoints, stats.Routes);
@@ -133,7 +144,9 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
         {
             logger.LogWarning(ex, "Track import {Id} ({File}) failed", import.Id, import.FileName);
             import.Status = TrackImportStatus.Failed;
-            import.Error = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
+            var message = ex is ImportLimitException or System.Xml.XmlException or FormatException or InvalidDataException or NotSupportedException
+                ? ex.Message : "Import fehlgeschlagen – Details im Server-Log.";
+            import.Error = message.Length > 500 ? message[..500] : message;
         }
         import.FinishedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(CancellationToken.None);
@@ -197,6 +210,36 @@ public sealed class TrackImportJob(IServiceScopeFactory scopes, TrackProcessor p
         if (i >= 0) return true;
         i = ~i;
         return (i < ticks.Length && ticks[i] - t <= tolerance) || (i > 0 && t - ticks[i - 1] <= tolerance);
+    }
+
+    private const int MaxEntries = 500;
+    private const long MaxFixes = 20_000_000;
+    /// <summary>Total decompressed bytes per import (the 545 MB TimeZero archive is far below; protects against decompression bombs).</summary>
+    public const long MaxDecompressedBytes = 4L * 1024 * 1024 * 1024;
+
+    public sealed class ImportLimitException(string message) : Exception(message);
+    private sealed class DecompressionBudget { public long Used; }
+
+    /// <summary>Read-only pass-through that throws once the import's decompressed bytes exceed <see cref="MaxDecompressedBytes"/>.</summary>
+    private sealed class LimitedStream(Stream inner, DecompressionBudget budget) : Stream
+    {
+        public override int Read(byte[] buffer, int offset, int count) => Count(inner.Read(buffer, offset, count));
+        public override int Read(Span<byte> buffer) => Count(inner.Read(buffer));
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => Count(await inner.ReadAsync(buffer, ct));
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+        private int Count(int n)
+        {
+            budget.Used += n;
+            if (budget.Used > MaxDecompressedBytes) throw new ImportLimitException($"Entpackte Daten größer als {MaxDecompressedBytes / (1024 * 1024 * 1024)} GB – Import abgebrochen.");
+            return n;
+        }
+        public override bool CanRead => true; public override bool CanSeek => false; public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException(); public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing) { if (disposing) inner.Dispose(); base.Dispose(disposing); }
     }
 
     private static TrackFormat? FormatOf(string name) => Path.GetExtension(name).ToLowerInvariant() switch
